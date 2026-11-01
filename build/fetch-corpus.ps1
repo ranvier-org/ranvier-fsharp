@@ -1,5 +1,5 @@
 # Clones the repos in corpus/corpus.json at their pinned SHAs into ../ranvier-fsharp-corpus/<name>
-# and restores each project. Safe to re-run.
+# restores each project and builds it in Debug, so its project references exist on disk. Safe to re-run.
 param(
     [string[]]$Only = @()
 )
@@ -62,6 +62,12 @@ foreach ($entry in $corpus.repos) {
     }
 
     Invoke-Native dotnet @('restore', $entry.project) $dir
+
+    # ProjectSpec hands the compiler the Debug reference assemblies of referenced projects, so they must exist. Built from this
+    # repository (cwd) so its global.json picks the SDK, not the clone's; incremental, so a re-run is cheap.
+    $project = Join-Path $dir ($entry.project -replace "/", [IO.Path]::DirectorySeparatorChar)
+    Invoke-Native dotnet @("build", $project, "-c", "Debug", "--no-restore", "-v", "q", "-nologo") $repoRoot
+    Write-Host "built $($entry.project) (Debug) with its project references"
     }
     catch {
         Write-Warning "$($entry.name) failed: $_"

@@ -92,6 +92,22 @@ module ProjectSpec =
               OtherOptions = p.OtherOptions
               ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName) }
 
+    /// The `-r:` assemblies that are not on disk. A project reference whose project was never built shows up here.
+    let missingReferences (spec: ProjectSpec) : string list =
+        spec.OtherOptions
+        |> List.choose (fun o -> if o.StartsWith "-r:" then Some(o.Substring 3) else None)
+        |> List.distinct
+        |> List.filter (fun r -> not (File.Exists r))
+
+    let private requireReferences (spec: ProjectSpec) =
+        match missingReferences spec with
+        | [] -> spec
+        | missing ->
+            let listed = String.Join("\n", missing |> List.map (fun m -> "  " + m))
+
+            failwith
+                $"{spec.ProjectFile}: {missing.Length} referenced assemblies are not on disk (build the referenced projects, build/fetch-corpus.ps1 does it for the corpus):\n{listed}"
+
     let load (fsproj: string) : Task<ProjectSpec> =
         task {
             let fsproj = Path.GetFullPath fsproj
@@ -110,7 +126,7 @@ module ProjectSpec =
                     None
 
             match cached with
-            | Some spec -> return spec
+            | Some spec -> return requireReferences spec
             | None ->
                 if not (File.Exists(assetsPath fsproj)) then
                     do! restore fsproj
@@ -131,7 +147,7 @@ module ProjectSpec =
                     with _ ->
                         ()
 
-                return spec
+                return requireReferences spec
         }
 
     let toFcsOptions (spec: ProjectSpec) : FSharpProjectOptions =

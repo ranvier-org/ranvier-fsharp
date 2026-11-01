@@ -111,6 +111,48 @@ let tests =
               Expect.isEmpty leftovers "temp file removed"
           }
 
+          test "missingReferences names -r: paths that are not on disk" {
+              let present = Path.Combine(tinyDir, "A.fs")
+              let absent = Path.Combine(tinyDir, "obj", "nowhere", "Lib.dll")
+
+              let spec =
+                  { ProjectFile = "p.fsproj"
+                    SourceFiles = []
+                    OtherOptions = [ "--x"; $"-r:{present}"; $"-r:{absent}"; $"-r:{absent}" ]
+                    ReferencedProjects = [] }
+
+              Expect.equal (ProjectSpec.missingReferences spec) [ absent ] "only the absent one, once"
+          }
+
+          testTask "load fails naming the output of a referenced project that was never built" {
+              use copy = copyTiny ()
+              // The library sits in a subdirectory of the copy and is never built.
+              let libDir = Path.Combine(copy.Dir, "Lib")
+              Directory.CreateDirectory libDir |> ignore
+              File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet x = 1\n")
+
+              File.WriteAllText(
+                  Path.Combine(libDir, "Lib.fsproj"),
+                  """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
+</Project>"""
+              )
+
+              File.WriteAllText(
+                  copy.Project,
+                  File.ReadAllText(copy.Project).Replace("</Project>", "  <ItemGroup><ProjectReference Include=\"Lib/Lib.fsproj\" /></ItemGroup>\n</Project>")
+              )
+
+              let! outcome = ProjectSpec.load copy.Project |> Async.AwaitTask |> Async.Catch
+
+              match outcome with
+              | Choice1Of2 _ -> failtest "load succeeded although Lib was never built"
+              | Choice2Of2 e ->
+                  Expect.stringContains e.Message "Lib.dll" "names the missing assembly"
+                  Expect.stringContains e.Message "Tiny.fsproj" "names the project"
+          }
+
           testTask "loads the corpus projects" {
               let repoRoot = DirectoryInfo(tinyDir).Parent.Parent.Parent
               let corpusRoot = Path.Combine(repoRoot.Parent.FullName, "ranvier-fsharp-corpus")

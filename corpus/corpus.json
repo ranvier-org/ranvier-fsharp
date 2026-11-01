@@ -12,7 +12,8 @@
       "url": "https://github.com/ionide/FsAutoComplete.git",
       "tag": null,
       "sha": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
-      "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj"
+      "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+      "notes": "fetch-corpus.ps1 builds the project in Debug (builds FsAutoComplete.Logging, whose obj/Debug/net10.0/ref assembly ProjectSpec passes as -r:)."
     },
     {
       "name": "large",
@@ -22,7 +23,7 @@
       "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
       "prepare": ["dotnet", "fsi", "build.fsx", "-p", "Init"],
       "prepareUnless": ".deps",
-      "notes": "Fantomas.FCS runs 'build.fsx -p Init' during restore, which fails under MSBuild (fsi nuget resolution); the script runs it up front outside MSBuild, and the restore target then skips because .deps exists. The repo pins SDK 11.0.100-rc.2, which is not installed, so the script idempotently rewrites the clone's global.json to 10.0.100 with rollForward latestMajor (the clone is dirty by that one file)."
+      "notes": "fetch-corpus.ps1 also builds the project in Debug (builds Fantomas.FCS, whose artifacts/obj/Fantomas.FCS/debug/ref assembly ProjectSpec passes as -r:). Fantomas.FCS runs 'build.fsx -p Init' during restore, which fails under MSBuild (fsi nuget resolution); the script runs it up front outside MSBuild, and the restore target then skips because .deps exists. The repo pins SDK 11.0.100-rc.2, which is not installed, so the script idempotently rewrites the clone's global.json to 10.0.100 with rollForward latestMajor (the clone is dirty by that one file)."
     }
   ]
 }

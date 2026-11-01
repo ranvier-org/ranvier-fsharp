@@ -9,7 +9,8 @@ module Cli =
         """usage:
   rfs-harness run --scenario <glob> --out <dir> [--servers servers.json] [--server <name>...]
                   [--corpus <dir>] [--quiet-ms <n>] [--step-timeout-s <n>]
-  rfs-harness compare <dirA> <dirB> [--out compare.md]"""
+  rfs-harness compare <dirA> <dirB> [--out compare.md]
+  rfs-harness verify-corpus [--manifest corpus/corpus.json] [--corpus <dir>]"""
 
     type private Args =
         { Positional: string list
@@ -171,6 +172,48 @@ module Cli =
             | _ -> return usageError "compare takes exactly two result directories"
         }
 
+    /// Checks each corpus project unedited with the oracle: any error means the corpus is not set up (a missing
+    /// reference, say), and every measurement against it would be meaningless.
+    let private verifyCorpusCommand (args: Args) : Task<int> =
+        task {
+            let manifest = single args "--manifest" |> Option.defaultValue "corpus/corpus.json"
+            let corpus = single args "--corpus" |> Option.defaultValue "../ranvier-fsharp-corpus" |> Path.GetFullPath
+
+            let repos =
+                try
+                    (System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText manifest)).["repos"].AsArray()
+                with e ->
+                    usageError $"cannot read %s{manifest} (%s{e.Message})"
+
+            let oracle = OracleClient.start().GetAwaiter().GetResult()
+            let mutable failed = false
+
+            try
+                for repo in repos do
+                    let name = repo["name"].GetValue<string>()
+
+                    let project =
+                        Path.Combine(corpus, name, repo["project"].GetValue<string>().Replace('/', Path.DirectorySeparatorChar))
+
+                    try
+                        let! diagnostics = oracle.Check project Map.empty
+                        let errors = diagnostics |> List.filter (fun d -> d.Severity = 1)
+                        printfn "%s: %d errors, %d other diagnostics" name errors.Length (diagnostics.Length - errors.Length)
+
+                        for d in errors |> List.truncate 20 do
+                            printfn "  %s:%d:%d %s %s" d.File (d.Range.Start.Line + 1) (d.Range.Start.Character + 1) d.Code d.Message
+
+                        if not errors.IsEmpty then
+                            failed <- true
+                    with e ->
+                        eprintfn "%s: %s" name e.Message
+                        failed <- true
+            finally
+                (oracle :> IAsyncDisposable).DisposeAsync().AsTask().GetAwaiter().GetResult()
+
+            return if failed then 1 else 0
+        }
+
     /// Exit codes: 0 success, 1 a run had failing steps, 2 bad usage.
     let execute (argv: string[]) : Task<int> =
         task {
@@ -178,7 +221,8 @@ module Cli =
                 match List.ofArray argv with
                 | "run" :: rest -> return! runCommand (parse rest)
                 | "compare" :: rest -> return! compareCommand (parse rest)
-                | _ -> return usageError "expected 'run' or 'compare'"
+                | "verify-corpus" :: rest -> return! verifyCorpusCommand (parse rest)
+                | _ -> return usageError "expected 'run', 'compare' or 'verify-corpus'"
             with Usage message ->
                 eprintfn "%s\n%s" message usage
                 return 2
