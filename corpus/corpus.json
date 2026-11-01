@@ -19,7 +19,10 @@
       "url": "https://github.com/fsprojects/fantomas.git",
       "tag": "v8.1.0",
       "sha": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
-      "project": "src/Fantomas.Core/Fantomas.Core.fsproj"
+      "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+      "prepare": ["dotnet", "fsi", "build.fsx", "-p", "Init"],
+      "prepareUnless": ".deps",
+      "notes": "Fantomas.FCS runs 'build.fsx -p Init' during restore, which fails under MSBuild (fsi nuget resolution); the script runs it up front outside MSBuild, and the restore target then skips because .deps exists. The repo pins SDK 11.0.100-rc.2, which is not installed, so the script idempotently rewrites the clone's global.json to 10.0.100 with rollForward latestMajor (the clone is dirty by that one file)."
     }
   ]
 }

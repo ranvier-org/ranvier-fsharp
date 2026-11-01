@@ -57,6 +57,10 @@ foreach ($entry in $corpus.repos) {
         Invoke-Native dotnet @('paket', 'restore') $dir
     }
 
+    if ($entry.prepare -and -not (Test-Path (Join-Path $dir $entry.prepareUnless))) {
+        Invoke-Native $entry.prepare[0] @($entry.prepare | Select-Object -Skip 1) $dir
+    }
+
     Invoke-Native dotnet @('restore', $entry.project) $dir
     }
     catch {
