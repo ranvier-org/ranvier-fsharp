@@ -27,6 +27,15 @@ let private tiny =
          }
          |> Async.StartAsTask)
 
+/// A context of its own: the #nowarn scopes a parse records are the project's, by file, so a test that parses C.fs
+/// with a #nowarn must not share a context with tests that parse other versions of C.fs at the same time.
+let private ownTiny () =
+    async {
+        let! t = tiny.Value |> Async.AwaitTask
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions t.Spec)
+        return { t with Context = ctx }
+    }
+
 let private split (source: string) =
     async {
         let! t = tiny.Value |> Async.AwaitTask
@@ -403,4 +412,181 @@ let contentTests =
 
               let m = DeclarationChecker.Content(decls |> Array.find (named "M"))
               Expect.equal m.Uses [||] "the module row has none of its declarations' uses"
+          }
+
+          testAsync "indexing lists the indexer members" {
+              let! c = content "let i (t: int[]) = t[0]" (named "i")
+              Expect.containsAll c.MemberUses [ "Item"; "GetReverseIndex" ] "t[0]"
+          }
+
+          testAsync "assigning through an index lists the indexer members" {
+              let! c = content "let s (t: int[]) = t[0] <- 1" (named "s")
+              Expect.containsAll c.MemberUses [ "Item"; "SetSlice" ] "t[0] <- v"
+          }
+
+          testAsync "slicing lists the slice members" {
+              let! c = content "let sl (t: int[]) = t[1..2]" (named "sl")
+              Expect.containsAll c.MemberUses [ "GetSlice"; "SetSlice" ] "t[1..2]"
+          }
+
+          testAsync "return! and yield! list the Final builder methods" {
+              let! r = content "let r = b { return! 1 }" (named "r")
+              Expect.containsAll r.MemberUses [ "ReturnFrom"; "ReturnFromFinal" ] "return!"
+              let! y = content "let y = b { yield! xs }" (named "y")
+              Expect.containsAll y.MemberUses [ "YieldFrom"; "YieldFromFinal" ] "yield!"
+          } ]
+
+/// The rows of a nested-module file checked, then some rows re-checked in order (each from the EnvAfter of the row
+/// before it, re-checked or not), and the file finished with the old results of the others.
+let private recheckRows (original: string) (edited: string) (rechecked: int list) =
+    async {
+        let! t = tiny.Value |> Async.AwaitTask
+        let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", original ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
+        let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+        Expect.equal (keys editedDecls) (keys c.Declarations) "the edit keeps the keys"
+        let results = Array.copy c.Results
+
+        for i in rechecked do
+            let envBefore = if i = 0 then c.Env0 else results[i - 1].EnvAfter
+            results[i] <- DeclarationChecker.CheckDeclaration(c.Start, envBefore, editedDecls[i], CancellationToken.None)
+
+        let fileResult = DeclarationChecker.FinishFile(c.Start, results)
+        let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
+        let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
+        Expect.isEmpty diff $"re-checked file diagnostics equal a fresh full check:\n%s{String.concat Environment.NewLine diff}"
+        return expected, c, editedDecls, fileResult
+    }
+
+let private suffixed =
+    """module Tiny.C
+
+module X =
+    let a = 1
+
+let c: string = X.a
+"""
+
+let private signatureAfterModule =
+    """module Tiny.C
+
+module M =
+    let a = Tiny.B.two + 1
+
+let c = M.a
+
+module N =
+    let d: string = c
+"""
+
+let private nowarnInTheMiddle =
+    """module Tiny.C
+
+let f x = match x with 1 -> 2
+
+#nowarn "25"
+
+let g x = match x with 1 -> 2
+"""
+
+[<Tests>]
+let headerTests =
+    testList
+        "Content.Headers"
+        [ testAsync "each declaration names the header it is directly inside" {
+              let! decls = split nested
+              let within name = (decls |> Array.find (named name)).Within |> Option.map _.Name
+              Expect.equal (within "M") None "M is in no module"
+              Expect.equal (within "a") (Some "M") "a is in M"
+              Expect.equal (within "Inner") (Some "M") "Inner is in M"
+              Expect.equal (within "e") (Some "Inner") "e is in Inner"
+              Expect.equal (within "c") None "c is after M"
+          }
+
+          testAsync "re-checking a header and every declaration under it matches the file check" {
+              let edited = nested.Replace("module M =", "module internal M =")
+              let! expected, c, editedDecls, _ = recheckRows nested edited [ 0; 1; 2; 3; 4 ]
+              Expect.isFalse (editedDecls[0].IsUnchangedFrom c.Declarations[0]) "the header changed"
+              Expect.isTrue (editedDecls[1].IsUnchangedFrom c.Declarations[1]) "a did not"
+              Expect.isNonEmpty expected "the file check reports c's type error"
+          }
+
+          testAsync "a sibling type after a module changes the module's header inputs" {
+              let edited = suffixed + "\ntype X = { F: int }\n"
+              let! before = split suffixed
+              let! after = split edited
+              Expect.equal after[0].Text before[0].Text "the header's text is the same"
+              Expect.notEqual after[0].HeaderInputs before[0].HeaderInputs "its inputs are not"
+              Expect.isFalse (after[0].IsUnchangedFrom before[0]) "so it counts as changed"
+              Expect.isTrue (after[1].IsUnchangedFrom before[1]) "a is unchanged"
+          }
+
+          testAsync "re-checking a header and its declarations after a sibling type is added matches the file check" {
+              let! t = tiny.Value |> Async.AwaitTask
+              let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", suffixed ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
+              let edited = suffixed + "\ntype X = { F: int }\n"
+              let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+              Expect.equal (keys editedDecls |> List.take 3) (keys c.Declarations) "the same rows, then the type"
+
+              // The header and its declaration again, then c, which uses X by name and whose environment holds the
+              // module, then the new type
+              let check envBefore i = DeclarationChecker.CheckDeclaration(c.Start, envBefore, editedDecls[i], CancellationToken.None)
+              let header = check c.Env0 0
+              let a = check header.EnvAfter 1
+              let c' = check a.EnvAfter 2
+              let typeX = check c'.EnvAfter 3
+              let fileResult = DeclarationChecker.FinishFile(c.Start, [| header; a; c'; typeX |])
+
+              let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal a fresh full check:\n%s{String.concat Environment.NewLine diff}"
+              Expect.isNonEmpty expected "the file check reports c's type error"
+
+              let x =
+                  fileResult.CheckResults.PartialAssemblySignature.Entities
+                  |> Seq.collect (fun e -> e.NestedEntities)
+                  |> Seq.find (fun e -> e.IsFSharpModule && e.DisplayName = "X")
+
+              Expect.equal x.CompiledName "XModule" "the module now has the Module suffix"
+          }
+
+          testAsync "re-checking only the first declaration after a nested module matches the file check" {
+              let edited = nested.Replace("let c: string = M.b", "let c: string = string (match M.b with 1 -> 2)")
+              let! _, _, _, fileResult = recheckRows nested edited [ 5 ]
+              Expect.isTrue (fileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 25)) "the edit's warning"
+          }
+
+          testAsync "re-checking a declaration whose signature changed after a nested module, and its dependents, matches the file check" {
+              let edited = signatureAfterModule.Replace("let c = M.a", "let c = string M.a")
+              // c's dependent d is in N: N's header is checked again too, for the environment d is checked in
+              let! expected, c, _, fileResult = recheckRows signatureAfterModule edited [ 2; 3; 4 ]
+              Expect.isTrue (c.FileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1)) "before, d had a type error"
+              Expect.isEmpty expected "after, the file check reports nothing"
+              Expect.notEqual fileResult.Fingerprints[c.Declarations[2].Key] c.FileResult.Fingerprints[c.Declarations[2].Key] "c's signature changed"
+          }
+
+          testAsync "a #nowarn applies from its line on, as in the file check" {
+              let! t = ownTiny ()
+              let texts = sources t.Spec (Map.ofList [ "C.fs", nowarnInTheMiddle ])
+              let c = declByDecl t.Context t.Spec texts |> List.find (fun f -> f.File.EndsWith "C.fs")
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File c.FileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
+              Expect.equal [ for d in expected -> d.ErrorNumber, d.Range.StartLine ] [ 25, 3 ] "only the warning before it"
+              Expect.equal [ for d in c.Declarations -> d.Key.Name ] [ "f"; "g" ] "a #nowarn is not a declaration"
+          }
+
+          testAsync "adding a #nowarn applies to old results when finishing again" {
+              let! t = ownTiny ()
+              // The #nowarn replaces the blank line between f and g, so no declaration moves or changes
+              let original = nowarnInTheMiddle.Replace("#nowarn \"25\"\n\n", "")
+              let edited = nowarnInTheMiddle.Replace("\n\n#nowarn \"25\"\n\n", "\n#nowarn \"25\"\n")
+              let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", original ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
+              Expect.equal (c.FileResult.Diagnostics |> Array.filter (fun d -> d.ErrorNumber = 25)).Length 2 "both warn before"
+
+              let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+              Expect.isTrue (Array.forall2 (fun (a: ParsedDeclaration) b -> a.IsUnchangedFrom b) editedDecls c.Declarations) "no declaration changed"
+              let fileResult = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
+              Expect.equal expected.Length 1 "only f warns"
           } ]
