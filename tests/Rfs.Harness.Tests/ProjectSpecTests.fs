@@ -15,6 +15,28 @@ let private tinyDir =
 let private tinyProject = Path.Combine(tinyDir, "Tiny.fsproj")
 let private cachePath = Path.Combine(tinyDir, "obj", "rfs-spec.json")
 
+type private TinyCopy(dir: string) =
+    member _.Dir = dir
+    member _.Project = Path.Combine(dir, "Tiny.fsproj")
+
+    interface IAsyncDisposable with
+        member _.DisposeAsync() =
+            (try
+                Directory.Delete(dir, true)
+             with _ ->
+                 ())
+
+            Threading.Tasks.ValueTask()
+
+let private copyTiny () =
+    let dir = Path.Combine(Path.GetTempPath(), "rfs-tiny-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+
+    for f in Directory.GetFiles tinyDir do
+        File.Copy(f, Path.Combine(dir, Path.GetFileName f))
+
+    new TinyCopy(dir)
+
 [<Tests>]
 let tests =
     testList
@@ -49,13 +71,53 @@ let tests =
               Expect.equal (ProjectSpec.ofJson (ProjectSpec.toJson spec)) spec "round trip"
           }
 
+          // These two mutate the cache and the fsproj, so they work on a private copy of the fixture.
           testTask "stale cache is ignored when the fsproj is newer" {
-              let! first = ProjectSpec.load tinyProject
-              File.WriteAllText(cachePath, """{"ProjectFile":"stale.fsproj","SourceFiles":[],"OtherOptions":[],"ReferencedProjects":[]}""")
-              File.SetLastWriteTimeUtc(cachePath, DateTime.UtcNow.AddHours -1.0)
-              File.SetLastWriteTimeUtc(tinyProject, DateTime.UtcNow)
-              let! second = ProjectSpec.load tinyProject
+              use copy = copyTiny ()
+              let! first = ProjectSpec.load copy.Project
+              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              File.WriteAllText(cache, (ProjectSpec.toJson { first with SourceFiles = [ "stale.fs" ] }))
+              File.SetLastWriteTimeUtc(cache, DateTime.UtcNow.AddHours -1.0)
+              File.SetLastWriteTimeUtc(copy.Project, DateTime.UtcNow)
+              let! second = ProjectSpec.load copy.Project
               Expect.equal second first "stale cache ignored"
+          }
+
+          testTask "cache with a missing or different format version is ignored" {
+              use copy = copyTiny ()
+              let! first = ProjectSpec.load copy.Project
+              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let stale = { first with SourceFiles = [ "stale.fs" ] }
+
+              for mutate in
+                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":1,", "\"FormatVersion\":0,"))
+                    (fun j -> j.Replace("\"FormatVersion\":1,", "")) ] do
+                  let json = mutate (ProjectSpec.toJson stale)
+                  Expect.notEqual json (ProjectSpec.toJson stale) "mutation applied"
+                  File.WriteAllText(cache, json)
+                  File.SetLastWriteTimeUtc(cache, DateTime.UtcNow.AddMinutes 1.0)
+                  let! again = ProjectSpec.load copy.Project
+                  Expect.equal again first "reloaded"
+          }
+
+          testTask "loads the corpus projects" {
+              let repoRoot = DirectoryInfo(tinyDir).Parent.Parent.Parent
+              let corpusRoot = Path.Combine(repoRoot.Parent.FullName, "ranvier-fsharp-corpus")
+
+              if not (Directory.Exists corpusRoot) then
+                  skiptest $"corpus not fetched at {corpusRoot}; run build/fetch-corpus.ps1"
+
+              let manifest =
+                  System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(repoRoot.FullName, "corpus", "corpus.json")))
+
+              for repo in manifest["repos"].AsArray() do
+                  let name = repo["name"].GetValue<string>()
+                  let project = Path.Combine(corpusRoot, name, repo["project"].GetValue<string>().Replace('/', Path.DirectorySeparatorChar))
+                  let! spec = ProjectSpec.load project
+                  printfn "corpus %s: %d source files, %d options" name spec.SourceFiles.Length spec.OtherOptions.Length
+                  Expect.isGreaterThan spec.SourceFiles.Length 0 $"{name}: has source files"
+                  Expect.isTrue (spec.SourceFiles |> List.forall File.Exists) $"{name}: sources exist"
+                  Expect.isTrue (spec.OtherOptions |> List.exists (fun o -> o.StartsWith "-r:" && o.Contains "FSharp.Core.dll")) $"{name}: has -r: FSharp.Core"
           }
 
           test "toFcsOptions maps fields" {

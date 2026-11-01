@@ -16,11 +16,15 @@ type ProjectSpec =
 
 module ProjectSpec =
 
+    // Bump when the cache content or the way `load` derives it changes; a mismatch is a cache miss.
+    let private formatVersion = 1
+
     let toJson (spec: ProjectSpec) =
         let arr (xs: string list) =
             JsonArray(xs |> List.map (fun x -> JsonValue.Create x :> JsonNode) |> Array.ofList)
 
         let o = JsonObject()
+        o["FormatVersion"] <- JsonValue.Create formatVersion
         o["ProjectFile"] <- JsonValue.Create spec.ProjectFile
         o["SourceFiles"] <- arr spec.SourceFiles
         o["OtherOptions"] <- arr spec.OtherOptions
@@ -29,6 +33,10 @@ module ProjectSpec =
 
     let ofJson (json: string) : ProjectSpec =
         let root = JsonNode.Parse json
+
+        if isNull root["FormatVersion"] || root["FormatVersion"].GetValue<int>() <> formatVersion then
+            failwith "cache format version mismatch"
+
         let strings (name: string) = [ for n in root[name].AsArray() -> n.GetValue<string>() ]
 
         { ProjectFile = root["ProjectFile"].GetValue<string>()
@@ -105,7 +113,9 @@ module ProjectSpec =
 
                 let spec = loadFresh fsproj
                 Directory.CreateDirectory(objDir fsproj) |> ignore
-                File.WriteAllText(cachePath fsproj, toJson spec)
+                let tmp = cachePath fsproj + "." + Guid.NewGuid().ToString("N") + ".tmp"
+                File.WriteAllText(tmp, toJson spec)
+                File.Move(tmp, cachePath fsproj, true)
                 return spec
         }
 
