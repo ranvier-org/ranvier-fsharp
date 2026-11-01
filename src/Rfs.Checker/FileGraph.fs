@@ -372,21 +372,8 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
     /// Waits for a declaration whose check is running, so a re-check sees its new result.
     member private _.AwaitSettled(keys: seq<DeclarationKey>) =
-        let keys = Array.ofSeq keys
-        file.TouchChecks keys
-
         for k in keys do
             (file.RowOf k).Check.Value |> ignore
-
-    /// C2 interim (Ranvier links a source only after pulling it, so a source dirtied while it is first pulled in a run
-    /// never notifies the reader): every source a body may suspend on is linked with TryValue before the first read
-    /// that can suspend.
-    member private _.TouchTokens(tokenKeys: DeclarationKey[], identityKeys: DeclarationKey[]) =
-        for k in tokenKeys do
-            (file.RowOf k).Token.TryValue |> ignore
-
-        for k in identityKeys do
-            (file.RowOf k).Latest.TryValue |> ignore
 
     /// The declarations of the file a result depends on through types, as of its latest finish (R13).
     member private _.TypedOf(c: RowCheck) =
@@ -410,7 +397,6 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 Array.concat [ deps.Named; deps.Typed; typed |> Array.filter (fun k -> file.IsBefore(k, key)) ]
                 |> Array.distinct
 
-            this.TouchTokens(tokenKeys, deps.Identity)
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
 
@@ -431,9 +417,6 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             if current then
                 Task.FromResult previous
             else
-                file.Start.TryValue |> ignore
-                file.TouchChecks(Seq.append tokenKeys deps.Identity)
-                file.TouchEarlier(key, start)
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys deps.Identity)
                 let earlier = file.Earlier(key, start)
@@ -494,7 +477,6 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 )
 
             let identityKeys = outside (seq { for _, _, deps in members do yield! deps.Identity })
-            this.TouchTokens(tokenKeys, identityKeys)
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
 
@@ -521,9 +503,6 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             if current then
                 Task.FromResult previous
             else
-                file.Start.TryValue |> ignore
-                file.TouchChecks(Seq.append tokenKeys identityKeys)
-                file.TouchEarlier(key, start)
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
                 let earlier = file.Earlier(key, start)
@@ -579,26 +558,6 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
         match rows.TryGetValue key with
         | true, row -> row
         | _ -> invalidOp $"%A{key} is not a declaration of %s{path}"
-
-    /// Links the checks of `keys` with TryValue (C2 interim, see Row.TouchTokens).
-    member this.TouchChecks(keys: seq<DeclarationKey>) =
-        for k in keys do
-            (this.RowOf k).Check.TryValue |> ignore
-
-    /// Links with TryValue (C2 interim) the checks of the declarations before `key` that Earlier will wait for: those
-    /// with no result from `start`. Only those, so other earlier checks settling do not restart this one.
-    member this.TouchEarlier(key: DeclarationKey, start: StartInfo) =
-        let order = untrack (fun () -> this.Order.Value)
-
-        match order.TryPosition key with
-        | ValueSome position ->
-            for i in 0 .. position - 1 do
-                let row = this.RowOf order.Keys[i]
-                let c = row.Check.Peek
-
-                if isNull c || not (Nodes.same c.Start start) then
-                    row.Check.TryValue |> ignore
-        | ValueNone -> ()
 
     /// The current results of the declarations before `key`, all from `start`. One with no result yet, or one from
     /// another FileStart, is waited for: the environment is assembled from every earlier result. The others are read
@@ -788,11 +747,7 @@ module internal FileNodes =
         // What the file is finished from, kept as the same object while every part is: pending while any part is.
         let inputs =
             createMemo (fun previous ->
-                // C2 interim: link every source before the first read that can suspend
-                parsed.TryValue |> ignore
-                start.TryValue |> ignore
                 let order = shared.Order.Value
-                shared.TouchChecks order.Keys
                 let p = parsed.Value
                 let s = start.Value
                 let checks = order.Keys |> Array.map (fun k -> let row = shared.RowOf k in row, row.Check.Value)
