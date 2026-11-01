@@ -2,13 +2,13 @@
   "server": "fsac-core-tc",
   "scenario": "mid-signature",
   "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
-  "startedAt": "2026-11-01T16:32:20.5186033Z",
-  "coldMs": 6869.5804,
+  "startedAt": "2026-11-01T18:12:46.0737873Z",
+  "coldMs": 5041.1425,
   "steps": [
     {
       "index": 0,
       "step": "open src/FsAutoComplete.Core/DocumentationFormatter.fs",
-      "latencyMs": 4661.0832,
+      "latencyMs": 2791.9864,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": null,
@@ -17,7 +17,7 @@
     {
       "index": 1,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #1 fwd",
-      "latencyMs": 338.3085,
+      "latencyMs": 317.4651,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -26,7 +26,7 @@
     {
       "index": 2,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #2 inv",
-      "latencyMs": 104.3306,
+      "latencyMs": 101.8617,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -35,7 +35,7 @@
     {
       "index": 3,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #3 fwd",
-      "latencyMs": 69.2742,
+      "latencyMs": 54.4586,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -44,7 +44,7 @@
     {
       "index": 4,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #4 inv",
-      "latencyMs": 67.5029,
+      "latencyMs": 58.4743,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -53,7 +53,7 @@
     {
       "index": 5,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #5 fwd",
-      "latencyMs": 71.4654,
+      "latencyMs": 86.0954,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -62,7 +62,7 @@
     {
       "index": 6,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #6 inv",
-      "latencyMs": 61.9638,
+      "latencyMs": 65.3564,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -71,7 +71,7 @@
     {
       "index": 7,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #7 fwd",
-      "latencyMs": 57.8856,
+      "latencyMs": 69.5179,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -80,7 +80,7 @@
     {
       "index": 8,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #8 inv",
-      "latencyMs": 417.3767,
+      "latencyMs": 59.3903,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -89,7 +89,7 @@
     {
       "index": 9,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #9 fwd",
-      "latencyMs": 64.7235,
+      "latencyMs": 74.4618,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -98,14 +98,14 @@
     {
       "index": 10,
       "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #10 inv",
-      "latencyMs": 65.3652,
+      "latencyMs": 67.0962,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
       "error": null
     }
   ],
-  "peakWorkingSetMb": 767.3515625,
-  "allocatedMb": 1990.2990646362305,
+  "peakWorkingSetMb": 747.18359375,
+  "allocatedMb": 1872.309226989746,
   "gen2": 11
 }

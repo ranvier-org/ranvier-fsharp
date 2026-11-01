@@ -2,7 +2,16 @@
 
 Baseline numbers for FsAutoComplete upstream `main` at
 [`4c33a2a7223ea1a885c6bf91e92c7c967c524597`](https://github.com/ionide/FsAutoComplete/commit/4c33a2a7223ea1a885c6bf91e92c7c967c524597),
-4 server configurations x 15 scenarios = 60 result files in this directory, no failed steps.
+4 server configurations x 15 scenarios = 60 result files, plus the 2 big-file scenarios on the two core
+configurations = 64 result files in this directory, no failed steps.
+
+Project references are built: `build/fetch-corpus.ps1` builds every corpus project in Debug (Fantomas.FCS for
+large, FsAutoComplete.Logging for mid), `ProjectSpec.load` fails when a `-r:` assembly is missing, and
+`rfs-harness verify-corpus` reports 0 oracle errors for small, mid and large. An earlier pass of this baseline
+was made without those builds, so the oracle checked Fantomas.Core with 2633 errors; the files for the
+`mid` and `large` body and signature scenarios and the big-file scenarios were re-run after the fix and
+replace the earlier ones. The cold, requests and openmany files (and the whole small corpus) were not re-run: the
+oracle diffs they record are 0 steps, because they have no edits, and FSAC's own numbers do not depend on the oracle.
 
 ## Machine
 
@@ -52,6 +61,11 @@ member body:
 | mid | FsAutoComplete.Core | `DocumentationFormatter.fs` (30 of 54), LF |
 | large | Fantomas.Core | `Queue.fs` (12 of 33), CRLF; the files nearer the middle have an `.fsi`, no literal or no public function |
 
+Big file (`large-bigfile-wide`, `large-bigfile-narrow`, core configurations only): `CodePrinter.fs` of
+Fantomas.Core, 5324 lines, CRLF, after its `CodePrinter.fsi`. It is `module internal rec`, so the whole file is one
+recursive group, and it has an `.fsi`. 20 toggled edits each: wide changes `IndentSize < 4` to `< 5` (line 2078, deep in the file), narrow changes `"cannot ..."` to `"Cannot ..."` in an error
+message string (line 41).
+
 - cold: open the file.
 - body: 20 toggled edits of a literal in one body (`"cannot ..."` -> `"Cannot ..."`, `3` -> `4`, `31` -> `37`).
 - signature: 10 toggled edits that change a public function's return type (`useTransaction`: `|> string`,
@@ -81,7 +95,7 @@ pass was interrupted.
 
 The oracle checks with the FCS fork, and FSAC uses FCS 43.12.402, so their messages can differ (for example
 `--strict-indentation` advice, or the wording of a type mismatch). Diffs are recorded, not enforced. Every run
-here recorded 0 oracle diffs. The edits in these scenarios leave error positions and messages that both
+here recorded 0 oracle diffs, with the references built (see top) and compared per file after every edit. The edits in these scenarios leave error positions and messages that both
 compilers agree on. A separate CRLF check (an edit that turns a literal into a type error, and one that inserts
 a CRLF line break) put FSAC's diagnostics at the same lines and columns as the oracle's in both CRLF files; the
 only differences there were in message wording.
@@ -93,18 +107,34 @@ only differences there were in message wording.
   among them, and analyzers run only after the compiler's publish for that version. Traces show one publish per
   edit in the core configuration (`F# Compiler` only). In the default configuration there are two: the
   compiler's, then the parentheses analyzer's (Publishes/edit 2.00).
+- On the big file FSAC with the background compiler needs 225-242 ms p50 per edit against 79-85 ms with the
+  transparent compiler (tables below), and peaks at about 1.3 GB against 0.6 GB.
 - FSAC re-checks only the open file, so the large corpus's edits (file 12 of 33) are cheap. Its cold and
   openmany numbers carry the project load, which includes the Fantomas.FCS project reference.
 
 ## fsac-core-bg vs fsac-core-tc
 Runs: `fsac-core-bg` and `fsac-core-tc`. Latencies are nearest-rank percentiles over steps that did not fail.
 
+### large-bigfile-narrow
+
+| Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fsac-core-bg | fsac-core-bg | 225.4 | 292.7 | 9563.6 | 1.00 | - | 1313.2 | 9276.9 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 84.5 | 129.8 | 5991.0 | 1.00 | - | 616.5 | 2676.3 | 0 | 0 |
+
+### large-bigfile-wide
+
+| Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fsac-core-bg | fsac-core-bg | 241.7 | 515.8 | 14907.4 | 1.00 | - | 1308.6 | 9260.9 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 79.5 | 142.9 | 5839.5 | 1.00 | - | 615.9 | 2676.4 | 0 | 0 |
+
 ### large-body
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-core-bg | fsac-core-bg | 20.4 | 32.4 | 10247.8 | 1.00 | - | 1090.8 | 5307.0 | 0 | 0 |
-| fsac-core-tc | fsac-core-tc | 42.5 | 82.1 | 11013.4 | 1.00 | - | 1163.1 | 5546.5 | 0 | 0 |
+| fsac-core-bg | fsac-core-bg | 22.5 | 31.2 | 10834.6 | 1.00 | - | 1083.3 | 5291.3 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 42.4 | 84.9 | 6518.6 | 1.00 | - | 492.4 | 1720.8 | 0 | 0 |
 
 ### large-cold
 
@@ -138,15 +168,15 @@ Request p50 ms
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-core-bg | fsac-core-bg | 22.1 | 69.5 | 10854.9 | 1.00 | - | 1051.7 | 5215.3 | 0 | 0 |
-| fsac-core-tc | fsac-core-tc | 44.8 | 139.9 | 11107.0 | 1.00 | - | 1129.8 | 5334.6 | 0 | 0 |
+| fsac-core-bg | fsac-core-bg | 21.2 | 65.8 | 9739.9 | 1.00 | - | 1019.8 | 5206.5 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 36.7 | 109.6 | 5979.3 | 1.00 | - | 465.9 | 1526.7 | 0 | 0 |
 
 ### mid-body
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-core-bg | fsac-core-bg | 86.7 | 252.2 | 7746.0 | 1.00 | - | 709.2 | 2700.2 | 0 | 0 |
-| fsac-core-tc | fsac-core-tc | 68.9 | 131.5 | 7070.3 | 1.00 | - | 768.1 | 2413.5 | 0 | 0 |
+| fsac-core-bg | fsac-core-bg | 87.5 | 291.1 | 9015.9 | 1.00 | - | 762.7 | 2656.1 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 74.9 | 261.0 | 6205.2 | 1.00 | - | 811.8 | 2266.0 | 0 | 0 |
 
 ### mid-cold
 
@@ -180,8 +210,8 @@ Request p50 ms
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-core-bg | fsac-core-bg | 81.6 | 318.5 | 7982.0 | 1.00 | - | 746.1 | 2107.2 | 0 | 0 |
-| fsac-core-tc | fsac-core-tc | 67.5 | 417.4 | 6869.6 | 1.00 | - | 767.4 | 1990.3 | 0 | 0 |
+| fsac-core-bg | fsac-core-bg | 85.5 | 251.5 | 6166.0 | 1.00 | - | 759.8 | 2114.2 | 0 | 0 |
+| fsac-core-tc | fsac-core-tc | 67.1 | 317.5 | 5041.1 | 1.00 | - | 747.2 | 1872.3 | 0 | 0 |
 
 ### small-body
 
@@ -224,7 +254,6 @@ Request p50 ms
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | fsac-core-bg | fsac-core-bg | 29.3 | 92.7 | 7479.8 | 1.00 | - | 453.9 | 1759.4 | 0 | 0 |
 | fsac-core-tc | fsac-core-tc | 47.6 | 137.8 | 7117.3 | 1.00 | - | 463.3 | 1781.1 | 0 | 0 |
-
 ## fsac-default-bg vs fsac-default-tc
 Runs: `fsac-default-bg` and `fsac-default-tc`. Latencies are nearest-rank percentiles over steps that did not fail.
 
@@ -232,8 +261,8 @@ Runs: `fsac-default-bg` and `fsac-default-tc`. Latencies are nearest-rank percen
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-default-bg | fsac-default-bg | 20.2 | 26.6 | 10202.3 | 2.00 | - | 1106.2 | 5285.3 | 0 | 0 |
-| fsac-default-tc | fsac-default-tc | 43.2 | 56.0 | 11175.0 | 2.00 | - | 1147.0 | 5541.4 | 0 | 0 |
+| fsac-default-bg | fsac-default-bg | 18.5 | 55.1 | 8745.2 | 2.00 | - | 1063.2 | 5304.5 | 0 | 0 |
+| fsac-default-tc | fsac-default-tc | 37.9 | 55.4 | 4948.2 | 2.00 | - | 512.7 | 1740.1 | 0 | 0 |
 
 ### large-cold
 
@@ -267,15 +296,15 @@ Request p50 ms
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-default-bg | fsac-default-bg | 22.2 | 92.1 | 10430.5 | 2.00 | - | 1056.5 | 5199.5 | 0 | 0 |
-| fsac-default-tc | fsac-default-tc | 42.1 | 105.0 | 11652.6 | 2.00 | - | 1090.9 | 5346.5 | 0 | 0 |
+| fsac-default-bg | fsac-default-bg | 23.0 | 99.7 | 11778.7 | 2.00 | - | 1067.6 | 5216.2 | 0 | 0 |
+| fsac-default-tc | fsac-default-tc | 45.9 | 122.3 | 7104.4 | 2.00 | - | 480.2 | 1534.3 | 0 | 0 |
 
 ### mid-body
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-default-bg | fsac-default-bg | 90.2 | 299.2 | 8652.4 | 2.00 | - | 752.6 | 2743.4 | 0 | 0 |
-| fsac-default-tc | fsac-default-tc | 69.0 | 112.9 | 7380.0 | 2.00 | - | 768.1 | 2463.4 | 0 | 0 |
+| fsac-default-bg | fsac-default-bg | 86.5 | 258.4 | 6594.9 | 2.00 | - | 743.6 | 2741.8 | 0 | 0 |
+| fsac-default-tc | fsac-default-tc | 61.8 | 101.7 | 4866.0 | 2.00 | - | 800.9 | 2320.4 | 0 | 0 |
 
 ### mid-cold
 
@@ -309,8 +338,8 @@ Request p50 ms
 
 | Run | Server | Edit p50 ms | Edit p95 ms | Cold ms | Publishes/edit | Decls/edit | Peak MB | Allocated MB | Oracle diffs | Failed steps |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fsac-default-bg | fsac-default-bg | 85.1 | 300.7 | 7747.8 | 2.00 | - | 720.2 | 2120.7 | 0 | 0 |
-| fsac-default-tc | fsac-default-tc | 64.6 | 327.8 | 5631.6 | 2.00 | - | 640.1 | 2022.4 | 0 | 0 |
+| fsac-default-bg | fsac-default-bg | 74.9 | 260.3 | 6179.2 | 2.00 | - | 747.5 | 2137.2 | 0 | 0 |
+| fsac-default-tc | fsac-default-tc | 56.7 | 334.6 | 4922.7 | 2.00 | - | 716.9 | 1937.8 | 0 | 0 |
 
 ### small-body
 

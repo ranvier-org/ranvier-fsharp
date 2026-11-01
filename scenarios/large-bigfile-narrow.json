@@ -1,0 +1,29 @@
+{
+  "name": "large-bigfile-narrow",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/CodePrinter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Fantomas.Core/CodePrinter.fs",
+        "range": {
+          "start": {
+            "line": 40,
+            "character": 18
+          },
+          "end": {
+            "line": 40,
+            "character": 24
+          }
+        },
+        "text": "Cannot",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

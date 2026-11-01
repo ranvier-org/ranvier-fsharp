@@ -1,0 +1,29 @@
+{
+  "name": "large-bigfile-wide",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/CodePrinter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Fantomas.Core/CodePrinter.fs",
+        "range": {
+          "start": {
+            "line": 2077,
+            "character": 71
+          },
+          "end": {
+            "line": 2077,
+            "character": 72
+          }
+        },
+        "text": "5",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

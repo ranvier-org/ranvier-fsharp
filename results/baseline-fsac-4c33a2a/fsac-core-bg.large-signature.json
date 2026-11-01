@@ -2,13 +2,13 @@
   "server": "fsac-core-bg",
   "scenario": "large-signature",
   "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
-  "startedAt": "2026-11-01T16:21:34.9667927Z",
-  "coldMs": 10854.939100000001,
+  "startedAt": "2026-11-01T18:18:30.5759907Z",
+  "coldMs": 9739.8596,
   "steps": [
     {
       "index": 0,
       "step": "open src/Fantomas.Core/Queue.fs",
-      "latencyMs": 8480.1807,
+      "latencyMs": 7645.8172,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": null,
@@ -17,7 +17,7 @@
     {
       "index": 1,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #1 fwd",
-      "latencyMs": 69.4661,
+      "latencyMs": 65.8061,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -26,7 +26,7 @@
     {
       "index": 2,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #2 inv",
-      "latencyMs": 23.5628,
+      "latencyMs": 45.7613,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -35,7 +35,7 @@
     {
       "index": 3,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #3 fwd",
-      "latencyMs": 24.6606,
+      "latencyMs": 25.2766,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -44,7 +44,7 @@
     {
       "index": 4,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #4 inv",
-      "latencyMs": 22.3957,
+      "latencyMs": 21.1653,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -53,7 +53,7 @@
     {
       "index": 5,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #5 fwd",
-      "latencyMs": 22.1343,
+      "latencyMs": 21.5921,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -62,7 +62,7 @@
     {
       "index": 6,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #6 inv",
-      "latencyMs": 17.666,
+      "latencyMs": 20.8416,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -71,7 +71,7 @@
     {
       "index": 7,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #7 fwd",
-      "latencyMs": 20.9511,
+      "latencyMs": 20.6862,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -80,7 +80,7 @@
     {
       "index": 8,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #8 inv",
-      "latencyMs": 20.9903,
+      "latencyMs": 19.1334,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -89,7 +89,7 @@
     {
       "index": 9,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #9 fwd",
-      "latencyMs": 18.2966,
+      "latencyMs": 21.337,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
@@ -98,14 +98,14 @@
     {
       "index": 10,
       "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #10 inv",
-      "latencyMs": 22.6011,
+      "latencyMs": 17.95,
       "publishes": 1,
       "declsChecked": null,
       "oracleDiff": [],
       "error": null
     }
   ],
-  "peakWorkingSetMb": 1051.66796875,
-  "allocatedMb": 5215.319633483887,
-  "gen2": 13
+  "peakWorkingSetMb": 1019.81640625,
+  "allocatedMb": 5206.485252380371,
+  "gen2": 11
 }
