@@ -143,6 +143,7 @@ let tests =
                     DeclarationKind.Value, "p"
                     DeclarationKind.Value, "describe"
                     DeclarationKind.Module, "Inner"
+                    DeclarationKind.Value, "four"
                     DeclarationKind.Exception, "Oops"
                     DeclarationKind.Value, "five" ]
                   "top-level declarations"
@@ -162,6 +163,7 @@ let tests =
                   [ for r in declResults -> r.Key.ModulePath, r.Key.Kind, r.Key.Name ]
                   [ [ "Tiny" ], DeclarationKind.Open, "System"
                     [ "Tiny" ], DeclarationKind.Module, "C"
+                    [ "Tiny"; "C" ], DeclarationKind.Value, "three"
                     [ "Tiny" ], DeclarationKind.Type, "T" ]
                   "namespace declarations"
 

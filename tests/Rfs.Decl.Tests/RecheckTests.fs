@@ -204,7 +204,8 @@ let tests =
           }
 
           testAsync "recheck one declaration in a namespace matches full check" {
-              let! _, _, fileResult = recheckOne inNamespace inNamespaceEdited 1
+              // The rows are One, one, Two, Three, three, Four, four: nested modules are split into their declarations
+              let! _, _, fileResult = recheckOne inNamespace inNamespaceEdited 2
               Expect.equal (moduleValues fileResult [ "Tiny"; "Three" ]) [ "three" ] "later modules are kept"
           }
 
