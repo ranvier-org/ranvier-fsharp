@@ -40,6 +40,7 @@ let oracle (spec: ProjectSpec) (texts: Map<string, string>) (file: string) =
 type CheckedFile =
     { File: string
       Start: FileStart
+      Env0: DeclEnv
       Declarations: ParsedDeclaration[]
       Results: DeclarationResult[]
       FileResult: FileResult }
@@ -71,6 +72,7 @@ let declByDecl (ctx: ProjectContext) (spec: ProjectSpec) (texts: Map<string, str
                 let checkedFile =
                     { File = file
                       Start = start
+                      Env0 = env0
                       Declarations = decls
                       Results = declResults
                       FileResult = fileResult }

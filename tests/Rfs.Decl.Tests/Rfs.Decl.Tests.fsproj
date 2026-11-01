@@ -6,6 +6,7 @@
     <Compile Include="Common.fs" />
     <Compile Include="StepTests.fs" />
     <Compile Include="RecheckTests.fs" />
+    <Compile Include="FingerprintTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
