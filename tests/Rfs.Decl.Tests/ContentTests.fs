@@ -29,12 +29,15 @@ let private tiny =
 
 /// A context of its own: the #nowarn scopes a parse records are the project's, by file, so a test that parses C.fs
 /// with a #nowarn must not share a context with tests that parse other versions of C.fs at the same time.
-let private ownTiny () =
+let private ownTinyWith (extraOptions: string list) =
     async {
         let! t = tiny.Value |> Async.AwaitTask
-        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions t.Spec)
-        return { t with Context = ctx }
+        let spec = { t.Spec with OtherOptions = t.Spec.OtherOptions @ extraOptions }
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+        return { t with Spec = spec; Context = ctx }
     }
+
+let private ownTiny () = ownTinyWith []
 
 let private split (source: string) =
     async {
@@ -434,6 +437,27 @@ let contentTests =
               Expect.containsAll r.MemberUses [ "ReturnFrom"; "ReturnFromFinal" ] "return!"
               let! y = content "let y = b { yield! xs }" (named "y")
               Expect.containsAll y.MemberUses [ "YieldFrom"; "YieldFromFinal" ] "yield!"
+          }
+
+          testAsync "assigning through an index of a qualified name lists the indexer members" {
+              let! c = content "let s1 () = M.arr[0] <- 1" (named "s1")
+              Expect.containsAll c.MemberUses [ "Item"; "SetSlice" ] "M.arr[0] <- v"
+          }
+
+          testAsync "assigning through an index of a property lists the indexer members" {
+              let! c = content "let s2 (x: T) = x.P[0] <- 1" (named "s2")
+              Expect.containsAll c.MemberUses [ "Item"; "SetSlice" ] "x.P[0] <- v"
+          }
+
+          testAsync "assigning a slice of a qualified name lists the slice members" {
+              let! c = content "let s3 xs = M.arr[1..2] <- xs" (named "s3")
+              Expect.containsAll c.MemberUses [ "SetSlice"; "GetSlice" ] "M.arr[1..2] <- xs"
+          }
+
+          testAsync "a computation expression with 17 sources lists the builder methods for 17" {
+              let sources = [ for i in 2..17 -> $"        and! a{i} = x\n" ] |> String.concat ""
+              let! c = content $"let w =\n    b {{\n        let! a1 = x\n%s{sources}        return 1\n    }}\n" (named "w")
+              Expect.containsAll c.MemberUses [ "Bind17"; "Bind17Return"; "MergeSources17" ] "for the actual count"
           } ]
 
 /// The rows of a nested-module file checked, then some rows re-checked in order (each from the EnvAfter of the row
@@ -486,6 +510,27 @@ let f x = match x with 1 -> 2
 #nowarn "25"
 
 let g x = match x with 1 -> 2
+"""
+
+// X counts as a type name for module X's suffix only if [<M>] is a measure attribute where the module's declarations
+// start, before MAttribute is defined: it is not, so module X has no suffix and clashes with type X.
+let private measureSuffix =
+    """module Tiny.C
+
+type MAttribute = MeasureAttribute
+
+type X<[<M>] 'u> = { V: int }
+
+module X =
+    let a = 1
+"""
+
+let private promotedWarning =
+    """module Tiny.C
+
+let f x = match x with 1 -> 2
+
+let r = ref []
 """
 
 [<Tests>]
@@ -582,11 +627,55 @@ let headerTests =
               let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", original ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
               Expect.equal (c.FileResult.Diagnostics |> Array.filter (fun d -> d.ErrorNumber = 25)).Length 2 "both warn before"
 
-              let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+              let editedParse = DeclarationChecker.Parse(t.Context, c.File, edited)
+              let editedDecls = DeclarationChecker.Split editedParse
               Expect.isTrue (Array.forall2 (fun (a: ParsedDeclaration) b -> a.IsUnchangedFrom b) editedDecls c.Declarations) "no declaration changed"
-              let fileResult = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let fileResult = DeclarationChecker.FinishFile(c.Start, c.Results, editedParse)
               let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
               let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
               Expect.isEmpty diff $"diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
               Expect.equal expected.Length 1 "only f warns"
+          }
+
+          testAsync "a module's suffix reads measure attributes in the scope's environment, as the file check does" {
+              let! t = tiny.Value |> Async.AwaitTask
+              let texts = sources t.Spec (Map.ofList [ "C.fs", measureSuffix ])
+              let c = declByDecl t.Context t.Spec texts |> List.find (fun f -> f.File.EndsWith "C.fs")
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File c.FileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
+              Expect.isNonEmpty expected "the file check reports"
+          }
+
+          testAsync "a #nowarn added for a warning promoted to an error lets the finish pass report again" {
+              let! t = ownTinyWith [ "--warnaserror:25" ]
+              let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", promotedWarning ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
+              Expect.isTrue (c.FileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 25 && d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)) "FS0025 is an error"
+              Expect.isFalse (c.FileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 30)) "which hides the value restriction"
+
+              // The #nowarn replaces the blank line before f, so no declaration moves or changes
+              let edited = promotedWarning.Replace("module Tiny.C\n\nlet f", "module Tiny.C\n#nowarn \"25\"\nlet f")
+              let editedParse = DeclarationChecker.Parse(t.Context, c.File, edited)
+              let fileResult = DeclarationChecker.FinishFile(c.Start, c.Results, editedParse)
+              let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
+              Expect.isTrue (expected |> Array.exists (fun d -> d.ErrorNumber = 30)) "the file check reports the value restriction"
+          }
+
+          testAsync "finishing uses the #nowarn scopes of the parse it is given, not of a later parse" {
+              let! t = ownTiny ()
+              let original = nowarnInTheMiddle.Replace("#nowarn \"25\"\n\n", "")
+              let edited = nowarnInTheMiddle.Replace("\n\n#nowarn \"25\"\n\n", "\n#nowarn \"25\"\n")
+              let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", original ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
+              let editedParse = DeclarationChecker.Parse(t.Context, c.File, edited)
+              // Another version parsed afterwards replaces the project's scopes for the file, but not editedParse's
+              let _ = DeclarationChecker.Parse(t.Context, c.File, original)
+              let fileResult = DeclarationChecker.FinishFile(c.Start, c.Results, editedParse)
+              let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
+              let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
+              Expect.isEmpty diff $"diagnostics equal the file check of the given parse's text:\n%s{String.concat Environment.NewLine diff}"
+              Expect.equal expected.Length 1 "only f warns"
+
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              Expect.equal (again.Diagnostics |> Array.filter (fun d -> d.ErrorNumber = 25)).Length 2 "the FileStart's own parse has no #nowarn"
           } ]
