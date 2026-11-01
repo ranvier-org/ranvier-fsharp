@@ -135,4 +135,20 @@ let tests =
 
           test "rejects malformed json" {
               withCorpus files (fun root -> Expect.isError (load root "{ not json") "malformed")
-          } ]
+          }
+
+          testList
+              "wrong-typed json returns Error"
+              [ for (name, steps, expected) in
+                    [ "string line",
+                      """ { "hover": { "file": "src/A.fs", "position": { "line": "3", "character": 0 } } } """,
+                      "line"
+                      "edit is a string", """ { "edit": "x" } """, "object"
+                      "edit is a number", """ { "edit": 5 } """, "object"
+                      "step is a string", """ "open" """, "one key" ] do
+                    test name {
+                        withCorpus files (fun root ->
+                            match load root (scenarioJson steps) with
+                            | Error message -> Expect.stringContains message expected "useful message"
+                            | Ok _ -> failtest "expected Error")
+                    } ] ]

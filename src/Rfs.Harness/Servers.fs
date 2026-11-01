@@ -36,11 +36,21 @@ module Servers =
           Command = text "command"
           Args =
             match obj["args"] with
-            | :? JsonArray as a -> [ for x in a -> x.GetValue<string>() ]
+            | :? JsonArray as a ->
+                [ for x in a ->
+                      match x with
+                      | null -> fail "'args' must not contain null"
+                      | x -> x.GetValue<string>() ]
             | _ -> []
           Env =
             match obj["env"] with
-            | :? JsonObject as e -> e |> Seq.map (fun kv -> kv.Key, kv.Value.GetValue<string>()) |> Map.ofSeq
+            | :? JsonObject as e ->
+                e
+                |> Seq.map (fun kv ->
+                    match kv.Value with
+                    | null -> fail $"env value '%s{kv.Key}' must not be null"
+                    | v -> kv.Key, v.GetValue<string>())
+                |> Map.ofSeq
             | _ -> Map.empty
           InitOptions =
             match obj["initOptions"] with

@@ -34,4 +34,12 @@ let tests =
           test "rejects unknown oracle mode" {
               withFile """[ { "name": "s", "command": "x", "oracle": "lax" } ]""" (fun path ->
                   Expect.isError (Servers.load path) "unknown mode")
+          }
+
+          test "rejects null env value and null arg" {
+              withFile """[ { "name": "s", "command": "x", "env": { "A": null } } ]""" (fun path ->
+                  Expect.isError (Servers.load path) "null env value")
+
+              withFile """[ { "name": "s", "command": "x", "args": [ null ] } ]""" (fun path ->
+                  Expect.isError (Servers.load path) "null arg")
           } ]

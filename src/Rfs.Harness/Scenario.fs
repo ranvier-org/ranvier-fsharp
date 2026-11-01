@@ -43,6 +43,9 @@ module Scenario =
         | kind -> fail $"expected an object with '%s{name}', got %O{kind}"
 
     let private tryProp (name: string) (element: JsonElement) =
+        if element.ValueKind <> JsonValueKind.Object then
+            fail $"expected an object with optional '%s{name}', got %O{element.ValueKind}"
+
         match element.TryGetProperty name with
         | true, value -> Some value
         | _ -> None
@@ -59,6 +62,9 @@ module Scenario =
         | _ -> fail $"property '%s{name}' must be a string"
 
     let private asInt (what: string) (element: JsonElement) =
+        if element.ValueKind <> JsonValueKind.Number then
+            fail $"%s{what} must be an integer, got %O{element.ValueKind}"
+
         match element.TryGetInt32() with
         | true, value -> value
         | _ -> fail $"%s{what} must be an integer"
@@ -86,8 +92,14 @@ module Scenario =
         build (str "file" element, prop "position" element |> position)
 
     let private step (element: JsonElement) : Step =
-        match element.ValueKind, element.EnumerateObject() |> Seq.toList with
-        | JsonValueKind.Object, [ p ] ->
+        let properties =
+            if element.ValueKind = JsonValueKind.Object then
+                element.EnumerateObject() |> Seq.toList
+            else
+                []
+
+        match properties with
+        | [ p ] ->
             let value = p.Value
 
             match p.Name with
@@ -200,4 +212,5 @@ module Scenario =
         with
         | :? FormatException as e -> Error $"%s{path}: %s{e.Message}"
         | :? JsonException as e -> Error $"%s{path}: invalid JSON: %s{e.Message}"
+        | :? InvalidOperationException as e -> Error $"%s{path}: %s{e.Message}"
         | :? IOException as e -> Error $"%s{path}: %s{e.Message}"
