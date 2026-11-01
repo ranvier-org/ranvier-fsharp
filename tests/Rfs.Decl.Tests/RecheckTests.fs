@@ -259,20 +259,27 @@ let tests =
               Expect.equal (declaringEntityMembers finished "three") [ "one"; "two"; "three"; "four" ] "after finishing again"
           }
 
-          // R11: re-checking an augmentation alone adds its members to T again; Task 13 makes it re-check T too.
-          ptestCase "re-checking an augmentation alone leaves its type with one copy of its members" <| fun () ->
-              async {
-                  let! fixture = checkTiny augmented
-                  let c = fixture.C
-                  let rechecked = check c c.Results[0].EnvAfter c.Declarations[1]
-                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; rechecked; c.Results[2] |], c.Start.Parse)
+          // R11: re-checking an intrinsic augmentation adds its members to T's entity, which an earlier result holds. The
+          // rule: T and its augmentations (Content.Augments) re-check together, T first, so T's entity is a new one.
+          testAsync "re-checking an augmentation with its type leaves the type with one copy of its members" {
+              let bs (fileResult: FileResult) = moduleValues fileResult [ "Tiny"; "C"; "T" ] |> List.filter ((=) "B")
+              let! alone = checkTiny augmented
+              let c = alone.C
+              Expect.equal (DeclarationChecker.Content c.Declarations[1]).Augments [| "T" |] "the augmentation names T"
+              // A fresh check lists the property B and its getter
+              let fresh = bs c.FileResult
+              let rechecked = check c c.Results[0].EnvAfter c.Declarations[1]
+              let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; rechecked; c.Results[2] |], c.Start.Parse)
+              Expect.isGreaterThan (bs finished).Length fresh.Length "alone, T's old entity gets B again: why the rule exists"
 
-                  Expect.equal
-                      (moduleValues finished [ "Tiny"; "C"; "T" ] |> List.filter ((=) "B"))
-                      [ "B" ]
-                      "one B"
-              }
-              |> Async.RunSynchronously
+              let! fixture = checkTiny augmented
+              let c = fixture.C
+              let t' = check c c.Env0 c.Declarations[0]
+              let augmentation' = check c (DeclarationChecker.ExtendEnv(c.Env0, t')) c.Declarations[1]
+              let finished = DeclarationChecker.FinishFile(c.Start, [| t'; augmentation'; c.Results[2] |], c.Start.Parse)
+              Expect.equal (bs finished) fresh "one copy of B, as a fresh check has"
+              Expect.equal (diagnosticTexts finished.Diagnostics) (diagnosticTexts c.FileResult.Diagnostics) "the full check's diagnostics"
+          }
 
           testAsync "results don't leak" {
               let! fixture = checkTiny heavySecond

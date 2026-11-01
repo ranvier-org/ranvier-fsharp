@@ -8,6 +8,7 @@
     <Compile Include="RecheckTests.fs" />
     <Compile Include="FingerprintTests.fs" />
     <Compile Include="ContentTests.fs" />
+    <Compile Include="GuardTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

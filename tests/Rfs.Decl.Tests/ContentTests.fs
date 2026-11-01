@@ -227,7 +227,8 @@ let private none =
       MemberUses = [||]
       FieldOrCaseUses = [||]
       HasUnresolvable = false
-      AffectsAllLater = false }
+      AffectsAllLater = false
+      Augments = [||] }
 
 /// (test name, declarations after `module Tiny.C`, which row, expected content)
 let private exact =

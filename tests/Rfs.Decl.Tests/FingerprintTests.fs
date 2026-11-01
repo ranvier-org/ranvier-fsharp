@@ -231,19 +231,24 @@ let tests =
               Expect.equal (fingerprintOf finished "h") (fingerprintOf (fresh.File "C.fs").FileResult "h") "h as a fresh check has it"
           }
 
-          // R12 (Task 13): the use's check solved h's free type in place, and nothing undoes it. The guard discards h's
-          // result and re-checks h when a later declaration of the file changes or is removed.
-          ptestCase "later use removed re-checks the free-typar decl" <| fun () ->
-              async {
-                  let! checkedTiny = checkC hUsed
-                  let c = checkedTiny.File "C.fs"
-                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |], c.Start.Parse)
-                  do! expectFileCheck checkedTiny.Spec hAlone c.File finished "h without its use"
+          // R12: the use's check solved h's free type in place, and nothing undoes it. The guard: h leaves free typars,
+          // so when a later declaration of the file changes or is removed, h's result is discarded and h re-checked.
+          testAsync "later use removed re-checks the free-typar decl" {
+              let! checkedTiny = checkC hUsed
+              let c = checkedTiny.File "C.fs"
+              let aloneParse = DeclarationChecker.Parse(checkedTiny.Context, c.File, hAlone)
+              let! fresh = checkC hAlone
+              let freshFingerprints = fingerprints (fresh.File "C.fs").FileResult
+              Expect.isTrue c.Results[0].LeavesFreeTypars "h's type is left open for later declarations"
 
-                  let! fresh = checkC hAlone
-                  Expect.equal (fingerprints finished) (fingerprints (fresh.File "C.fs").FileResult) "h as a fresh check has it"
-              }
-              |> Async.RunSynchronously
+              let kept = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |], aloneParse)
+              Expect.notEqual (fingerprints kept) freshFingerprints "the kept result stays float -> float: it is invalid"
+
+              let h' = DeclarationChecker.CheckDeclaration(c.Start, c.Env0, (DeclarationChecker.Split aloneParse)[0], CancellationToken.None)
+              let finished = DeclarationChecker.FinishFile(c.Start, [| h' |], aloneParse)
+              do! expectFileCheck checkedTiny.Spec hAlone c.File finished "h re-checked without its use"
+              Expect.equal (fingerprints finished) freshFingerprints "h as a fresh check has it: int -> int"
+          }
 
           testAsync "inline body calling a void method is described" {
               let! before, after =
