@@ -2,81 +2,21 @@ module Rfs.Decl.Tests.StepTests
 
 open System
 open System.IO
-open System.Threading
 open Expecto
-open FSharp.Compiler.CodeAnalysis
+open Rfs.Decl.Tests.Common
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
-open FSharp.Compiler.SourceCodeServices
 open Rfs.Lsp
 open Rfs.Projects
-
-let private tinyDir =
-    let rec up (d: DirectoryInfo) =
-        let candidate = Path.Combine(d.FullName, "tests", "fixtures", "Tiny")
-        if Directory.Exists candidate then candidate else up d.Parent
-
-    up (DirectoryInfo AppContext.BaseDirectory)
-
-let private tinyProject = Path.Combine(tinyDir, "Tiny.fsproj")
-
-/// The project's sources with some files replaced by in-memory text.
-let private sources (spec: ProjectSpec) (overrides: Map<string, string>) =
-    spec.SourceFiles
-    |> List.map (fun f ->
-        f,
-        match overrides |> Map.tryFind (Path.GetFileName f) with
-        | Some text -> text
-        | None -> File.ReadAllText f)
-    |> Map.ofList
-
-let private oracle (spec: ProjectSpec) (texts: Map<string, string>) (file: string) =
-    async {
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
-        let sourceReader f = let t = texts[f] in hash t, lazy t
-        let! _, checkResults, _ = checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, sourceReader, file)
-        return checkResults.Diagnostics
-    }
-
-/// Checks the files in project order, each implementation one declaration at a time, and returns each
-/// implementation file's diagnostics.
-let private declByDecl (spec: ProjectSpec) (texts: Map<string, string>) =
-    async {
-        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
-
-        let results, _ =
-            (([], []), spec.SourceFiles)
-            ||> List.fold (fun (results, before) file ->
-                let parse = DeclarationChecker.Parse(ctx, file, texts[file])
-
-                if file.EndsWith ".fsi" then
-                    results, before @ [ DeclarationChecker.CheckSignatureFile(ctx, before, parse) ]
-                else
-                    let start, env0 = DeclarationChecker.BeginFile(ctx, before, parse)
-
-                    let declResults =
-                        DeclarationChecker.Split parse
-                        |> Array.mapFold
-                            (fun env decl ->
-                                let result = DeclarationChecker.CheckDeclaration(start, env, decl, CancellationToken.None)
-                                result, result.EnvAfter)
-                            env0
-                        |> fst
-
-                    let fileResult = DeclarationChecker.FinishFile(start, declResults)
-                    results @ [ file, (declResults, fileResult) ], before @ [ fileResult.Signature ])
-
-        return results
-    }
-
-let private toLsp (diagnostics: FSharpDiagnostic[]) =
-    diagnostics |> Array.map FcsDiagnostics.ofFcs |> List.ofArray
 
 let private equalsFileCheck (overrides: Map<string, string>) =
     async {
         let! spec = ProjectSpec.load tinyProject |> Async.AwaitTask
         let texts = sources spec overrides
-        let! results = declByDecl spec texts
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+
+        let results =
+            [ for checkedFile in declByDecl ctx spec texts -> checkedFile.File, (checkedFile.Results, checkedFile.FileResult) ]
 
         // B.fs has a signature file: the finish pass still runs the file's conformance check, so it is compared too.
         for file, (declResults, fileResult) in results do
