@@ -197,28 +197,51 @@ type internal FileSig =
 
 /// Shared by every file of a project.
 [<Sealed>]
-type internal ProjectShared(ctx: ProjectContext) =
-    let mutable checkedCount = 0L
-    let observers = ResizeArray<IObserver<DeclarationKey * string>>()
+type internal Subject<'T>() =
+    let observers = ResizeArray<IObserver<'T>>()
 
-    member _.Context = ctx
-    member _.CheckedCount = Interlocked.Read &checkedCount
-    member _.CountCheck() = Interlocked.Increment &checkedCount |> ignore
-
-    member _.Publish(key: DeclarationKey, file: string) =
+    member _.Next(value: 'T) =
         let snapshot = lock observers (fun () -> observers.ToArray())
 
         for o in snapshot do
-            o.OnNext((key, file))
+            o.OnNext value
 
-    member _.Checked =
-        { new IObservable<DeclarationKey * string> with
-            member _.Subscribe o =
-                lock observers (fun () -> observers.Add o)
+    interface IObservable<'T> with
+        member _.Subscribe o =
+            lock observers (fun () -> observers.Add o)
 
-                { new IDisposable with
-                    member _.Dispose() =
-                        lock observers (fun () -> observers.Remove o |> ignore) } }
+            { new IDisposable with
+                member _.Dispose() =
+                    lock observers (fun () -> observers.Remove o |> ignore) }
+
+[<Sealed>]
+type internal ProjectShared(ctx: ProjectContext) =
+    let mutable checkedCount = 0L
+    let mutable finishTicks = 0L
+    let mutable premiseBreaks = 0L
+    let premise = Subject<DeclarationKey * string>()
+    let published = Subject<DeclarationKey * string>()
+    let ran = Subject<DeclarationKey * string>()
+
+    member _.Context = ctx
+    member _.CheckedCount = Interlocked.Read &checkedCount
+    member _.FinishTicks = Interlocked.Read &finishTicks
+    member _.PremiseBreaks = Interlocked.Read &premiseBreaks
+
+    /// Counts a CheckDeclaration that returned, and reports it (on the thread that ran it).
+    member _.CountCheck(key: DeclarationKey, file: string) =
+        Interlocked.Increment &checkedCount |> ignore
+        ran.Next((key, file))
+
+    member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
+    member _.CountPremiseBreak(key: DeclarationKey, file: string) =
+        Interlocked.Increment &premiseBreaks |> ignore
+        premise.Next((key, file))
+
+    member _.PremiseBroken = premise :> IObservable<_>
+    member _.Publish(key: DeclarationKey, file: string) = published.Next((key, file))
+    member _.Checked = published :> IObservable<_>
+    member _.Ran = ran :> IObservable<_>
 
 module internal Nodes =
 
@@ -300,7 +323,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
     let dependencies =
         createMemoWithComparer HashIdentity.Structural (fun _ ->
-            NameIndex.dependencies key decl.Value.Within content.Value file.Order.Value file.Index.Value typedSignal.Value file.EarlierIndex.Value)
+            NameIndex.dependencies key decl.Value.Within content.Value file.Order.Value file.Index.Value typedSignal.Value)
 
     let role =
         createMemoWithComparer HashIdentity.Structural (fun _ ->
@@ -342,13 +365,28 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     member _.Latest = latest
     /// The fingerprint the check left: the cutoff for the file's declarations that depend on this one
     member _.Token = token
-    /// The environment after this declaration, as last assembled
+    /// The environment after this declaration, as last assembled. Concurrent checks may write it with different
+    /// chains; a reader takes it only when its previous node and result are the ones it has, so a lost write only
+    /// costs an ExtendEnv.
     member val EnvCache: EnvNode = null with get, set
 
     /// Waits for a declaration whose check is running, so a re-check sees its new result.
     member private _.AwaitSettled(keys: seq<DeclarationKey>) =
+        let keys = Array.ofSeq keys
+        file.TouchChecks keys
+
         for k in keys do
             (file.RowOf k).Check.Value |> ignore
+
+    /// C2 interim (Ranvier links a source only after pulling it, so a source dirtied while it is first pulled in a run
+    /// never notifies the reader): every source a body may suspend on is linked with TryValue before the first read
+    /// that can suspend.
+    member private _.TouchTokens(tokenKeys: DeclarationKey[], identityKeys: DeclarationKey[]) =
+        for k in tokenKeys do
+            (file.RowOf k).Token.TryValue |> ignore
+
+        for k in identityKeys do
+            (file.RowOf k).Latest.TryValue |> ignore
 
     /// The declarations of the file a result depends on through types, as of its latest finish (R13).
     member private _.TypedOf(c: RowCheck) =
@@ -372,6 +410,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 Array.concat [ deps.Named; deps.Typed; typed |> Array.filter (fun k -> file.IsBefore(k, key)) ]
                 |> Array.distinct
 
+            this.TouchTokens(tokenKeys, deps.Identity)
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
 
@@ -392,17 +431,24 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             if current then
                 Task.FromResult previous
             else
+                file.Start.TryValue |> ignore
+                file.TouchChecks(Seq.append tokenKeys deps.Identity)
+                file.TouchEarlier(key, start)
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys deps.Identity)
                 let earlier = file.Earlier(key, start)
 
+                // An earlier result with free inference variables whose segment has not formed yet: checks that solve
+                // them in place must not run together, so this one runs alone
+                let alone = earlier |> Array.exists (fun (_, c) -> c.Result.DependsOnLaterDeclarations)
+
                 Task.Run<RowCheck>(
                     (fun () ->
                         task {
-                            use! _ = start.Lock.ReadAsync()
+                            use! _ = if alone then start.Lock.WriteAsync() else start.Lock.ReadAsync()
                             let env = file.Walk(start, earlier, ct)
                             let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
-                            file.Project.CountCheck()
+                            file.Project.CountCheck(key, file.Path)
                             return RowCheck(key, decl, start, result, env, deps.Named, deps.Identity)
                         }),
                     ct
@@ -448,6 +494,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 )
 
             let identityKeys = outside (seq { for _, _, deps in members do yield! deps.Identity })
+            this.TouchTokens(tokenKeys, identityKeys)
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
 
@@ -474,6 +521,9 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             if current then
                 Task.FromResult previous
             else
+                file.Start.TryValue |> ignore
+                file.TouchChecks(Seq.append tokenKeys identityKeys)
+                file.TouchEarlier(key, start)
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
                 let earlier = file.Earlier(key, start)
@@ -489,7 +539,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                             for r, decl, deps in members do
                                 ct.ThrowIfCancellationRequested()
                                 let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
-                                file.Project.CountCheck()
+                                file.Project.CountCheck(r.Key, file.Path)
                                 let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity)
                                 results[r.Key] <- c
                                 let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
@@ -510,7 +560,6 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
     member _.Rows = rows
     member val Order: Memo<Order> = Unchecked.defaultof<_> with get, set
     member val Index: Memo<FileIndex> = Unchecked.defaultof<_> with get, set
-    member val EarlierIndex: Memo<ProjectIndex> = Unchecked.defaultof<_> with get, set
     member val Roles: Memo<Map<DeclarationKey, Role>> = Unchecked.defaultof<_> with get, set
     member val Start: AsyncMemo<StartInfo> = Unchecked.defaultof<_> with get, set
     member val StartLatest: Memo<StartInfo> = Unchecked.defaultof<_> with get, set
@@ -530,6 +579,26 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
         match rows.TryGetValue key with
         | true, row -> row
         | _ -> invalidOp $"%A{key} is not a declaration of %s{path}"
+
+    /// Links the checks of `keys` with TryValue (C2 interim, see Row.TouchTokens).
+    member this.TouchChecks(keys: seq<DeclarationKey>) =
+        for k in keys do
+            (this.RowOf k).Check.TryValue |> ignore
+
+    /// Links with TryValue (C2 interim) the checks of the declarations before `key` that Earlier will wait for: those
+    /// with no result from `start`. Only those, so other earlier checks settling do not restart this one.
+    member this.TouchEarlier(key: DeclarationKey, start: StartInfo) =
+        let order = untrack (fun () -> this.Order.Value)
+
+        match order.TryPosition key with
+        | ValueSome position ->
+            for i in 0 .. position - 1 do
+                let row = this.RowOf order.Keys[i]
+                let c = row.Check.Peek
+
+                if isNull c || not (Nodes.same c.Start start) then
+                    row.Check.TryValue |> ignore
+        | ValueNone -> ()
 
     /// The current results of the declarations before `key`, all from `start`. One with no result yet, or one from
     /// another FileStart, is waited for: the environment is assembled from every earlier result. The others are read
@@ -572,13 +641,21 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
 
         node
 
+/// What a file is finished from: the parse of its current text, its FileStart and every declaration's result.
+and [<ReferenceEquality>] internal FinishInputs =
+    { Parsed: Parsed
+      Start: StartInfo
+      Checks: (Row * RowCheck)[] }
+
 /// A finished file: the results it was built from and FinishFile's result.
 and [<ReferenceEquality>] internal Finished =
     { Version: int64
-      Parsed: Parsed
-      Start: StartInfo
-      Checks: (Row * RowCheck)[]
+      Inputs: FinishInputs
       FileResult: FileResult }
+
+    member f.Parsed = f.Inputs.Parsed
+    member f.Start = f.Inputs.Start
+    member f.Checks = f.Inputs.Checks
 
 /// A file of the project, in project order.
 type internal IFileNode =
@@ -592,6 +669,10 @@ type internal IFileNode =
     abstract Settled: before: string list * version: int64 -> FSharpDiagnostic[] voption
     /// Each declaration's current result, when settled
     abstract Results: before: string list * version: int64 -> IReadOnlyDictionary<DeclarationKey, DeclarationResult> voption
+    /// FinishFile's result, when settled
+    abstract FileResult: before: string list * version: int64 -> FileResult voption
+    /// How many declarations are checked in segments (R11, R12) as the roles stand. Graph thread.
+    abstract SegmentRows: unit -> int
 
 module internal FileNodes =
 
@@ -613,7 +694,6 @@ module internal FileNodes =
         (text: string)
         (before: Memo<FileSig> option)
         (signatureFile: string option)
-        (earlierIndex: Memo<ProjectIndex>)
         : IFileNode * Memo<FileIndex> =
         let ctx = project.Context
         let shared = ImplShared(project, path)
@@ -643,45 +723,78 @@ module internal FileNodes =
             createMemoWithComparer HashIdentity.Structural (fun _ ->
                 NameIndex.ofFile [| for k in shared.Order.Value.Keys -> k, (shared.RowOf k).Content.Value |])
 
-        shared.EarlierIndex <- earlierIndex
-        let leader = createSignalWithComparer HashIdentity.Structural (None: DeclarationKey option)
+        // The first declaration whose latest result depends on later ones (R12), written as soon as that result settles,
+        // so its segment forms before the declarations after it are checked again on their own
+        let dependsOnLater = createSignalWithComparer HashIdentity.Structural (None: DeclarationKey option)
+
+        // Declarations checked on their own whose final fingerprint differed from the one their check left (the D1
+        // premise broke): treated as leaders, so what depends on them is checked in order after them. Kept while present.
+        let premiseLeaders = createSignalWithComparer HashIdentity.Structural (Set.empty: Set<DeclarationKey>)
 
         shared.Roles <-
             createMemoWithComparer HashIdentity.Structural (fun _ ->
-                NameIndex.roles shared.Order.Value shared.Index.Value leader.Value)
+                let order = shared.Order.Value
+
+                let leader =
+                    Seq.append (Option.toList dependsOnLater.Value) premiseLeaders.Value
+                    |> Seq.choose (fun k -> order.TryPosition k |> ValueOption.toOption |> Option.map (fun p -> p, k))
+                    |> Seq.sortBy fst
+                    |> Seq.tryHead
+                    |> Option.map snd
+
+                NameIndex.roles order shared.Index.Value leader)
+
+        createEffect (fun () ->
+            let order = shared.Order.Value
+
+            let first =
+                order.Keys
+                |> Array.tryFind (fun k ->
+                    match (shared.RowOf k).Latest.TryValue with
+                    | Ready c -> c.Result.DependsOnLaterDeclarations
+                    | _ -> false)
+
+            untrack (fun () -> dependsOnLater.Value <- first))
 
         // R16: the file is set up once from the earlier files' signatures, and every result is tied to that setup.
         // It is set up again only when the signature fingerprints of the earlier files change (compared structurally,
         // never by reference) or its own header text does; then every declaration re-checks. Body edits, and edits behind
         // a .fsi, change no signature, so they stay declaration-level across the project. A TypedUses entry pointing into
         // another file is covered by this rule.
-        let mutable start = Unchecked.defaultof<AsyncMemo<StartInfo>>
+        // Of the file's own text only the prologue is keyed on: setting up reads the file's module or namespace header,
+        // and every declaration is checked on its own against whichever setup is current.
+        // C2: the comparison is a plain memo that keeps its previous key when equal, and the async setup runs only when
+        // the key changed, so no async body reads a value that can be pending and then returns synchronously.
+        let startKey =
+            createMemo (fun previous ->
+                let key = prologue.Value, beforeOf ()
 
-        start <-
+                match previous with
+                | ValueSome((p, b) as known) when p = fst key && b.Chain = (snd key).Chain -> known
+                | _ -> key)
+
+        let start =
             createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
-                let prologue = prologue.Value
-                let before = beforeOf ()
-                let previous = start.Peek
+                let prologue, before = startKey.Value
+                let parse = (untrack (fun () -> parsedLatest.Value)).Parse
 
-                if not (isNull previous) && previous.Prologue = prologue && previous.Chain = before.Chain then
-                    Task.FromResult previous
-                else
-                    let parse = (untrack (fun () -> parsedLatest.Value)).Parse
-
-                    Task.Run<StartInfo>(fun () ->
-                        let fileStart, env0 = DeclarationChecker.BeginFile(ctx, before.Signatures, parse)
-                        StartInfo(fileStart, env0, before.Chain, before.Signatures, prologue)))
+                Task.Run<StartInfo>(fun () ->
+                    let fileStart, env0 = DeclarationChecker.BeginFile(ctx, before.Signatures, parse)
+                    StartInfo(fileStart, env0, before.Chain, before.Signatures, prologue)))
 
         shared.Start <- start
         shared.StartLatest <- Nodes.latestOf start
 
-        let mutable finish = Unchecked.defaultof<AsyncMemo<Finished>>
-
-        finish <-
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+        // What the file is finished from, kept as the same object while every part is: pending while any part is.
+        let inputs =
+            createMemo (fun previous ->
+                // C2 interim: link every source before the first read that can suspend
+                parsed.TryValue |> ignore
+                start.TryValue |> ignore
+                let order = shared.Order.Value
+                shared.TouchChecks order.Keys
                 let p = parsed.Value
                 let s = start.Value
-                let order = shared.Order.Value
                 let checks = order.Keys |> Array.map (fun k -> let row = shared.RowOf k in row, row.Check.Value)
 
                 if order.Keys <> (p.Declarations |> Array.map _.Key) then
@@ -691,32 +804,50 @@ module internal FileNodes =
                     if not (Nodes.same c.Start s) then
                         invalidOp $"%s{path}: %A{c.Key} was checked from another FileStart"
 
-                let previous = finish.Peek
+                match previous with
+                | ValueSome i when
+                    Nodes.same i.Parsed p
+                    && Nodes.same i.Start s
+                    && i.Checks.Length = checks.Length
+                    && Array.forall2 (fun (_, a) (_, b) -> Nodes.same a b) i.Checks checks
+                    ->
+                    i
+                | _ -> { Parsed = p; Start = s; Checks = checks })
 
-                if
-                    not (isNull (box previous))
-                    && Nodes.same previous.Parsed p
-                    && Nodes.same previous.Start s
-                    && previous.Checks.Length = checks.Length
-                    && Array.forall2 (fun (_, a) (_, b) -> Nodes.same a b) previous.Checks checks
-                then
-                    Task.FromResult previous
-                else
-                    Task.Run<Finished>(fun () ->
-                        task {
-                            use! _ = s.Lock.WriteAsync()
-                            // The parse of the text being finished: its diagnostics and #nowarn scopes are the ones published.
-                            let fileResult = DeclarationChecker.FinishFile(s.Start, checks |> Array.map (fun (_, c) -> c.Result), p.Parse)
+        // C2: the async finish reads the inputs through a memo that is never pending once set, and runs FinishFile
+        // whenever it runs, so it starts only when the inputs changed. Settled and published only while it was finished
+        // from the current inputs.
+        let stableInputs = Nodes.latestOfMemo inputs
 
-                            return
-                                { Version = p.Version
-                                  Parsed = p
-                                  Start = s
-                                  Checks = checks
-                                  FileResult = fileResult }
-                        }))
+        let finish =
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                let i = stableInputs.Value
+
+                Task.Run<Finished>(fun () ->
+                    task {
+                        use! _ = i.Start.Lock.WriteAsync()
+                        let watch = Diagnostics.Stopwatch.StartNew()
+                        // The parse of the text being finished: its diagnostics and #nowarn scopes are the ones published.
+                        let fileResult =
+                            DeclarationChecker.FinishFile(i.Start.Start, i.Checks |> Array.map (fun (_, c) -> c.Result), i.Parsed.Parse)
+
+                        project.AddFinishTicks watch.ElapsedTicks
+
+                        return
+                            { Version = i.Parsed.Version
+                              Inputs = i
+                              FileResult = fileResult }
+                    }))
 
         shared.FinishLatest <- Nodes.latestOf finish
+
+        /// The finish of the current inputs, if it is settled.
+        let current () =
+            match inputs.TryValue, finish.TryValue with
+            | Ready i, Ready f when Nodes.same f.Inputs i -> ValueSome f
+            | Failed e, _
+            | _, Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
+            | _ -> ValueNone
 
         // Built on what the finished results were set up from, not on what the earlier files give now: until this file
         // finishes on a new setup, later files keep seeing the signature its results make.
@@ -724,13 +855,16 @@ module internal FileNodes =
             createMemoWithComparer FileSig.Comparer (fun _ ->
                 let f = shared.FinishLatest.Value
 
+                // A file whose finish failed adds nothing to later files
+                let tail = if f.FileResult.CheckResults.ImplementationFile.IsSome then "" else "finish failed\n"
+
                 let own =
                     match signatureFile with
                     // Later files see the .fsi, whatever the implementation holds
-                    | Some fsi -> "implementation of " + fsi
+                    | Some fsi -> tail + "implementation of " + fsi
                     // The header, then each declaration's final fingerprint, taken after the inference scope is closed
                     | None ->
-                        let sb = StringBuilder(f.Start.Prologue)
+                        let sb = StringBuilder(tail).Append(f.Start.Prologue)
 
                         for row, _ in f.Checks do
                             sb.Append('\n').Append(Nodes.keyText row.Key).Append('=').Append(f.FileResult.Fingerprints[row.Key]) |> ignore
@@ -740,15 +874,16 @@ module internal FileNodes =
                 { Chain = own :: f.Start.Chain
                   Signatures = f.Start.Signatures @ [ f.FileResult.Signature ] })
 
-        // Publishes a finish of the current text: each newly published result, then what the results tell the rows
-        // (TypedUses, and the first declaration later ones change in place).
+        // Publishes a finish of the current text: each newly published result, then what the results tell the rows:
+        // TypedUses (R13), and the declarations whose final fingerprint broke the D1 premise.
         let published = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
+        let premiseChecked = HashSet<RowCheck>(HashIdentity.Reference)
 
         createEffect (fun () ->
-            let current = text.Value
+            let version = text.Value.Version
 
-            match finish.TryValue with
-            | Ready f when f.Version = current.Version ->
+            match (try current () with _ -> ValueNone) with
+            | ValueSome f when f.Version = version ->
                 untrack (fun () ->
                     for row, c in f.Checks do
                         match published.TryGetValue row.Key with
@@ -763,23 +898,40 @@ module internal FileNodes =
                         if not (live.Contains k) then
                             published.Remove k |> ignore
 
+                    premiseChecked.RemoveWhere(fun c -> not (live.Contains c.Key)) |> ignore
+
                     for row, c in f.Checks do
                         row.TypedSignal.Value <- NameIndex.typedKeys path row.Key c.Result.TypedUses
 
-                    leader.Value <-
-                        f.Checks
-                        |> Array.tryFind (fun (_, c) -> c.Result.DependsOnLaterDeclarations)
-                        |> Option.map (fun (row, _) -> row.Key))
+                    // D1: a declaration checked on its own is depended on through the fingerprint its check left. Where the
+                    // finish changes it, the declaration leads a segment from then on (kept while it is in the file), so a
+                    // later declaration that could have changed it re-checks it first. Seen so far: the comparison members
+                    // generated for a union get a new slot signature at the finish, and a value whose type keeps an
+                    // inference variable with a default constraint (an operator on conflicting types) is defaulted at the
+                    // finish though LeavesFreeTypars is false for it.
+                    let roles = shared.Roles.Value
+                    let mutable leaders = premiseLeaders.Peek |> Set.filter live.Contains
+
+                    for row, c in f.Checks do
+                        let single = (roles |> Map.tryFind row.Key |> Option.defaultValue Role.Single) = Role.Single
+
+                        if single && premiseChecked.Add c then
+                            let provisional = c.Result.Fingerprint
+                            let final = f.FileResult.Fingerprints[row.Key]
+
+                            if not (provisional.StartsWith "?") && not (final.StartsWith "?") && provisional <> final then
+                                project.CountPremiseBreak(row.Key, path)
+                                leaders <- leaders.Add row.Key
+
+                    premiseLeaders.Value <- leaders)
             | _ -> ())
 
         let settledFinish (before: string list) (version: int64) =
             if text.Peek.Version <> version then
                 ValueNone
             else
-                match finish.TryValue with
-                | Ready f when f.Version = version && f.Start.Chain = before -> ValueSome f
-                // A failed check or finish would otherwise be waited for forever
-                | Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
+                match current () with
+                | ValueSome f when f.Version = version && f.Start.Chain = before -> ValueSome f
                 | _ -> ValueNone
 
         let node =
@@ -792,6 +944,7 @@ module internal FileNodes =
 
                 member _.Signature = signature
                 member _.Settled(before, version) = settledFinish before version |> ValueOption.map _.FileResult.Diagnostics
+                member _.FileResult(before, version) = settledFinish before version |> ValueOption.map _.FileResult
 
                 member _.Results(before, version) =
                     settledFinish before version
@@ -801,7 +954,10 @@ module internal FileNodes =
                         for row, c in f.Checks do
                             d[row.Key] <- c.Result
 
-                        d :> IReadOnlyDictionary<_, _>) }
+                        d :> IReadOnlyDictionary<_, _>)
+
+                member _.SegmentRows() =
+                    shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length }
 
         node, shared.Index
 
@@ -816,22 +972,25 @@ module internal FileNodes =
         let parsedLatest = Nodes.latestOf parsed
         let beforeOf () = match before with Some b -> b.Value | None -> FileSig.Empty
         let own (p: Parsed) = "signature " + p.Text
-        let mutable checkedSig = Unchecked.defaultof<AsyncMemo<FileSig>>
 
-        checkedSig <-
+        // C2: compared in a plain memo that keeps its previous key when equal; the async check runs only on a change
+        let key =
+            createMemo (fun previous ->
+                let p, b = parsedLatest.Value, beforeOf ()
+
+                match previous with
+                | ValueSome((kp: Parsed, kb: FileSig) as known) when kp.Text = p.Text && kb.Chain = b.Chain -> known
+                | _ -> p, b)
+
+        let checkedSig =
             createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
-                let p = parsedLatest.Value
-                let before = beforeOf ()
-                let previous = checkedSig.Peek
+                let p, before = key.Value
 
-                if not (isNull (box previous)) && previous.Chain = own p :: before.Chain then
-                    Task.FromResult previous
-                else
-                    Task.Run<FileSig>(fun () ->
-                        let s = DeclarationChecker.CheckSignatureFile(ctx, before.Signatures, p.Parse)
+                Task.Run<FileSig>(fun () ->
+                    let s = DeclarationChecker.CheckSignatureFile(ctx, before.Signatures, p.Parse)
 
-                        { Chain = own p :: before.Chain
-                          Signatures = before.Signatures @ [ s ] }))
+                    { Chain = own p :: before.Chain
+                      Signatures = before.Signatures @ [ s ] }))
 
         let latest = Nodes.latestOf checkedSig
         let signature = createMemoWithComparer FileSig.Comparer (fun _ -> latest.Value)
@@ -853,4 +1012,6 @@ module internal FileNodes =
                 | _, Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
                 | _ -> ValueNone
 
-            member _.Results(_, _) = ValueNone }
+            member _.Results(_, _) = ValueNone
+            member _.FileResult(_, _) = ValueNone
+            member _.SegmentRows() = 0 }

@@ -24,7 +24,8 @@ let private withDeps (body: Session -> Task) =
 
 [<Tests>]
 let tests =
-    testSequenced
+    // One group with the fuzz: counts of checks are exact only when the machine is not also running 200-edit fuzzes
+    testSequencedGroup "Deps"
     <| testList
         "ProjectGraph"
         [ testTask "the fixture as it is equals the oracle" {
@@ -34,6 +35,24 @@ let tests =
                           let! diagnostics = s.Graph.AllDiagnostics() |> settle
                           do! expectOracle s diagnostics "initial"
                       })
+          }
+
+          testTask "the D1 premise breaks only for Shape, whose segment then runs to the end of A.fs" {
+              let! (spec: Rfs.Projects.ProjectSpec) = Rfs.Projects.ProjectSpec.load depsProject
+              let host = GraphHost.Start "premise"
+
+              try
+                  let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                  let! _ = graph.AllDiagnostics() |> settle
+                  // The finish rewrites the slot signatures of the comparison members generated for a union (and their
+                  // nullness), so Shape's final fingerprint differs from its check's; Shape is then a segment leader.
+                  // A.fs has no other leader: no free inference variables, no augmentation.
+                  Expect.equal graph.PremiseBreaks 1L "once, for one declaration"
+                  Expect.equal (graph.SegmentRows a) 4 "Shape, area, doubled, grouped"
+                  Expect.equal (graph.SegmentRows b) 2 "Counter and its augmentation"
+                  Expect.equal (graph.SegmentRows d) 4 "r, fill, size, after"
+              finally
+                  host.Dispose()
           }
 
           testTask "body edit re-checks one declaration" {
@@ -54,7 +73,7 @@ let tests =
                           // helper is hidden by E.fsi, so no later file sees the change; compute and other use it.
                           let! r = replace s e "let helper () : int = 5" "let helper () : string = \"5\""
                           Expect.equal (r.NamesIn e) [ "compute"; "helper"; "other" ] "helper and its two users"
-                          Expect.equal r.Delta 3L "1 + the 2 declarations of E.fs that use helper; unrelated, user and hidden kept"
+                          Expect.equal r.Delta 3L $"1 + the 2 declarations of E.fs that use helper; unrelated, user and hidden kept: %A{r.Ran}"
                           do! expectOracle s r.Diagnostics "signature edit in E.fs"
                       })
           }
@@ -71,13 +90,14 @@ let tests =
                               rows[f] <- Set.ofSeq results.Keys
 
                           let! r = replace s a "let scale (x: int) : int = x * 2" "let scale (x: int) : int64 = int64 (x * 2)"
-                          Expect.equal (r.NamesIn a) [ "doubled"; "scale" ] "scale and its user in A.fs"
+                          // doubled uses scale, and is in Shape's segment (D1 premise break), which re-checks whole
+                          Expect.equal (r.NamesIn a) [ "Shape"; "area"; "doubled"; "grouped"; "scale" ] "scale and the segment of its user"
 
                           for f in later do
                               Expect.equal (r.KeysIn f) rows[f] $"every declaration of %s{IO.Path.GetFileName f} re-checks: the file begins again"
 
                           let laterCount = later |> List.sumBy (fun f -> rows[f].Count)
-                          Expect.equal r.Delta (2L + int64 laterCount) "scale, doubled, and each declaration of each later file once"
+                          Expect.equal r.Delta (5L + int64 laterCount) "scale, the segment, and each declaration of each later file once"
                           do! expectOracle s r.Diagnostics "scale returns int64"
                       })
           }
@@ -97,10 +117,39 @@ let tests =
               do!
                   withDeps (fun s ->
                       task {
+                          Expect.equal (s.Graph.SegmentRows d) 4 "r's segment: r, fill, size, after"
                           let! r = replace s d "let after = 42" "let after = 43"
-                          Expect.equal (r.NamesIn d) [ "after"; "fill"; "r" ] "r, which fill solves in place, and everything after it"
-                          Expect.equal r.Delta 3L "start is kept"
+
+                          Expect.equal
+                              (r.NamesIn d)
+                              [ "after"; "fill"; "r"; "size" ]
+                              "r, which fill and size use (fill solves it in place), and everything after it"
+
+                          Expect.equal r.Delta 4L "start is kept"
                           do! expectOracle s r.Diagnostics "after r edited"
+                      })
+          }
+
+          testTask "a declaration that newly leaves free typars forms its segment" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          // Same lines: start becomes `ref []`, and after becomes its second user (fill is the first)
+                          let text =
+                              s.Texts[d]
+                                  .Replace("let start = baseValue + 1", "let start = ref []")
+                                  .Replace("let after = 42", "let after = start.Value |> List.length")
+
+                          let! r = edit s d text
+                          let runs = r.RunsIn d
+                          // start is checked on its own once (its text changed), then its segment checks start..after once;
+                          // a later row may run once more on its own before the segment forms, alone (the write-lock guard).
+                          for KeyValue(name, n) in runs do
+                              Expect.isLessThanOrEqual n 3 $"%s{name} ran %d{n} times: %A{runs}"
+
+                          Expect.equal (s.Graph.SegmentRows d) 5 "start leads the segment to the end of D.fs"
+                          do! expectOracle s r.Diagnostics "start = ref []"
+                          printfn $"runs per declaration after start became ref []: %A{runs}"
                       })
           }
 
@@ -111,7 +160,15 @@ let tests =
                           let events = ConcurrentQueue<string>()
                           use _ = s.Graph.Checked |> Observable.subscribe (fun (k, _) -> events.Enqueue k.Name)
                           let original = s.Texts[e]
+                          let v1Ran = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+                          use _ =
+                              s.Graph.Ran
+                              |> Observable.subscribe (fun (k, _) -> if k.Name = "onlyInV1" then v1Ran.TrySetResult(()) |> ignore)
+
                           s.Graph.SetText(e, original + "\nlet onlyInV1 = 1\n")
+                          // v2 arrives once a v1 check has run, while v1's finish is still to come
+                          let! () = settle v1Ran.Task
                           let v2 = original + "\nlet onlyInV2: string = 2\n"
                           s.Texts[e] <- v2
                           s.Graph.SetText(e, v2)
@@ -136,15 +193,19 @@ let tests =
                           let! after = s.Graph.Results a
                           Expect.equal (Set.ofSeq after.Keys) (Set.ofSeq before.Keys) "the same declarations"
 
+                          // grouped is in Shape's segment (Shape's final fingerprint breaks the D1 premise), so the
+                          // segment re-checks; the declarations before it keep their results.
+                          let segment = set [ "Shape"; "area"; "doubled"; "grouped" ]
+
                           for KeyValue(key, result) in before do
                               let kept = obj.ReferenceEquals(after[key], result)
 
-                              if key.Name = "grouped" then
-                                  Expect.isFalse kept "grouped re-checks"
+                              if segment.Contains key.Name then
+                                  Expect.isFalse kept $"%s{key.Name} re-checks with its segment"
                               else
                                   Expect.isTrue kept $"%s{key.Name} keeps its result"
 
-                          Expect.equal r.Delta 1L "only grouped"
+                          Expect.equal r.Delta 4L "grouped's segment"
                           do! expectOracle s r.Diagnostics "closing paren deleted"
                       })
           }
@@ -192,5 +253,36 @@ let tests =
                           Expect.isNonEmpty inner "Util has declarations"
                           Expect.isTrue (Set.isSubset inner (r.KeysIn b)) $"every declaration under the header, through Within: %A{r.KeysIn b}"
                           do! expectOracle s r.Diagnostics "Util internal"
+                      })
+          }
+
+          testTask "a line inserted above a declaration with a warning moves its warning (W1)" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let warnedAt (r: Edit) =
+                              r.Diagnostics[e] |> Array.filter (fun x -> x.ErrorNumber = 1182) |> Array.map _.StartLine
+
+                          let! r = replace s e "let other () =" "// a comment\nlet other () ="
+                          Expect.equal (warnedAt r) [| 12 |] "other's unused-value warning, one line lower"
+                          Expect.equal (r.NamesIn e) [ "other"; "unrelated" ] "the declarations that moved"
+                          do! expectOracle s r.Diagnostics "line inserted above other"
+                      })
+          }
+
+          testTask "a file whose finish fails adds nothing to later files" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let original = s.Texts[a]
+                          // Applying a default fails where the tail does not catch it: A.fs then contributes nothing,
+                          // though no declaration's fingerprint changes, and B.fs, which uses A, must begin again
+                          let! r = replace s a "| Circle r -> 3 * r * r" "| Circle r -> 3 * scale * r"
+                          Expect.isTrue (r.KeysIn b |> Set.exists (fun k -> k.Name = "counted")) "B.fs begins again"
+                          Expect.isNonEmpty r.Diagnostics[b] "B.fs no longer sees Deps.A"
+                          do! expectOracle s r.Diagnostics "A's finish fails"
+                          let! r = edit s a original
+                          Expect.isEmpty r.Diagnostics[b] "B.fs sees Deps.A again"
+                          do! expectOracle s r.Diagnostics "A's finish succeeds again"
                       })
           } ]

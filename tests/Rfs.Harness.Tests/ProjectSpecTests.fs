@@ -124,6 +124,21 @@ let tests =
               Expect.equal (ProjectSpec.missingReferences spec) [ absent ] "only the absent one, once"
           }
 
+          test "sequential makes --parallelcompilation- the last word" {
+              let spec =
+                  { ProjectFile = "p.fsproj"
+                    SourceFiles = []
+                    OtherOptions = [ "--a"; "--parallelcompilation+"; "--b" ]
+                    ReferencedProjects = [] }
+
+              Expect.equal (ProjectSpec.sequential spec).OtherOptions [ "--a"; "--b"; "--parallelcompilation-" ] "forced off"
+
+              Expect.equal
+                  (ProjectSpec.sequential { spec with OtherOptions = [ "--a" ] }).OtherOptions
+                  [ "--a"; "--parallelcompilation-" ]
+                  "added when absent"
+          }
+
           testTask "load fails naming the output of a referenced project that was never built" {
               use copy = copyTiny ()
               // The library sits in a subdirectory of the copy and is never built.

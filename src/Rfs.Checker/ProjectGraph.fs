@@ -73,7 +73,6 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
             let! files =
                 host.Read(fun () ->
                     let nodes = ResizeArray<IFileNode>()
-                    let indexes = ResizeArray<string * Memo<FileIndex>>()
                     let mutable before = None
 
                     for path, text in texts do
@@ -81,20 +80,12 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
                             if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
                                 FileNodes.signature project path text before
                             else
-                                let earlier = List.ofSeq indexes
-
-                                let earlierIndex =
-                                    createMemoWithComparer HashIdentity.Structural (fun _ ->
-                                        NameIndex.ofProject [ for file, index in earlier -> file, index.Value ])
-
                                 let signatureFile =
                                     texts
                                     |> List.tryFind (fun (f, _) -> String.Equals(f, path + "i", StringComparison.OrdinalIgnoreCase))
                                     |> Option.map fst
 
-                                let node, index = FileNodes.impl project path text before signatureFile earlierIndex
-                                indexes.Add((path, index))
-                                node
+                                FileNodes.impl project path text before signatureFile |> fst
 
                         nodes.Add node
                         before <- Some node.Signature
@@ -143,8 +134,46 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
                     f.Settled s |> ValueOption.map (fun _ -> None))
             |> ValueOption.map (fun all -> all[i].Value))
 
+    /// Every implementation file's FinishFile result once all files are settled on their latest texts.
+    member _.AllFileResults() : Task<IReadOnlyDictionary<string, FileResult>> =
+        host.WhenSettled(fun () ->
+            settled (files.Length - 1) (fun f s ->
+                if f.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                    f.Settled s |> ValueOption.map (fun _ -> None)
+                else
+                    f.FileResult s |> ValueOption.map Some)
+            |> ValueOption.map (fun all ->
+                let d = Dictionary<string, FileResult>()
+
+                for f, result in Array.zip files all do
+                    result |> Option.iter (fun r -> d[f.Path] <- r)
+
+                d :> IReadOnlyDictionary<_, _>))
+
+    /// How many declarations of the file are checked in segments (R11 and R12 spans), as the roles stand now.
+    member _.SegmentRows(file: string) : int =
+        let node = files[indexOf file]
+        (host.Read(fun () -> node.SegmentRows())).GetAwaiter().GetResult()
+
+    /// How many declarations of the project are checked in segments, as the roles stand now.
+    member _.SegmentRowsTotal: int =
+        (host.Read(fun () -> files |> Array.sumBy _.SegmentRows())).GetAwaiter().GetResult()
+
     /// How many times CheckDeclaration has run.
     member _.CheckedCount: int64 = project.CheckedCount
+
+    /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
+    member _.FinishTicks: int64 = project.FinishTicks
+
+    /// How many published results of declarations checked on their own had a final fingerprint other than the one
+    /// their check left (the D1 premise broke). Such a declaration is then checked as a segment leader.
+    member _.PremiseBreaks: int64 = project.PremiseBreaks
+
+    /// Each declaration whose final fingerprint broke the D1 premise, with its file, when it is published.
+    member _.PremiseBroken: IObservable<DeclarationKey * string> = project.PremiseBroken
+
+    /// Each CheckDeclaration that returned, with its file, on the thread that ran it.
+    member _.Ran: IObservable<DeclarationKey * string> = project.Ran
 
     /// Each newly published declaration result, with its file, on the graph thread.
     member _.Checked: IObservable<DeclarationKey * string> = project.Checked

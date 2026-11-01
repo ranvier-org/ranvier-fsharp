@@ -35,9 +35,6 @@ type FileIndex =
       /// Each augmentation, with the earlier declarations the names it augments may resolve to
       Augmentations: (DeclarationKey * DeclarationKey list) list }
 
-/// Each name defined by the implementation files of a project, with the declarations defining it.
-type ProjectIndex = Map<string, DeclarationRef list>
-
 /// How a declaration is checked: on its own, or as part of a segment its first declaration checks in order.
 [<RequireQualifiedAccess>]
 type Role =
@@ -46,7 +43,8 @@ type Role =
     | Leader of span: DeclarationKey[]
     | Member of leader: DeclarationKey
 
-/// What a declaration's check reads of the rest of its file.
+/// What a declaration's check reads of the rest of its file. Other files are read per file (R16): a file begins again when
+/// an earlier file's signature fingerprint changes.
 type Dependencies =
     { /// Earlier declarations of the file defining a name it uses (all of them when a name is unresolvable): a change
       /// to one's fingerprint re-checks it
@@ -56,10 +54,7 @@ type Dependencies =
       Identity: DeclarationKey[]
       /// Earlier declarations of the file its latest published result depends on through types (TypedUses): a change
       /// to one's fingerprint re-checks it. The check also reads its own latest result's, which can be newer.
-      Typed: DeclarationKey[]
-      /// Declarations of earlier files defining a name it uses. Cross-file dependencies are per file in v1 (R16): the
-      /// file begins again when an earlier file's signature changes, so these only record what a finer rule would read.
-      CrossFile: DeclarationRef[] }
+      Typed: DeclarationKey[] }
 
 module NameIndex =
 
@@ -99,14 +94,6 @@ module NameIndex =
           AffectsAllLater = List.ofSeq affectsAllLater
           Augmentations = List.ofSeq augmentations }
 
-    let ofProject (files: (string * FileIndex) list) : ProjectIndex =
-        (Map.empty, files)
-        ||> List.fold (fun acc (file, index) ->
-            (acc, index.Definers)
-            ||> Map.fold (fun acc name keys ->
-                let refs = [ for key in keys -> { File = file; Key = Some key } ]
-                acc |> Map.change name (fun known -> Some(Option.defaultValue [] known @ refs))))
-
     /// The keys of `TypedUses` that are declarations of `file` other than `self`, sorted.
     let typedKeys (file: string) (self: DeclarationKey) (uses: DeclarationRef[]) =
         uses
@@ -124,7 +111,6 @@ module NameIndex =
         (order: Order)
         (index: FileIndex)
         (typed: DeclarationKey[])
-        (earlierFiles: ProjectIndex)
         : Dependencies =
         let position =
             match order.TryPosition key with
@@ -165,13 +151,7 @@ module NameIndex =
 
         { Named = named
           Identity = identity
-          Typed = typed |> Array.filter earlier
-          CrossFile =
-            names
-            |> Seq.collect (fun n -> earlierFiles |> Map.tryFind n |> Option.defaultValue [])
-            |> Seq.distinct
-            |> Array.ofSeq
-            |> Array.sort }
+          Typed = typed |> Array.filter earlier }
 
     /// The role of every declaration. A segment starts at the first declaration whose result depends on later ones
     /// (R12) and runs to the end of the file, or at a type an augmentation of the file may extend (R11) and runs to its

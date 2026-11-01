@@ -142,6 +142,15 @@ let tests =
               Expect.equal inB.Head.Severity 1 "error"
           }
 
+          // In graph mode C.fs would not see A.fs (the path does not resolve), and the error would name Tiny instead
+          testTask "the oracle checks sequentially" {
+              use! (oracle: OracleClient) = OracleClient.start ()
+              let c = Path.Combine(tinyDir, "C.fs")
+              let! diagnostics = oracle.Check tinyProject (Map [ c, "module Tiny.C\n\nopen Tiny.A.Nope\n" ])
+              let messages = diagnostics |> List.map (fun (d: Diagnostic) -> d.Message)
+              Expect.contains messages "The namespace 'Nope' is not defined." (sprintf "%A" diagnostics)
+          }
+
           testTask "a project that cannot be loaded is an error and the oracle survives" {
               use! (oracle: OracleClient) = OracleClient.start ()
 

@@ -150,6 +150,15 @@ module ProjectSpec =
                 return requireReferences spec
         }
 
+    /// The spec with type checking forced sequential, as an editor checks: each file sees every earlier file. In the
+    /// compiler's default graph mode a file sees only the files the dependency graph links to it, which reports an
+    /// unresolvable reference differently. The last --parallelcompilation flag wins, so it goes last.
+    let sequential (spec: ProjectSpec) : ProjectSpec =
+        { spec with
+            OtherOptions =
+                (spec.OtherOptions |> List.filter (fun o -> not (o.StartsWith "--parallelcompilation")))
+                @ [ "--parallelcompilation-" ] }
+
     let toFcsOptions (spec: ProjectSpec) : FSharpProjectOptions =
         { ProjectFileName = spec.ProjectFile
           ProjectId = None

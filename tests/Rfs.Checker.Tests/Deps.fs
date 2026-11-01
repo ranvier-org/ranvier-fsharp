@@ -5,6 +5,7 @@ open System
 open System.Collections.Concurrent
 open System.Collections.Generic
 open System.IO
+open System.Threading
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.Declarations
@@ -30,6 +31,8 @@ type Session =
       Graph: ProjectGraph
       Spec: ProjectSpec
       Oracle: OracleClient
+      /// A project context of its own, for checking the current texts from scratch
+      Fresh: ProjectContext
       /// The current text of every source file
       Texts: Dictionary<string, string> }
 
@@ -56,6 +59,7 @@ let start () : Task<Session> =
         let! graph = ProjectGraph.Create(host, spec)
         let! _ = graph.AllDiagnostics() |> settle
         let! oracle = OracleClient.start ()
+        let! fresh = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
         let texts = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 
         for f in spec.SourceFiles do
@@ -66,6 +70,7 @@ let start () : Task<Session> =
               Graph = graph
               Spec = spec
               Oracle = oracle
+              Fresh = fresh
               Texts = texts }
     }
 
@@ -74,6 +79,8 @@ type Edit =
       Delta: int64
       /// The newly published results, in order
       Checked: (DeclarationKey * string) list
+      /// Every CheckDeclaration that returned, in order
+      Ran: (DeclarationKey * string) list
       Diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]> }
 
     /// The names of the published results of a file
@@ -90,11 +97,20 @@ type Edit =
         |> List.map fst
         |> Set.ofList
 
+    /// How many times each declaration of a file was checked
+    member e.RunsIn(file: string) =
+        e.Ran
+        |> List.filter (fun (_, f) -> String.Equals(f, file, StringComparison.OrdinalIgnoreCase))
+        |> List.countBy (fun (k, _) -> k.Name)
+        |> Map.ofList
+
 /// Sets the text of `file` and waits until every file is settled.
 let edit (s: Session) (file: string) (text: string) : Task<Edit> =
     task {
         let events = ConcurrentQueue<DeclarationKey * string>()
+        let ran = ConcurrentQueue<DeclarationKey * string>()
         use _ = s.Graph.Checked |> Observable.subscribe events.Enqueue
+        use _ = s.Graph.Ran |> Observable.subscribe ran.Enqueue
         let before = s.Graph.CheckedCount
         s.Texts[file] <- text
         s.Graph.SetText(file, text)
@@ -103,6 +119,7 @@ let edit (s: Session) (file: string) (text: string) : Task<Edit> =
         return
             { Delta = s.Graph.CheckedCount - before
               Checked = List.ofSeq events
+              Ran = List.ofSeq ran
               Diagnostics = diagnostics }
     }
 
@@ -122,8 +139,61 @@ let oracleDiff (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDiag
         return Diagnostics.compare expected actual
     }
 
+/// Each implementation file's final fingerprints from a declaration-by-declaration check of the current texts from
+/// scratch, with nothing kept.
+let freshFingerprints (s: Session) =
+    let mutable before = []
+    let result = Dictionary<string, IReadOnlyDictionary<DeclarationKey, string>>(StringComparer.OrdinalIgnoreCase)
+
+    for file in s.Spec.SourceFiles do
+        let parse = DeclarationChecker.Parse(s.Fresh, file, s.Texts[file])
+
+        if file.EndsWith ".fsi" then
+            before <- before @ [ DeclarationChecker.CheckSignatureFile(s.Fresh, before, parse) ]
+        else
+            let start, env0 = DeclarationChecker.BeginFile(s.Fresh, before, parse)
+
+            let results =
+                DeclarationChecker.Split parse
+                |> Array.mapFold
+                    (fun env decl ->
+                        let r = DeclarationChecker.CheckDeclaration(start, env, decl, CancellationToken.None)
+                        r, DeclarationChecker.ExtendEnv(env, r))
+                    env0
+                |> fst
+
+            let finished = DeclarationChecker.FinishFile(start, results, parse)
+            result[file] <- finished.Fingerprints
+            before <- before @ [ finished.Signature ]
+
+    result
+
+/// The lines by which the graph's final fingerprints differ from a check from scratch: a kept result that a full check
+/// would give differently, even when the diagnostics agree. Fingerprints that are not describable (`?`) are skipped.
+let fingerprintDiff (s: Session) : Task<string list> =
+    task {
+        let! graph = s.Graph.AllFileResults() |> settle
+        let fresh = freshFingerprints s
+
+        return
+            [ for KeyValue(file, expected) in fresh do
+                  let actual = graph[file].Fingerprints
+
+                  for KeyValue(key, fp) in expected do
+                      match actual.TryGetValue key with
+                      | true, a when a = fp || a.StartsWith "?" || fp.StartsWith "?" -> ()
+                      | true, a -> $"%s{Path.GetFileName file} %A{key.Name}: %s{a} <> fresh %s{fp}"
+                      | _ -> $"%s{Path.GetFileName file} %A{key.Name}: missing"
+
+                  if actual.Count <> expected.Count then
+                      $"%s{Path.GetFileName file}: %d{actual.Count} declarations <> fresh %d{expected.Count}" ]
+    }
+
+/// The graph's diagnostics equal the oracle's, and its fingerprints equal a check from scratch.
 let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]>) (what: string) =
     task {
         let! diff = oracleDiff s diagnostics
         Expect.isEmpty diff $"%s{what}: diagnostics equal a full check:\n%s{String.concat Environment.NewLine diff}"
+        let! fingerprints = fingerprintDiff s
+        Expect.isEmpty fingerprints $"%s{what}: fingerprints equal a check from scratch:\n%s{String.concat Environment.NewLine fingerprints}"
     }

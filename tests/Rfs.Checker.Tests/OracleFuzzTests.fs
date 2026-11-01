@@ -143,6 +143,113 @@ let private renameUse (pool: string[]) : Mutation =
             let other = if random.Next 5 = 0 then "undefinedName" else pick random pool
             Some(replaceMatch text m other, $"rename a use of %s{m.Value} -> %s{other}")
 
+/// Adds a declaration that redefines a name the project already defines: later uses of it now resolve to it.
+let private shadow (pool: string[]) : Mutation =
+    fun random text ->
+        let name = pick random pool
+        let body = if random.Next 2 = 0 then string (random.Next 100) else "\"text\""
+        Some(place random text (fun indent -> $"%s{indent}let %s{name} = %s{body}"))
+
+/// Adds `let refN = ref []` with a user, or takes one such pair out: a declaration that starts or stops leaving
+/// inference variables for a later one to solve (R12).
+let private freeTypars (counter: int ref) : Mutation =
+    fun random text ->
+        let existing = [| for m in Regex.Matches(text, @"let (fresh\d+) = ref \[\]") -> m.Groups[1].Value |]
+
+        if existing.Length > 0 && random.Next 2 = 0 then
+            let name = pick random existing
+            let ls = linesOf text
+            let kept = ls |> Array.filter (fun l -> not (Regex.IsMatch(l, $@"\b%s{name}\b")))
+            Some(unlines kept, $"remove %s{name} and its user")
+        else
+            counter.Value <- counter.Value + 1
+            let name = $"fresh%d{counter.Value}"
+            let value = if random.Next 2 = 0 then string (random.Next 100) else "\"s\""
+            let parts = blocks text
+            let at = 1 + random.Next parts.Length
+            let indent = String(' ', indentOf (if at < parts.Length then parts[at] else parts[parts.Length - 1]))
+
+            let added =
+                [| $"%s{indent}let %s{name} = ref []"; $"%s{indent}let use%s{name} () = %s{name}.Value <- [ %s{value} ]" |]
+
+            Some(join (Array.insertAt (at + 1) added[1] (Array.insertAt at added[0] parts)), $"add %s{name} = ref [] with a user")
+
+/// Renames a nested module's header (Util <-> Util2) or toggles `internal` on it, keeping every line in place.
+let private moduleHeader: Mutation =
+    fun random text ->
+        let ls = linesOf text
+        let headers = [| for i in 1 .. ls.Length - 1 do if Regex.IsMatch(ls[i], @"^\s*module (internal )?\w+ =\s*$") then i |]
+
+        if headers.Length = 0 then
+            None
+        else
+            let i = pick random headers
+            let line = ls[i]
+
+            let edited =
+                if random.Next 2 = 0 then
+                    if line.Contains "module internal " then line.Replace("module internal ", "module ")
+                    else line.Replace("module ", "module internal ")
+                else
+                    Regex.Replace(line, @"(\w+) =\s*$", fun m -> (if m.Groups[1].Value.EndsWith "2" then m.Groups[1].Value.TrimEnd('2') else m.Groups[1].Value + "2") + " =")
+
+            Some(unlines (Array.updateAt i edited ls), $"header `%s{line.Trim()}` -> `%s{edited.Trim()}`")
+
+/// Toggles [<AutoOpen>] on a module, on the line above its header, keeping every other line in place.
+let private autoOpen: Mutation =
+    fun random text ->
+        let ls = linesOf text
+
+        let slots =
+            [| for i in 1 .. ls.Length - 2 do
+                   if ls[i].Trim() = "[<AutoOpen>]" || (ls[i].Trim() = "" && Regex.IsMatch(ls[i + 1], @"^\s*module (internal )?\w+ =\s*$")) then
+                       i |]
+
+        if slots.Length = 0 then
+            None
+        else
+            let i = pick random slots
+
+            if ls[i].Trim() = "[<AutoOpen>]" then
+                Some(unlines (Array.updateAt i "" ls), "remove [<AutoOpen>]")
+            else
+                Some(unlines (Array.updateAt i (String(' ', indentOf ls[i + 1]) + "[<AutoOpen>]") ls), "add [<AutoOpen>]")
+
+/// Adds a member to an augmentation (`type T with`) or takes an added one out.
+let private augmentationMember (counter: int ref) : Mutation =
+    fun random text ->
+        let ls = linesOf text
+        let added = [| for i in 0 .. ls.Length - 1 do if Regex.IsMatch(ls[i], @"^\s*member \w+\.Extra\d+ = ") then i |]
+        let augmentations = [| for i in 0 .. ls.Length - 1 do if Regex.IsMatch(ls[i], @"^\s*type \w+ with\s*$") then i |]
+
+        if added.Length > 0 && random.Next 2 = 0 then
+            let i = pick random added
+            Some(unlines (Array.removeAt i ls), $"remove `%s{ls[i].Trim()}`")
+        elif augmentations.Length > 0 then
+            let i = pick random augmentations
+            counter.Value <- counter.Value + 1
+            let line = $"%s{String(' ', indentOf ls[i] + 4)}member c.Extra%d{counter.Value} = %d{random.Next 100}"
+            Some(unlines (Array.insertAt (i + 1) line ls), $"add `%s{line.Trim()}`")
+        else
+            None
+
+/// Doubles a space on the line a declaration starts on, after its start: its text changes, its start does not (W1).
+let private sameLine: Mutation =
+    fun random text ->
+        let ls = linesOf text
+
+        let spots =
+            [| for i in 1 .. ls.Length - 1 do
+                   if Regex.IsMatch(ls[i], @"^\s*let ") then
+                       for m in Regex.Matches(ls[i], " ") do
+                           if m.Index > indentOf ls[i] then i, m.Index |]
+
+        if spots.Length = 0 then
+            None
+        else
+            let i, at = pick random spots
+            Some(unlines (Array.updateAt i (ls[i].Insert(at, " ")) ls), $"double a space on line %d{i + 1}")
+
 let private run (seed: int) (steps: int) =
     task {
         let! s = start ()
@@ -160,7 +267,16 @@ let private run (seed: int) (steps: int) =
                removeDeclaration
                addOpen
                removeOpen
-               renameUse pool |]
+               renameUse pool
+               shadow pool
+               freeTypars counter
+               moduleHeader
+               autoOpen
+               augmentationMember counter
+               sameLine |]
+
+        let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
+        use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun (k, _) -> premise.Enqueue k)
 
         let mutable withErrors = 0
         let mutable errorFiles = 0
@@ -203,6 +319,11 @@ let private run (seed: int) (steps: int) =
             if not diff.IsEmpty then
                 fail (String.concat Environment.NewLine diff)
 
+            let! fingerprints = fingerprintDiff s
+
+            if not fingerprints.IsEmpty then
+                fail ("fingerprints differ from a check from scratch:\n" + String.concat Environment.NewLine fingerprints)
+
             if r.Diagnostics.Values |> Seq.exists (Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)) then
                 withErrors <- withErrors + 1
 
@@ -211,13 +332,20 @@ let private run (seed: int) (steps: int) =
             checks <- checks + r.Delta
             published <- published + r.Checked.Length
 
-        printfn $"seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{checks} declaration checks, %d{published} results published"
+        let broken = premise |> Seq.map (fun k -> k.Kind, k.Name) |> Seq.countBy id |> List.ofSeq
+
+        printfn
+            $"seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{checks} declaration checks, %d{published} results published, D1 premise breaks %A{broken}"
+
     }
 
 [<Tests>]
 let tests =
-    testSequenced
+    testSequencedGroup "Deps"
     <| testList
         "OracleFuzz"
         [ testTask "seed 1515: 200 random edits equal the oracle after each" { do! run 1515 200 }
-          testTask "seed 4242: 200 random edits equal the oracle after each" { do! run 4242 200 } ]
+          testTask "seed 4242: 200 random edits equal the oracle after each" { do! run 4242 200 }
+          testTask "seed 7919: 200 random edits equal the oracle after each" { do! run 7919 200 }
+          testTask "seed 47514: 200 random edits equal the oracle after each" { do! run 47514 200 }
+          testTask "seed 63352: 200 random edits equal the oracle after each" { do! run 63352 200 } ]

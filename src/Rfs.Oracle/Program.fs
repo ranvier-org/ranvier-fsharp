@@ -12,7 +12,8 @@ open Rfs.Projects
 
 let private check (project: string) (overrides: Map<string, string>) =
     // `load` has its own disk cache that notices project edits, so there is none here.
-    let spec = (ProjectSpec.load project).GetAwaiter().GetResult()
+    // Checked sequentially, whatever the project asks for, as editors and the declaration checker check.
+    let spec = (ProjectSpec.load project).GetAwaiter().GetResult() |> ProjectSpec.sequential
 
     let overrides =
         overrides |> Map.toSeq |> Seq.map (fun (p, t) -> LspClient.NormalizePath p, t) |> Map.ofSeq
