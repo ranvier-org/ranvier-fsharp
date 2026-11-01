@@ -111,7 +111,8 @@ module Engines =
                         return raise e
                 } }
 
-    /// The fork's InteractiveChecker with its file-level signature cutoff.
+    /// The fork's InteractiveChecker with its file-level signature cutoff, in the project's own type-checking mode: the
+    /// cutoff exists only in graph mode, so the project is not forced sequential as the oracle is.
     let fileSlim: EngineFactory =
         { Name = "file-slim"
           Create =
@@ -122,4 +123,5 @@ module Engines =
 
                 Task.FromResult(new FileSlimEngine(spec) :> IEngine) }
 
-    let all = [ decl; fileSlim ]
+    /// In the order the checkpoint runs them: the baseline first.
+    let all = [ fileSlim; decl ]

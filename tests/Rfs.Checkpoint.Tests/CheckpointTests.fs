@@ -143,6 +143,19 @@ let tests =
               let slim = results |> List.find (fun r -> r.Server = "file-slim")
               Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "decl counts its checks"
               Expect.isTrue (slim.Steps |> List.forall (fun s -> s.DeclsChecked.IsNone)) "file-slim has no declaration count"
+              Expect.isLessThan slim.StartedAt decl.StartedAt "the baseline runs first"
+          }
+
+          testTask "a failing child process fails the run" {
+              let work = freshDir "child"
+              let out = Path.Combine(work, "out")
+              let scenario = writeDepsScenario "Deps" work
+
+              // The child is the rfs-checkpoint apphost, which knows only the real engines, so it rejects this one.
+              let! code = Checkpoint.execute [ wrongEngine ] [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out |]
+
+              Expect.notEqual code 0 "exit code"
+              Expect.isFalse (Directory.Exists out && Directory.GetFiles(out).Length > 0) "nothing written"
           }
 
           testTask "an oracle mismatch is a step error and fails the run" {
@@ -150,7 +163,8 @@ let tests =
               let out = Path.Combine(work, "out")
               let scenario = writeDepsScenario "Deps" work
 
-              let! code = Checkpoint.execute [ wrongEngine ] [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out |]
+              let! code =
+                  Checkpoint.execute [ wrongEngine ] [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--in-process" |]
 
               Expect.notEqual code 0 "exit code"
               let result = readResults out |> List.exactlyOne
