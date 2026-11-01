@@ -3,7 +3,10 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="FakeServer.fs" />
     <Compile Include="JsonRpcTests.fs" />
+    <Compile Include="DocumentTests.fs" />
+    <Compile Include="LspClientTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
