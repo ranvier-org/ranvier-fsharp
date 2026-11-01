@@ -45,7 +45,7 @@ let private withRun
     use server = new FakeServer()
     use client = LspClient.Connect(server.ClientInput, server.ClientOutput)
     let path = fileA root
-    let scripted = Task.Run(fun () -> script server path)
+    let scripted = script server path
 
     let result =
         (Runner.runConnected opts client None "fake" (JsonObject()) (scenario (steps path)) root oracle)
@@ -215,6 +215,11 @@ let tests =
               Expect.equal result.Steps.Length 5 "open plus four repeats"
               Expect.all result.Steps (fun s -> s.Error.IsNone) "none failed"
               Expect.equal (client.Text path) source "every second state is the original text"
+
+              Expect.equal
+                  (result.Steps |> List.skip 1 |> List.map (fun s -> s.Step.Substring(s.Step.Length - 3)))
+                  [ "fwd"; "inv"; "fwd"; "inv" ]
+                  "forward and inverse steps are named apart"
           }
 
           test "cold time includes initialize and the first open" {
@@ -231,13 +236,95 @@ let tests =
                                       JsonNode.Parse """{"capabilities":{}}"""
                               )
 
-                              do! Task.Delay 20
                               do! afterOpen server path
                           })
                       None
 
               Expect.isGreaterThan result.ColdMs 100. "initialize counted"
               Expect.isGreaterThan result.ColdMs result.Steps[0].LatencyMs "more than the open alone"
+          }
+
+          test "oracle: a server publish equal to the oracle's gives an empty diff" {
+              let boom: Diagnostic =
+                  { File = ""
+                    Range =
+                      { Start = { Line = 0; Character = 0 }
+                        End = { Line = 0; Character = 1 } }
+                    Severity = 1
+                    Code = "FS1"
+                    Message = "boom"
+                    Source = "oracle" }
+
+              let oracle (texts: Map<string, string>) =
+                  Task.FromResult [ { boom with File = texts |> Map.toList |> List.head |> fst } ]
+
+              let result, _, _ =
+                  withRun
+                      options
+                      (fun _ -> [ Open "A.fs"; Edit("A.fs", insert "0", 1, Apply) ])
+                      (fun server path ->
+                          task {
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+
+                              do!
+                                  server.PublishDiagnostics(
+                                      path,
+                                      Some 1,
+                                      [ { DiagLine = 0
+                                          DiagStartChar = 0
+                                          DiagEndChar = 1
+                                          DiagSeverity = 1
+                                          DiagCode = "FS1"
+                                          DiagMessage = "boom" } ]
+                                  )
+                          })
+                      (Some oracle)
+
+              Expect.equal result.Steps[1].OracleDiff (Some []) "same diagnostics"
+          }
+
+          test "oracle ignores a late publish of an older version" {
+              let result, _, _ =
+                  withRun
+                      options
+                      (fun _ -> [ Open "A.fs"; Edit("A.fs", insert "0", 1, Apply) ])
+                      (fun server path ->
+                          task {
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+                              do! server.PublishDiagnostics(path, Some 1, [])
+
+                              do!
+                                  server.PublishDiagnostics(
+                                      path,
+                                      Some 0,
+                                      [ { DiagLine = 0
+                                          DiagStartChar = 0
+                                          DiagEndChar = 1
+                                          DiagSeverity = 1
+                                          DiagCode = "FS1"
+                                          DiagMessage = "stale" } ]
+                                  )
+                          })
+                      (Some(fun _ -> Task.FromResult []))
+
+              Expect.equal result.Steps[1].OracleDiff (Some []) "the version 1 publish is compared, not the stale one"
+          }
+
+          test "edit of a file that was never opened fails the step, not the run" {
+              let result, _, _ =
+                  withRun
+                      options
+                      (fun _ ->
+                          [ Open "A.fs"
+                            Edit("B.fs", insert "0", 1, Apply)
+                            Hover("A.fs", { Line = 1; Character = 4 }) ])
+                      (fun server path -> afterOpen server path)
+                      None
+
+              Expect.isSome result.Steps[1].Error "edit failed"
+              Expect.isNone result.Steps[2].Error "later step ran"
           }
 
           test "oracle diffs are stored per edit step" {

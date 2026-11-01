@@ -31,6 +31,17 @@ type MetricsCollector private (pid: int) =
         let current = proc.WorkingSet64
         peakWorkingSet <- max peakWorkingSet current
 
+    // The session comes before the poller so a failure here leaves nothing running.
+    // GCAllocationTick fires about every 100 KB of allocation, so the sum is approximate.
+    let session =
+        DiagnosticsClient(pid)
+            .StartEventPipeSession(
+                [ EventPipeProvider("Microsoft-Windows-DotNETRuntime", EventLevel.Verbose, gcKeyword) ],
+                false
+            )
+
+    let source = new EventPipeEventSource(session.EventStream)
+
     let process' =
         try
             Some(Process.GetProcessById pid)
@@ -57,16 +68,6 @@ type MetricsCollector private (pid: int) =
             }
             :> Task)
 
-    // GCAllocationTick fires about every 100 KB of allocation, so the sum is approximate.
-    let session =
-        DiagnosticsClient(pid)
-            .StartEventPipeSession(
-                [ EventPipeProvider("Microsoft-Windows-DotNETRuntime", EventLevel.Verbose, gcKeyword) ],
-                false
-            )
-
-    let source = new EventPipeEventSource(session.EventStream)
-
     let events =
         source.Clr.add_GCAllocationTick (fun e -> allocated <- allocated + float e.AllocationAmount64)
         source.Clr.add_GCStart (fun e -> if e.Depth = 2 then gen2 <- gen2 + 1)
@@ -74,6 +75,18 @@ type MetricsCollector private (pid: int) =
 
     /// Starts watching `pid`; the EventPipe session is established when this returns.
     static member Start(pid: int) = new MetricsCollector(pid)
+
+    /// Like Start, but a missing process or a refused session gives None and a warning on stderr, so a run's
+    /// latency data survives without metrics.
+    static member TryStart(pid: int) : MetricsCollector option =
+        if pid <= 0 then
+            None
+        else
+            try
+                Some(MetricsCollector.Start pid)
+            with e ->
+                eprintfn "warning: metrics unavailable for process %d: %s" pid e.Message
+                None
 
     /// Ends the session, waits for the buffered events to be read, and returns the totals.
     member _.Stop() : MetricsSnapshot =

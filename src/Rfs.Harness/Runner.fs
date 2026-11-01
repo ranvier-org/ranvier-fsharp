@@ -227,11 +227,39 @@ module Runner =
             let startedAt = DateTime.UtcNow
             let repo = Scenario.repoRoot corpusRoot scenario
             let fullPath relative = LspClient.NormalizePath(Scenario.resolve corpusRoot scenario relative)
-            let collector = pid |> Option.map MetricsCollector.Start
+            let collector = pid |> Option.bind MetricsCollector.TryStart
             let versions = Dictionary<string, int>()
             let opened = HashSet<string>()
-            let latest = ConcurrentDictionary<string, Diagnostic list>()
-            use latestSubscription = subscribe client.Diagnostics (fun (_, file, _, list) -> latest[file] <- list)
+            // every publish per file in arrival order, so a step can pick the one for the version it sent
+            let history = ConcurrentDictionary<string, List<int option * Diagnostic list>>()
+
+            use historySubscription =
+                subscribe client.Diagnostics (fun (_, file, version, list) ->
+                    let entries = history.GetOrAdd(file, fun _ -> List())
+                    lock entries (fun () -> entries.Add((version, list))))
+
+            /// The newest publish for a file: a late publish of an older version never wins over a newer one.
+            let current (file: string) =
+                match history.TryGetValue file with
+                | true, entries ->
+                    lock entries (fun () ->
+                        let highest = entries |> Seq.choose fst |> Seq.fold max (-1)
+
+                        entries
+                        |> Seq.tryFindBack (fun (v, _) -> v.IsNone || v = Some highest)
+                        |> Option.map snd)
+                    |> Option.defaultValue []
+                | _ -> []
+
+            /// The publish answering `version` of `file`; servers that omit versions are answered by their newest.
+            let answering (file: string) (version: int) =
+                match history.TryGetValue file with
+                | true, entries ->
+                    lock entries (fun () ->
+                        match entries |> Seq.tryFindBack (fun (v, _) -> v = Some version) with
+                        | Some(_, list) -> Some list
+                        | None -> entries |> Seq.tryFindBack (fun (v, _) -> v.IsNone) |> Option.map snd)
+                | _ -> None
             let results = List<StepResult>()
 
             let record name latency (watch: Watch option) outcome =
@@ -269,23 +297,33 @@ module Runner =
                         return record name 0. (Some watch) (Error(0., e.Message))
                 }
 
-            let checkOracle (result: StepResult) =
+            let checkOracle (result: StepResult) (edited: string) (version: int) =
                 task {
                     match oracle with
                     | None -> return result
+                    | _ when result.Error.IsSome -> return result
                     | Some ask ->
                         try
                             let texts = [ for p in opened -> p, client.Text p ] |> Map.ofList
                             let! expected = ask texts
+                            let answer = answering edited version
 
                             let actual =
-                                [ for KeyValue(file, list) in latest do
-                                      if opened.Contains file then
-                                          yield! list ]
+                                [ for file in opened do
+                                      if file = edited then
+                                          yield! defaultArg answer []
+                                      else
+                                          yield! current file ]
+
+                            let missing =
+                                if answer.IsNone then
+                                    [ $"no publish for version %d{version} of %s{edited}" ]
+                                else
+                                    []
 
                             let updated =
                                 { result with
-                                    OracleDiff = Some(diffDiagnostics expected actual) }
+                                    OracleDiff = Some(missing @ diffDiagnostics expected actual) }
 
                             results[results.Count - 1] <- updated
                             return updated
@@ -299,15 +337,28 @@ module Runner =
                 }
 
             let openFiles name (relatives: string list) =
-                let paths = relatives |> List.map fullPath
+                task {
+                    let paths = relatives |> List.map fullPath
 
-                awaitPublish name paths None (fun () ->
-                    task {
-                        for path in paths do
-                            do! client.DidOpen(path, File.ReadAllText path)
-                            versions[path] <- 0
-                            opened.Add path |> ignore
-                    })
+                    // read before the clock starts: the measurement is the server's, not the harness's disk
+                    let texts =
+                        try
+                            Ok [ for path in paths -> path, File.ReadAllText path ]
+                        with e ->
+                            Error e.Message
+
+                    match texts with
+                    | Error why -> return record name 0. None (Error(0., why))
+                    | Ok texts ->
+                        return!
+                            awaitPublish name paths None (fun () ->
+                                task {
+                                    for path, text in texts do
+                                        do! client.DidOpen(path, text)
+                                        versions[path] <- 0
+                                        opened.Add path |> ignore
+                                })
+                }
 
             let request name method (file: string) (position: Position) (extra: (string * JsonNode) list) =
                 task {
@@ -383,26 +434,29 @@ module Runner =
                     let path = fullPath file
                     let mutable undo = None
 
-                    for i in 0 .. repeat - 1 do
-                        let forward =
-                            match mode, undo with
-                            | Toggle, Some(undoEdit: Edit) ->
-                                undo <- None
-                                undoEdit
-                            | Toggle, None ->
-                                undo <- Some(inverse (client.Text path) edit)
-                                edit
-                            | Apply, _ -> edit
+                    if not (opened.Contains path) then
+                        record $"edit %s{file}" 0. None (Error(0., $"%s{file} was never opened")) |> ignore
+                    else
+                        for i in 0 .. repeat - 1 do
+                            let forward, direction =
+                                match mode, undo with
+                                | Toggle, Some(undoEdit: Edit) ->
+                                    undo <- None
+                                    undoEdit, " inv"
+                                | Toggle, None ->
+                                    undo <- Some(inverse (client.Text path) edit)
+                                    edit, " fwd"
+                                | Apply, _ -> edit, ""
 
-                        let version = versions[path] + 1
-                        versions[path] <- version
+                            let version = versions[path] + 1
+                            versions[path] <- version
 
-                        let name =
-                            $"edit %s{file} %s{describe edit.Range.Start}-%s{describe edit.Range.End} #%d{i + 1}"
+                            let name =
+                                $"edit %s{file} %s{describe edit.Range.Start}-%s{describe edit.Range.End} #%d{i + 1}%s{direction}"
 
-                        let! r = awaitPublish name [ path ] (Some version) (fun () -> client.DidChange(path, version, forward))
-                        let! _ = checkOracle r
-                        ()
+                            let! r = awaitPublish name [ path ] (Some version) (fun () -> client.DidChange(path, version, forward))
+                            let! _ = checkOracle r path version
+                            ()
                 | Hover(file, p) -> let! _ = request $"hover %s{file} %s{describe p}" "textDocument/hover" file p [] in ()
                 | Completion(file, p) ->
                     let! _ = request $"completion %s{file} %s{describe p}" "textDocument/completion" file p []
@@ -418,7 +472,12 @@ module Runner =
 
                     ()
 
-            let snapshot = collector |> Option.map _.Stop()
+            let snapshot =
+                try
+                    collector |> Option.map _.Stop()
+                with e ->
+                    eprintfn "warning: metrics lost: %s" e.Message
+                    None
 
             return
                 { Server = serverName
