@@ -103,14 +103,15 @@ let freeTyparTests =
 
 let private bHeader = "module Tiny.B\n\nlet two = Tiny.A.one + 1\n\n"
 
-/// B.fs, whose signature declares only `two`, checked one declaration at a time with extra options: the check, a
-/// parse of an edited body, and a comparison with the full check of an edited body.
-let private checkB (options: string list) (body: string) =
+/// B.fs checked one declaration at a time with extra options, and with its signature replaced by `fsi` if given (it
+/// declares only `two`): the check, a parse of an edited body, and a comparison with the full check of an edited body.
+let private checkBWith (fsi: string option) (options: string list) (body: string) =
     async {
         let! t = tiny.Value |> Async.AwaitTask
         let spec = { t.Spec with OtherOptions = t.Spec.OtherOptions @ options }
         let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
-        let b = declByDecl ctx spec (sources spec (Map.ofList [ "B.fs", bHeader + body ])) |> List.find (fun f -> f.File.EndsWith "B.fs")
+        let sources text = sources spec (Map.ofList [ yield "B.fs", text; match fsi with Some s -> yield "B.fsi", s | None -> () ])
+        let b = declByDecl ctx spec (sources (bHeader + body)) |> List.find (fun f -> f.File.EndsWith "B.fs")
 
         let parseB (edited: string) =
             let parse = DeclarationChecker.Parse(ctx, b.File, bHeader + edited)
@@ -118,7 +119,7 @@ let private checkB (options: string list) (body: string) =
 
         let oracleB (edited: string) (fileResult: FileResult) (what: string) =
             async {
-                let! expected = oracle spec (sources spec (Map.ofList [ "B.fs", bHeader + edited ])) b.File
+                let! expected = oracle spec (sources (bHeader + edited)) b.File
                 let diff = Diagnostics.compare (toLsp expected) (toLsp fileResult.Diagnostics)
                 Expect.isEmpty diff $"%s{what}: diagnostics equal a full check:\n%s{String.concat Environment.NewLine diff}"
                 return expected
@@ -127,6 +128,8 @@ let private checkB (options: string list) (body: string) =
         let! _ = oracleB body b.FileResult "the original"
         return b, parseB, oracleB
     }
+
+let private checkB = checkBWith None
 
 let private unusedAt (line: int) (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
     diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1182 && d.Range.StartLine = line)
@@ -180,6 +183,18 @@ let unusedValueTests =
               let again = DeclarationChecker.FinishFile(b.Start, b.Results, b.Start.Parse)
               let! expected = oracleB body again "finished again"
               Expect.isTrue (unusedAt 7 expected) "the full check reports unused"
+          }
+
+          // One row holds both x: a reference to M.x must not mark M.N.x
+          testAsync "same-named values in nested modules of one row" {
+              let fsi = "module Tiny.B\n\nval two: int\n\nmodule M =\n    val y: int\n\n    module N = begin end\n"
+              let body = "module rec M =\n    let x = 1\n\n    module N =\n        let x = 2\n\n    let y = x\n"
+              let! b, parseB, oracleB = checkBWith (Some fsi) [ "--warnon:1182" ] body
+              Expect.isTrue (unusedAt 9 b.FileResult.Diagnostics) "M.N.x is unused in the declaration-by-declaration check"
+              let parse, decls = parseB body
+              let finished = DeclarationChecker.FinishFile(b.Start, recheck b decls b.Results [ 1 ], parse)
+              let! expected = oracleB body finished "the row re-checked"
+              Expect.isTrue (unusedAt 9 expected) "the full check reports M.N.x unused"
           } ]
 
 [<Tests>]
