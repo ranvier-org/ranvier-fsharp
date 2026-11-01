@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
+    <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" />
+  </ItemGroup>
+</Project>

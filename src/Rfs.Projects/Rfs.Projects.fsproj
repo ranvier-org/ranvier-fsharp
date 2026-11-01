@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="ProjectSpec.fs" />
+    <Compile Include="FcsDiagnostics.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">
       <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
     </Reference>
     <PackageReference Include="Ionide.ProjInfo" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
   </ItemGroup>
 </Project>

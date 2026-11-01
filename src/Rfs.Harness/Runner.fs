@@ -44,24 +44,6 @@ module Runner =
         { StepTimeout = TimeSpan.FromSeconds 120.
           Quiet = TimeSpan.FromMilliseconds 300. }
 
-    /// Task 6 replaces this with `Diagnostics.compare`. Source is ignored: it names the server.
-    let diffDiagnostics (expected: Diagnostic list) (actual: Diagnostic list) : string list =
-        let key (d: Diagnostic) =
-            $"%s{d.File} %d{d.Range.Start.Line}:%d{d.Range.Start.Character}-%d{d.Range.End.Line}:%d{d.Range.End.Character} sev=%d{d.Severity} %s{d.Code} %s{d.Message}"
-
-        let counts items =
-            items |> List.countBy key |> Map.ofList
-
-        let e, a = counts expected, counts actual
-
-        let surplus (label: string) (left: Map<string, int>) (right: Map<string, int>) =
-            [ for KeyValue(k, n) in left do
-                  let extra = n - (right |> Map.tryFind k |> Option.defaultValue 0)
-
-                  for _ in 1..extra -> $"%s{label}: %s{k}" ]
-
-        surplus "missing" e a @ surplus "unexpected" a e
-
     let private subscribe (source: IObservable<'T>) (f: 'T -> unit) =
         source.Subscribe
             { new IObserver<'T> with
@@ -323,7 +305,7 @@ module Runner =
 
                             let updated =
                                 { result with
-                                    OracleDiff = Some(missing @ diffDiagnostics expected actual) }
+                                    OracleDiff = Some(missing @ Rfs.Lsp.Diagnostics.compare expected actual) }
 
                             results[results.Count - 1] <- updated
                             return updated

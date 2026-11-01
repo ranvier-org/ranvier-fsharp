@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Rfs.Harness/Rfs.Harness.fsproj" />
     <Project Path="src/Rfs.Lsp/Rfs.Lsp.fsproj" />
+    <Project Path="src/Rfs.Oracle/Rfs.Oracle.fsproj" />
     <Project Path="src/Rfs.Projects/Rfs.Projects.fsproj" />
   </Folder>
   <Folder Name="/tests/">

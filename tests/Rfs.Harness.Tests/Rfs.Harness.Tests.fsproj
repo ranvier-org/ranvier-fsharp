@@ -9,6 +9,7 @@
     <Compile Include="MetricsTests.fs" />
     <Compile Include="RunnerTests.fs" />
     <Compile Include="ProjectSpecTests.fs" />
+    <Compile Include="OracleTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

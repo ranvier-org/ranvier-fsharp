@@ -3,5 +3,6 @@
     <Compile Include="JsonRpc.fs" />
     <Compile Include="Document.fs" />
     <Compile Include="LspClient.fs" />
+    <Compile Include="Diagnostics.fs" />
   </ItemGroup>
 </Project>

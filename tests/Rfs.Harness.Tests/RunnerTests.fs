@@ -355,19 +355,4 @@ let tests =
 
               Expect.isNone result.Steps[0].OracleDiff "only edits are checked"
               Expect.equal (result.Steps[1].OracleDiff |> Option.map List.length) (Some 1) "oracle reported a diagnostic the server did not"
-          }
-
-          test "diffDiagnostics reports both directions and ignores source" {
-              let d line : Diagnostic =
-                  { File = "F"
-                    Range =
-                      { Start = { Line = line; Character = 0 }
-                        End = { Line = line; Character = 1 } }
-                    Severity = 1
-                    Code = "FS1"
-                    Message = "m"
-                    Source = "a" }
-
-              Expect.isEmpty (Runner.diffDiagnostics [ d 1 ] [ { d 1 with Source = "b" } ]) "same"
-              Expect.equal (Runner.diffDiagnostics [ d 1 ] [ d 2 ]).Length 2 "one missing, one unexpected"
           } ]

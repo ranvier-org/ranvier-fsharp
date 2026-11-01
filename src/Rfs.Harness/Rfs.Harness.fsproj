@@ -3,6 +3,7 @@
     <Compile Include="Scenario.fs" />
     <Compile Include="Servers.fs" />
     <Compile Include="Metrics.fs" />
+    <Compile Include="OracleClient.fs" />
     <Compile Include="Runner.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -11,5 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
+    <!-- Not used from code: it brings the oracle executable and its dependencies into this project's output. -->
+    <ProjectReference Include="..\Rfs.Oracle\Rfs.Oracle.fsproj" />
   </ItemGroup>
 </Project>

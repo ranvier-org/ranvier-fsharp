@@ -96,6 +96,10 @@ module ProjectSpec =
         task {
             let fsproj = Path.GetFullPath fsproj
 
+            // With a leftover obj/project.assets.json a missing project would otherwise load as an empty one.
+            if not (File.Exists fsproj) then
+                raise (FileNotFoundException($"project file not found: {fsproj}", fsproj))
+
             let cached =
                 if isFresh fsproj then
                     try
@@ -112,10 +116,21 @@ module ProjectSpec =
                     do! restore fsproj
 
                 let spec = loadFresh fsproj
-                Directory.CreateDirectory(objDir fsproj) |> ignore
+                // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
                 let tmp = cachePath fsproj + "." + Guid.NewGuid().ToString("N") + ".tmp"
-                File.WriteAllText(tmp, toJson spec)
-                File.Move(tmp, cachePath fsproj, true)
+
+                try
+                    Directory.CreateDirectory(objDir fsproj) |> ignore
+                    File.WriteAllText(tmp, toJson spec)
+                    File.Move(tmp, cachePath fsproj, true)
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException ->
+                    try
+                        File.Delete tmp
+                    with _ ->
+                        ()
+
                 return spec
         }
 

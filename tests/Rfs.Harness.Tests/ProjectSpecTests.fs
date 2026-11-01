@@ -100,6 +100,17 @@ let tests =
                   Expect.equal again first "reloaded"
           }
 
+          testTask "a cache that cannot be written does not fail load" {
+              use copy = copyTiny ()
+              // a directory where the cache file belongs makes the final move fail
+              Directory.CreateDirectory(Path.Combine(copy.Dir, "obj", "rfs-spec.json")) |> ignore
+              let! spec = ProjectSpec.load copy.Project
+              Expect.equal spec.SourceFiles.Length 4 "loaded anyway"
+
+              let leftovers = Directory.GetFiles(Path.Combine(copy.Dir, "obj"), "*.tmp")
+              Expect.isEmpty leftovers "temp file removed"
+          }
+
           testTask "loads the corpus projects" {
               let repoRoot = DirectoryInfo(tinyDir).Parent.Parent.Parent
               let corpusRoot = Path.Combine(repoRoot.Parent.FullName, "ranvier-fsharp-corpus")
