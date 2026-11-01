@@ -32,7 +32,8 @@ let private scenario steps : Scenario =
 let private fileA (root: string) =
     LspClient.NormalizePath(Path.Combine(root, "small", "A.fs"))
 
-let private withRun
+let private withRunMode
+    (mode: OracleMode)
     (opts: RunnerOptions)
     (steps: string -> Step list)
     (script: FakeServer -> string -> Task)
@@ -48,13 +49,15 @@ let private withRun
     let scripted = script server path
 
     let result =
-        (Runner.runConnected opts client None "fake" (JsonObject()) (scenario (steps path)) root oracle)
+        (Runner.runConnected opts client None "fake" (JsonObject()) (scenario (steps path)) root mode oracle)
             .GetAwaiter()
             .GetResult()
 
     scripted.GetAwaiter().GetResult()
     Directory.Delete(root, true)
     result, client, path
+
+let private withRun = withRunMode Report
 
 let private versionOf (m: JsonObject) =
     let document = m["params"]["textDocument"]
@@ -355,4 +358,107 @@ let tests =
 
               Expect.isNone result.Steps[0].OracleDiff "only edits are checked"
               Expect.equal (result.Steps[1].OracleDiff |> Option.map List.length) (Some 1) "oracle reported a diagnostic the server did not"
+          }
+
+          // The oracle reports one error the server does not publish.
+          let mismatch (mode: OracleMode) =
+              let oracle (texts: Map<string, string>) =
+                  let file = texts |> Map.toList |> List.head |> fst
+
+                  Task.FromResult
+                      [ { File = file
+                          Range =
+                            { Start = { Line = 0; Character = 0 }
+                              End = { Line = 0; Character = 1 } }
+                          Severity = 1
+                          Code = "FS0001"
+                          Message = "boom"
+                          Source = "F# Compiler" } ]
+
+              let result, _, _ =
+                  withRunMode
+                      mode
+                      options
+                      (fun _ -> [ Open "A.fs"; Edit("A.fs", insert "0", 1, Apply) ])
+                      (fun server path ->
+                          task {
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+                              do! publish server path (Some 1)
+                          })
+                      (Some oracle)
+
+              result
+
+          test "oracle: a Strict server with a diff gets an error on the step, the run goes on" {
+              let result = mismatch Strict
+              Expect.equal result.Steps[1].Error (Some "oracle mismatch: 1 diffs") "step failed"
+              Expect.isNone result.Steps[0].Error "open is not checked"
+          }
+
+          test "oracle: a Report server with a diff only records it" {
+              let result = mismatch Report
+              Expect.isNone result.Steps[1].Error "no error"
+              Expect.equal (result.Steps[1].OracleDiff |> Option.map List.length) (Some 1) "recorded"
+          }
+
+          test "oracle: a Strict server without a diff has no error" {
+              let result, _, _ =
+                  withRunMode
+                      Strict
+                      options
+                      (fun _ -> [ Open "A.fs"; Edit("A.fs", insert "0", 1, Apply) ])
+                      (fun server path ->
+                          task {
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+                              do! publish server path (Some 1)
+                          })
+                      (Some(fun _ -> Task.FromResult []))
+
+              Expect.isNone result.Steps[1].Error "no error"
+              Expect.equal result.Steps[1].OracleDiff (Some []) "equal"
+          }
+
+          test "oracle: diagnostics in files the client has not opened are not compared" {
+              let at file message : Diagnostic =
+                  { File = file
+                    Range =
+                      { Start = { Line = 0; Character = 0 }
+                        End = { Line = 0; Character = 1 } }
+                    Severity = 1
+                    Code = "FS0001"
+                    Message = message
+                    Source = "F# Compiler" }
+
+              let oracle (texts: Map<string, string>) =
+                  let opened = texts |> Map.toList |> List.head |> fst
+                  let unopened = Path.Combine(Path.GetDirectoryName opened, "Unopened.fs")
+                  Task.FromResult [ at opened "boom"; at unopened "elsewhere" ]
+
+              let result, _, _ =
+                  withRunMode
+                      Strict
+                      options
+                      (fun _ -> [ Open "A.fs"; Edit("A.fs", insert "0", 1, Apply) ])
+                      (fun server path ->
+                          task {
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+
+                              do!
+                                  server.PublishDiagnostics(
+                                      path,
+                                      Some 1,
+                                      [ { DiagLine = 0
+                                          DiagStartChar = 0
+                                          DiagEndChar = 1
+                                          DiagSeverity = 1
+                                          DiagCode = "FS0001"
+                                          DiagMessage = "boom" } ]
+                                  )
+                          })
+                      (Some oracle)
+
+              Expect.equal result.Steps[1].OracleDiff (Some []) "only the opened file's diagnostic is compared"
           } ]

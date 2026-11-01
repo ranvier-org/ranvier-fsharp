@@ -82,16 +82,64 @@ let tests =
                       "range on the empty string literal"
               | other -> failtestf "expected one diagnostic, got %A" other
 
+              // what FSAC sends for the same diagnostic: integer code, platform newlines
+              let fsacShaped =
+                  diagnostics
+                  |> List.map (fun d ->
+                      { d with
+                          Code = "1"
+                          Message = d.Message.Replace("\u001d", "\r\n") })
+
+              Expect.isEmpty (Diagnostics.compare diagnostics fsacShaped) "FSAC's spelling pairs equal"
+
               // the oracle checks from scratch: dropping the override gives the clean project again
               let! clean = oracle.Check tinyProject Map.empty
               Expect.isEmpty clean "no leftover state"
+          }
+
+          testTask "CRLF text gives the same range as LF" {
+              use! (oracle: OracleClient) = OracleClient.start ()
+              let c = Path.Combine(tinyDir, "C.fs")
+              let! diagnostics = oracle.Check tinyProject (Map [ c, "module Tiny.C\r\n\r\nlet x: int = \"\"\r\n" ])
+
+              match diagnostics with
+              | [ d ] ->
+                  Expect.equal d.Code "FS0001" "code"
+
+                  Expect.equal
+                      d.Range
+                      { Start = { Line = 2; Character = 13 }
+                        End = { Line = 2; Character = 15 } }
+                      "same range as with LF"
+              | other -> failtestf "expected one diagnostic, got %A" other
+          }
+
+          test "an FSAC-shaped diagnostic pairs with the oracle's" {
+              let oracle =
+                  { diagnostic 3 with
+                      Severity = 4
+                      Message = "first\u001dsecond"
+                      Source = "F# Compiler" }
+
+              let fsac =
+                  { oracle with
+                      Severity = 0
+                      Code = "1"
+                      Message = "first\r\nsecond" }
+
+              Expect.isEmpty (Diagnostics.compare [ oracle ] [ fsac ]) "hidden severity, integer code and newline normalised"
+              Expect.isNonEmpty (Diagnostics.compare [ oracle ] [ { fsac with Code = "2" } ]) "a different number still differs"
           }
 
           testTask "an override of a signature file changes dependents" {
               use! (oracle: OracleClient) = OracleClient.start ()
               let bsig = Path.Combine(tinyDir, "B.fsi")
               let! diagnostics = oracle.Check tinyProject (Map [ bsig, "module Tiny.B\n\nval two: string\n" ])
-              Expect.isNonEmpty diagnostics "B.fs no longer matches its signature"
+              let b = LspClient.NormalizePath(Path.Combine(tinyDir, "B.fs"))
+              let inB = diagnostics |> List.filter (fun d -> d.File = b)
+              Expect.isNonEmpty inB (sprintf "B.fs no longer matches its signature: %A" diagnostics)
+              Expect.equal inB.Head.Code "FS0034" (sprintf "%A" diagnostics)
+              Expect.equal inB.Head.Severity 1 "error"
           }
 
           testTask "a project that cannot be loaded is an error and the oracle survives" {

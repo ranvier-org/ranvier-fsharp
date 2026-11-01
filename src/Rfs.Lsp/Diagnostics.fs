@@ -18,9 +18,22 @@ module Diagnostics =
         with _ ->
             file
 
+    /// FSAC sends the compiler's number as an integer, which the client reads as "1"; `ofFcs` spells it FS0001.
+    let private normaliseCode (code: string) =
+        match Int32.TryParse code with
+        | true, n when code |> Seq.forall Char.IsAsciiDigit -> $"FS%04d{n}"
+        | _ -> code
+
+    /// FSAC leaves the severity out for Hidden diagnostics, which the client reads as 0; Hidden is 4.
+    let private normaliseSeverity (severity: int) = if severity = 0 then 4 else severity
+
+    /// FCS separates the paragraphs of a message with U+001D; FSAC turns it into the platform's newline.
+    let private normaliseMessage (message: string) =
+        message.Replace("\u001d", "\n").Replace("\r\n", "\n")
+
     /// Source is not part of the key: it names the server that produced the diagnostic.
     let private key (d: Diagnostic) =
-        $"%s{normalise d.File} %d{d.Range.Start.Line}:%d{d.Range.Start.Character}-%d{d.Range.End.Line}:%d{d.Range.End.Character} sev=%d{d.Severity} %s{d.Code} %s{d.Message}"
+        $"%s{normalise d.File} %d{d.Range.Start.Line}:%d{d.Range.Start.Character}-%d{d.Range.End.Line}:%d{d.Range.End.Character} sev=%d{normaliseSeverity d.Severity} %s{normaliseCode d.Code} %s{normaliseMessage d.Message}"
 
     /// One line per difference, "missing: ..." or "unexpected: ..."; empty means equal. Duplicates count.
     let compare (expected: Diagnostic list) (actual: Diagnostic list) : string list =

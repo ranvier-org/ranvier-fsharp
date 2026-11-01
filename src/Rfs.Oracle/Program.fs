@@ -3,7 +3,6 @@
 module Rfs.Oracle.Program
 
 open System
-open System.Collections.Generic
 open System.IO
 open System.Text
 open System.Text.Json.Nodes
@@ -11,14 +10,9 @@ open FSharp.Compiler.SourceCodeServices
 open Rfs.Lsp
 open Rfs.Projects
 
-let private check (specs: Dictionary<string, ProjectSpec>) (project: string) (overrides: Map<string, string>) =
-    let spec =
-        match specs.TryGetValue project with
-        | true, spec -> spec
-        | _ ->
-            let spec = (ProjectSpec.load project).GetAwaiter().GetResult()
-            specs[project] <- spec
-            spec
+let private check (project: string) (overrides: Map<string, string>) =
+    // `load` has its own disk cache that notices project edits, so there is none here.
+    let spec = (ProjectSpec.load project).GetAwaiter().GetResult()
 
     let overrides =
         overrides |> Map.toSeq |> Seq.map (fun (p, t) -> LspClient.NormalizePath p, t) |> Map.ofSeq
@@ -39,9 +33,9 @@ let private check (specs: Dictionary<string, ProjectSpec>) (project: string) (ov
         checker.ParseAndCheckProject(spec.ProjectFile, files, sourceReader)
         |> Async.RunSynchronously
 
-    [ for d in results.Diagnostics -> Diagnostics.ofFcs d ]
+    [ for d in results.Diagnostics -> FcsDiagnostics.ofFcs d ]
 
-let private respond (request: JsonNode) (specs: Dictionary<string, ProjectSpec>) =
+let private respond (request: JsonNode) =
     let project = request["project"].GetValue<string>() |> Path.GetFullPath
 
     let overrides =
@@ -51,7 +45,7 @@ let private respond (request: JsonNode) (specs: Dictionary<string, ProjectSpec>)
 
     let diagnostics = JsonArray()
 
-    for d in check specs project overrides do
+    for d in check project overrides do
         diagnostics.Add(Rfs.Lsp.Diagnostics.toJson d)
 
     let response = JsonObject()
@@ -69,7 +63,6 @@ let main _ =
     output.AutoFlush <- true
     Console.SetOut Console.Error
     let input = new StreamReader(Console.OpenStandardInput(), utf8)
-    let specs = Dictionary<string, ProjectSpec>(StringComparer.OrdinalIgnoreCase)
 
     let mutable line = input.ReadLine()
 
@@ -77,7 +70,7 @@ let main _ =
         if line.Trim() <> "" then
             let response =
                 try
-                    respond (JsonNode.Parse line) specs
+                    respond (JsonNode.Parse line)
                 with e ->
                     let o = JsonObject()
                     o["error"] <- JsonValue.Create(e.ToString())

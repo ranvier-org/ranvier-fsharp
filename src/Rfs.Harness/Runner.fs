@@ -203,6 +203,7 @@ module Runner =
         (initOptions: JsonNode)
         (scenario: Scenario)
         (corpusRoot: string)
+        (mode: OracleMode)
         (oracle: (Map<string, string> -> Task<Diagnostic list>) option)
         : Task<RunResult> =
         task {
@@ -287,7 +288,9 @@ module Runner =
                     | Some ask ->
                         try
                             let texts = [ for p in opened -> p, client.Text p ] |> Map.ofList
-                            let! expected = ask texts
+                            let! whole = ask texts
+                            // servers publish only for open documents, the oracle checks the whole project
+                            let expected = whole |> List.filter (fun d -> opened.Contains d.File)
                             let answer = answering edited version
 
                             let actual =
@@ -303,9 +306,15 @@ module Runner =
                                 else
                                     []
 
+                            let diff = missing @ Rfs.Lsp.Diagnostics.compare expected actual
+
                             let updated =
                                 { result with
-                                    OracleDiff = Some(missing @ Rfs.Lsp.Diagnostics.compare expected actual) }
+                                    OracleDiff = Some diff
+                                    Error =
+                                        match mode with
+                                        | Strict when not diff.IsEmpty -> Some $"oracle mismatch: %d{diff.Length} diffs"
+                                        | _ -> None }
 
                             results[results.Count - 1] <- updated
                             return updated
@@ -485,7 +494,7 @@ module Runner =
             let repo = Scenario.repoRoot corpusRoot scenario
             let! client = LspClient.Start(server.Command, Array.ofList server.Args, server.Env, repo)
             use _ = client :> IDisposable
-            let! result = runConnected options client (Some client.ProcessId) server.Name server.InitOptions scenario corpusRoot oracle
+            let! result = runConnected options client (Some client.ProcessId) server.Name server.InitOptions scenario corpusRoot server.Oracle oracle
 
             try
                 do! client.Shutdown()

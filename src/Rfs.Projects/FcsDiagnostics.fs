@@ -3,7 +3,7 @@ namespace Rfs.Projects
 open FSharp.Compiler.Diagnostics
 open Rfs.Lsp
 
-module Diagnostics =
+module FcsDiagnostics =
 
     let private severity =
         function
@@ -12,16 +12,14 @@ module Diagnostics =
         | FSharpDiagnosticSeverity.Info -> 3
         | FSharpDiagnosticSeverity.Hidden -> 4
 
-    let private file (name: string) =
-        // project-level diagnostics carry no real file name
-        try
-            LspClient.NormalizePath name
-        with _ ->
-            name
-
     /// FCS lines are 1-based, LSP lines 0-based; columns are 0-based UTF-16 in both.
     let ofFcs (d: FSharpDiagnostic) : Diagnostic =
-        { File = file d.FileName
+        { File =
+            // GetFullPath rejects an empty name
+            if System.String.IsNullOrEmpty d.FileName then
+                ""
+            else
+                LspClient.NormalizePath d.FileName
           Range =
             { Start = { Line = max 0 (d.StartLine - 1); Character = d.StartColumn }
               End = { Line = max 0 (d.EndLine - 1); Character = d.EndColumn } }
