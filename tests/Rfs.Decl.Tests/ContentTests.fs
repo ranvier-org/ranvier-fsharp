@@ -185,14 +185,15 @@ let splitTests =
           testAsync "re-checking one nested declaration alone finishes as a full check" {
               let! t = tiny.Value |> Async.AwaitTask
               let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", nested ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
-              let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, nestedEdited))
+              let editedParse = DeclarationChecker.Parse(t.Context, c.File, nestedEdited)
+              let editedDecls = DeclarationChecker.Split editedParse
               Expect.equal (keys editedDecls) (keys c.Declarations) "the edit keeps the keys"
               let index = editedDecls |> Array.findIndex (fun d -> d.Key.Name = "b")
               let rechecked = DeclarationChecker.CheckDeclaration(c.Start, c.Results[index - 1].EnvAfter, editedDecls[index], CancellationToken.None)
               Expect.isTrue (rechecked.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 25)) "the edit's warning belongs to b"
 
               let results = c.Results |> Array.mapi (fun i r -> if i = index then rechecked else r)
-              let fileResult = DeclarationChecker.FinishFile(c.Start, results)
+              let fileResult = DeclarationChecker.FinishFile(c.Start, results, editedParse)
               let texts = sources t.Spec (Map.ofList [ "C.fs", nestedEdited ])
               let! _, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
               Expect.isEmpty diff $"re-checked file diagnostics equal a fresh full check:\n%s{String.concat Environment.NewLine diff}"
@@ -466,7 +467,8 @@ let private recheckRows (original: string) (edited: string) (rechecked: int list
     async {
         let! t = tiny.Value |> Async.AwaitTask
         let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", original ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
-        let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+        let editedParse = DeclarationChecker.Parse(t.Context, c.File, edited)
+        let editedDecls = DeclarationChecker.Split editedParse
         Expect.equal (keys editedDecls) (keys c.Declarations) "the edit keeps the keys"
         let results = Array.copy c.Results
 
@@ -474,7 +476,7 @@ let private recheckRows (original: string) (edited: string) (rechecked: int list
             let envBefore = if i = 0 then c.Env0 else results[i - 1].EnvAfter
             results[i] <- DeclarationChecker.CheckDeclaration(c.Start, envBefore, editedDecls[i], CancellationToken.None)
 
-        let fileResult = DeclarationChecker.FinishFile(c.Start, results)
+        let fileResult = DeclarationChecker.FinishFile(c.Start, results, editedParse)
         let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
         let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
         Expect.isEmpty diff $"re-checked file diagnostics equal a fresh full check:\n%s{String.concat Environment.NewLine diff}"
@@ -569,7 +571,8 @@ let headerTests =
               let! t = tiny.Value |> Async.AwaitTask
               let c = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "C.fs", suffixed ])) |> List.find (fun f -> f.File.EndsWith "C.fs")
               let edited = suffixed + "\ntype X = { F: int }\n"
-              let editedDecls = DeclarationChecker.Split(DeclarationChecker.Parse(t.Context, c.File, edited))
+              let editedParse = DeclarationChecker.Parse(t.Context, c.File, edited)
+              let editedDecls = DeclarationChecker.Split editedParse
               Expect.equal (keys editedDecls |> List.take 3) (keys c.Declarations) "the same rows, then the type"
 
               // The header and its declaration again, then c, which uses X by name and whose environment holds the
@@ -579,7 +582,7 @@ let headerTests =
               let a = check header.EnvAfter 1
               let c' = check a.EnvAfter 2
               let typeX = check c'.EnvAfter 3
-              let fileResult = DeclarationChecker.FinishFile(c.Start, [| header; a; c'; typeX |])
+              let fileResult = DeclarationChecker.FinishFile(c.Start, [| header; a; c'; typeX |], editedParse)
 
               let texts = sources t.Spec (Map.ofList [ "C.fs", edited ])
               let! expected, diff = diagnosticsDiff t.Spec texts c.File fileResult.Diagnostics
@@ -676,6 +679,6 @@ let headerTests =
               Expect.isEmpty diff $"diagnostics equal the file check of the given parse's text:\n%s{String.concat Environment.NewLine diff}"
               Expect.equal expected.Length 1 "only f warns"
 
-              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               Expect.equal (again.Diagnostics |> Array.filter (fun d -> d.ErrorNumber = 25)).Length 2 "the FileStart's own parse has no #nowarn"
           } ]

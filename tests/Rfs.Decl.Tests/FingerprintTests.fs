@@ -84,15 +84,20 @@ let private expectFileCheck (spec: ProjectSpec) (cText: string) (file: string) (
         Expect.isEmpty diff $"%s{what}: diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
     }
 
-/// Checks every declaration of `text` in order, on an existing file setup.
+/// Checks every declaration of `text` in order, on an existing file setup: its parse, and the results.
 let private checkAll (c: CheckedFile) (ctx: ProjectContext) (text: string) =
-    DeclarationChecker.Split(DeclarationChecker.Parse(ctx, c.File, text))
-    |> Array.mapFold
-        (fun env decl ->
-            let result = DeclarationChecker.CheckDeclaration(c.Start, env, decl, CancellationToken.None)
-            result, result.EnvAfter)
-        c.Env0
-    |> fst
+    let parse = DeclarationChecker.Parse(ctx, c.File, text)
+
+    let results =
+        DeclarationChecker.Split parse
+        |> Array.mapFold
+            (fun env decl ->
+                let result = DeclarationChecker.CheckDeclaration(c.Start, env, decl, CancellationToken.None)
+                result, result.EnvAfter)
+            c.Env0
+        |> fst
+
+    parse, results
 
 let private finalFingerprint (before: string) (after: string) (name: string) =
     async {
@@ -164,7 +169,7 @@ let tests =
               for i in 0 .. c.Results.Length - 1 do
                   Expect.equal reversed[i].Fingerprint c.Results[i].Fingerprint $"provisional fingerprint of declaration %d{i}"
 
-              let finished = DeclarationChecker.FinishFile(c.Start, reversed)
+              let finished = DeclarationChecker.FinishFile(c.Start, reversed, c.Start.Parse)
               Expect.equal (fingerprints finished) (fingerprints c.FileResult) "same final fingerprints"
           }
 
@@ -185,7 +190,7 @@ let tests =
               do! expectFileCheck checkedTiny.Spec valueRestriction c.File c.FileResult "first finish"
               Expect.isTrue (c.FileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 30)) "the value restriction"
 
-              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               Expect.equal (diagnosticTexts again.Diagnostics) (diagnosticTexts c.FileResult.Diagnostics) "same diagnostics"
               Expect.equal (fingerprints again) (fingerprints c.FileResult) "same fingerprints"
           }
@@ -195,12 +200,12 @@ let tests =
           testAsync "finishing fresh results of two versions alternately on one setup gives equal results" {
               let! checkedTiny = checkC hAlone
               let c = checkedTiny.File "C.fs"
-              let usedResults = checkAll c checkedTiny.Context hUsed
+              let usedParse, usedResults = checkAll c checkedTiny.Context hUsed
 
               let aloneFirst = c.FileResult
-              let usedFirst = DeclarationChecker.FinishFile(c.Start, usedResults)
-              let aloneAgain = DeclarationChecker.FinishFile(c.Start, c.Results)
-              let usedAgain = DeclarationChecker.FinishFile(c.Start, usedResults)
+              let usedFirst = DeclarationChecker.FinishFile(c.Start, usedResults, usedParse)
+              let aloneAgain = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
+              let usedAgain = DeclarationChecker.FinishFile(c.Start, usedResults, usedParse)
 
               do! expectFileCheck checkedTiny.Spec hAlone c.File aloneFirst "alone"
               do! expectFileCheck checkedTiny.Spec hUsed c.File usedFirst "used"
@@ -214,11 +219,12 @@ let tests =
           testAsync "a finished result checked against by a new declaration matches file check" {
               let! checkedTiny = checkC hAlone
               let c = checkedTiny.File "C.fs"
-              let newUse = (DeclarationChecker.Split(DeclarationChecker.Parse(checkedTiny.Context, c.File, hUsed)))[1]
+              let usedParse = DeclarationChecker.Parse(checkedTiny.Context, c.File, hUsed)
+              let newUse = (DeclarationChecker.Split usedParse)[1]
 
               // The finish defaulted h's type to int; the new declaration must see it as h's check left it.
               let used = DeclarationChecker.CheckDeclaration(c.Start, c.Results[0].EnvAfter, newUse, CancellationToken.None)
-              let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; used |])
+              let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; used |], usedParse)
               do! expectFileCheck checkedTiny.Spec hUsed c.File finished "old h with a new use"
 
               let! fresh = checkC hUsed
@@ -231,7 +237,7 @@ let tests =
               async {
                   let! checkedTiny = checkC hUsed
                   let c = checkedTiny.File "C.fs"
-                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |])
+                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |], c.Start.Parse)
                   do! expectFileCheck checkedTiny.Spec hAlone c.File finished "h without its use"
 
                   let! fresh = checkC hAlone
@@ -293,7 +299,7 @@ let tests =
               let text = "module Tiny.C\n\nlet inline asString (x: obj) : obj = (# \"isinst [System.Runtime]System.String\" x : obj #)\n"
               let! checkedTiny = checkC text
               let c = checkedTiny.File "C.fs"
-              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               let fingerprint = fingerprintOf c.FileResult "asString"
               Expect.isTrue (fingerprint.StartsWith "?") $"not describable: %s{fingerprint}"
               Expect.notEqual (fingerprintOf again "asString") fingerprint "counts as changed every time"

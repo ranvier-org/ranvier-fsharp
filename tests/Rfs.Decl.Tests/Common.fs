@@ -67,7 +67,7 @@ let declByDecl (ctx: ProjectContext) (spec: ProjectSpec) (texts: Map<string, str
                         env0
                     |> fst
 
-                let fileResult = DeclarationChecker.FinishFile(start, declResults)
+                let fileResult = DeclarationChecker.FinishFile(start, declResults, parse)
 
                 let checkedFile =
                     { File = file

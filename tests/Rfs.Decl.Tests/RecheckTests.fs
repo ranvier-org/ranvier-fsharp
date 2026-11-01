@@ -181,7 +181,7 @@ let private recheckOne (original: string) (edited: string) (index: int) =
 
         let rechecked = check c c.Results[index - 1].EnvAfter editedDecls[index]
         let results = c.Results |> Array.mapi (fun i r -> if i = index then rechecked else r)
-        let fileResult = DeclarationChecker.FinishFile(c.Start, results)
+        let fileResult = DeclarationChecker.FinishFile(c.Start, results, editedParse)
 
         let texts = sources fixture.Spec (Map.ofList [ "C.fs", edited ])
         let! expected = oracle fixture.Spec texts c.File
@@ -218,7 +218,7 @@ let tests =
           testAsync "finishing again builds the same file from the same results" {
               let! fixture = checkTiny fourDecls
               let c = fixture.C
-              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               Expect.equal (diagnosticTexts again.Diagnostics) (diagnosticTexts c.FileResult.Diagnostics) "same diagnostics"
               Expect.equal (moduleValues again [ "Tiny"; "C" ]) [ "one"; "two"; "three"; "four" ] "no declaration is added twice"
               Expect.equal (moduleValues c.FileResult [ "Tiny"; "C" ]) [ "one"; "two"; "three"; "four" ] "the first finish is unchanged"
@@ -236,7 +236,7 @@ let tests =
               Expect.equal (diagnosticTexts again.Diagnostics) (diagnosticTexts first.Diagnostics) "same diagnostics"
               Expect.equal third.Fingerprint c.Results[2].Fingerprint "a later declaration checked after a re-check"
 
-              let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; again; third; _fourth |])
+              let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; again; third; _fourth |], c.Start.Parse)
               Expect.equal (moduleValues finished [ "Tiny"; "C" ]) [ "one"; "two"; "three"; "four" ] "one value per declaration"
           }
 
@@ -255,7 +255,7 @@ let tests =
               let c = fixture.C
               Expect.equal (declaringEntityMembers c.FileResult "three") [ "one"; "two"; "three"; "four" ] "after the full check"
 
-              let finished = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let finished = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               Expect.equal (declaringEntityMembers finished "three") [ "one"; "two"; "three"; "four" ] "after finishing again"
           }
 
@@ -265,7 +265,7 @@ let tests =
                   let! fixture = checkTiny augmented
                   let c = fixture.C
                   let rechecked = check c c.Results[0].EnvAfter c.Declarations[1]
-                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; rechecked; c.Results[2] |])
+                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; rechecked; c.Results[2] |], c.Start.Parse)
 
                   Expect.equal
                       (moduleValues finished [ "Tiny"; "C"; "T" ] |> List.filter ((=) "B"))
@@ -297,7 +297,7 @@ let tests =
                   Expect.equal (diagnosticTexts r2.Diagnostics) (diagnosticTexts expected.Diagnostics) "same diagnostics"
                   Expect.isFalse (r1.IsSameDelta r2) "each check has its own objects"
 
-              let finished = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let finished = DeclarationChecker.FinishFile(c.Start, c.Results, c.Start.Parse)
               Expect.equal (diagnosticTexts finished.Diagnostics) (diagnosticTexts c.FileResult.Diagnostics) "the file is unchanged"
               Expect.equal (moduleValues finished [ "Tiny"; "C" ]) [ "one"; "two"; "three"; "four" ] "no stray values"
           } ]
