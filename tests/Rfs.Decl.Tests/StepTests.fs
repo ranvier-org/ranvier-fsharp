@@ -144,6 +144,41 @@ let three = Tiny.B.two + 1
 let r = ref []
 """
 
+let private split (source: string) =
+    async {
+        let! spec = ProjectSpec.load tinyProject |> Async.AwaitTask
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+        let file = spec.SourceFiles |> List.find (fun f -> f.EndsWith "C.fs")
+        return DeclarationChecker.Split(DeclarationChecker.Parse(ctx, file, source))
+    }
+
+[<Tests>]
+let splitTests =
+    testList
+        "Split"
+        [ testAsync "a same-length edit inside a declaration changes its syntax hash only" {
+              let! before = split "module Tiny.C\n\nlet a = 1\n\nlet b x = x + 1\n"
+              let! after = split "module Tiny.C\n\nlet a = 1\n\nlet b y = y + 2\n"
+              Expect.equal before[0].Range after[0].Range "same range for a"
+              Expect.equal before[1].Range after[1].Range "same range for b"
+              Expect.equal before[0].SyntaxHash after[0].SyntaxHash "a is unchanged"
+              Expect.notEqual before[1].SyntaxHash after[1].SyntaxHash "b was edited"
+          }
+
+          testAsync "ordinals count only earlier declarations with the same key" {
+              let! decls = split "module Tiny.C\n\nopen System\n\nlet x = 1\n\nopen System\n\ndo ()\n\nlet y = 2\n\ndo ()\n"
+
+              Expect.equal
+                  [ for d in decls -> d.Key.Kind, d.Key.Name, d.Key.Ordinal ]
+                  [ DeclarationKind.Open, "System", 0
+                    DeclarationKind.Value, "x", 0
+                    DeclarationKind.Open, "System", 1
+                    DeclarationKind.Do, "", 0
+                    DeclarationKind.Value, "y", 0
+                    DeclarationKind.Do, "", 1 ]
+                  "ordinals"
+          } ]
+
 [<Tests>]
 let tests =
     testList
