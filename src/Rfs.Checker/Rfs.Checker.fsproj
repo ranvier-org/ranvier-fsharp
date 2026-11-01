@@ -1,8 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="GraphHost.fs" />
+    <Compile Include="NameIndex.fs" />
+    <Compile Include="FileGraph.fs" />
+    <Compile Include="ProjectGraph.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(RanvierDir)Ranvier.fsproj" />
+    <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" />
   </ItemGroup>
 </Project>

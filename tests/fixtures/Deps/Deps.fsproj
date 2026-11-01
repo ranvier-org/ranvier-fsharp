@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Sequential checking, as an editor checks: in graph mode (the default) a file sees only the files the dependency
+         graph links it to, so an unresolvable path is reported differently than when every earlier file is in scope. -->
+    <OtherFlags>$(OtherFlags) --warnon:1182 --parallelcompilation-</OtherFlags>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+    <Compile Include="C.fs" />
+    <Compile Include="D.fs" />
+    <Compile Include="E.fsi" />
+    <Compile Include="E.fs" />
+  </ItemGroup>
+</Project>

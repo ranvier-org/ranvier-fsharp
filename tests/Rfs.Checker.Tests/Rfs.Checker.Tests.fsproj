@@ -4,12 +4,20 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="GraphHostTests.fs" />
+    <Compile Include="Deps.fs" />
+    <Compile Include="ProjectGraphTests.fs" />
+    <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
     <PackageReference Include="Expecto" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rfs.Checker\Rfs.Checker.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Harness\Rfs.Harness.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Projects\Rfs.Projects.fsproj" />
   </ItemGroup>
 </Project>
