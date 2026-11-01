@@ -82,6 +82,8 @@ let tests =
               let tokens = ConcurrentQueue<CancellationToken>()
               let gate1 = TaskCompletionSource<int> ()
               let started1 = TaskCompletionSource ()
+              let flight1Task = gate1.Task.ContinueWith (fun (t: Task<int>) -> t.Result)
+              let flight1 = flight1Task :> Task
 
               let signal, memo =
                   host.Read (fun () ->
@@ -94,7 +96,7 @@ let tests =
 
                               if v = 1 then
                                   started1.TrySetResult () |> ignore
-                                  gate1.Task
+                                  flight1Task
                               else
                                   Task.Delay(10).ContinueWith (fun (_: Task) -> v))
 
@@ -109,32 +111,48 @@ let tests =
               let first = tokens.ToArray().[0]
               Expect.isTrue first.IsCancellationRequested "first flight was cancelled"
 
-              // The cancelled flight completing late must not publish.
+              // The cancelled flight completes only now, after the second value settled; its result must not publish.
               gate1.SetResult 1
+              Expect.isTrue (flight1.Wait (TimeSpan.FromSeconds 10.)) "first flight completed late"
+
+              for _ in 1..20 do
+                  Expect.equal (host.Read (fun () -> memo.Peek) |> within 10) 2 "late result of cancelled flight ignored"
+          }
+
+          test "WhenSettled keeps waiting when the read throws NotReadyException" {
+              use host = GraphHost.Start "notready"
+              let gate = TaskCompletionSource<int> ()
+              let memo = host.Read (fun () -> createAsync (fun _ _ -> gate.Task)) |> within 10
+              let t = host.WhenSettled (fun () -> ValueSome memo.Value)
               Thread.Sleep 50
-              let after = host.Read (fun () -> memo.Peek) |> within 10
-              Expect.equal after 2 "late result of cancelled flight ignored"
+              Expect.isFalse t.IsCompleted "still pending"
+              gate.SetResult 5
+              Expect.equal (within 10 t) 5 "settled once ready"
           }
 
           test "dispose faults pending Read and WhenSettled with ObjectDisposedException" {
+              // Disposed from inside posted work on the host thread, so no timing is involved.
               let host = GraphHost.Start "dispose"
-              let settled = host.WhenSettled (fun () -> ValueNone: int voption)
+              let flag = ref false
+              let never = host.WhenSettled (fun () -> ValueNone: int voption)
+              // Would settle on the next pump, but the pump that disposes the host must fault it instead.
+              let wouldSettle = host.WhenSettled (fun () -> if flag.Value then ValueSome 1 else ValueNone)
               use blocker = new ManualResetEventSlim ()
               use entered = new ManualResetEventSlim ()
 
               host.Post (fun () ->
                   entered.Set ()
-                  blocker.Wait ())
+                  blocker.Wait ()
+                  flag.Value <- true
+                  host.Dispose ())
 
               entered.Wait ()
               let read = host.Read (fun () -> 1)
               Expect.isFalse read.IsCompleted "read queued behind the blocker"
-              let disposer = Task.Run (fun () -> host.Dispose ())
-              Thread.Sleep 50
               blocker.Set ()
-              Expect.isTrue (disposer.Wait (TimeSpan.FromSeconds 10.)) "dispose returned"
 
-              faultsWithDisposed settled
+              faultsWithDisposed never
+              faultsWithDisposed wouldSettle
               faultsWithDisposed read
               faultsWithDisposed (host.Read (fun () -> 1))
               faultsWithDisposed (host.WhenSettled (fun () -> ValueSome 1))
@@ -183,6 +201,27 @@ let tests =
               Thread.Sleep 50
               host.Post (fun () -> flag.Value <- true)
               Expect.equal (within 10 t) "ok" "settled after post"
+          }
+
+          test "Dispose from another thread faults a parked WhenSettled" {
+              let host = GraphHost.Start "dispose-x"
+              let parked = host.WhenSettled (fun () -> ValueNone: int voption)
+              host.Dispose ()
+              faultsWithDisposed parked
+          }
+
+          test "kept post errors are capped at the newest 256" {
+              use host = GraphHost.Start "cap"
+
+              for i in 1..300 do
+                  host.Post (fun () -> failwith $"e%d{i}")
+
+              host.Read (fun () -> ()) |> within 10
+              let errors = host.TakePostErrors ()
+              Expect.equal errors.Length 256 "capped"
+              Expect.equal errors.[255].Message "e300" "newest kept"
+              Expect.equal errors.[0].Message "e45" "oldest dropped"
+              Expect.isEmpty (host.TakePumpErrors ()) "no pump errors"
           }
 
           test "Dispose is idempotent" {

@@ -8,6 +8,7 @@ open System.Threading.Tasks
 open Ranvier
 
 /// A parked WhenSettled call. `Step` runs on the host thread and returns true once the call has completed.
+[<ReferenceEquality>]
 type private Waiter =
     { Step: unit -> bool
       Abort: exn -> unit }
@@ -23,12 +24,15 @@ type private Waiter =
 /// <c>Dispatch</c> and every async memo settling goes through it), and the loop then calls <c>Graph.Pump</c>.
 /// </para>
 /// <para>
-/// An exception thrown by <c>Post</c>ed work is caught, kept for <see cref="M:Rfs.Checker.GraphHost.TakePostErrors"/>
-/// and never rethrown, so one failing item cannot fault an unrelated <c>Read</c>. A <c>Read</c> faults its own task.
+/// An exception thrown by <c>Post</c>ed work is caught, traced, and kept (the newest 256) for
+/// <c>TakePostErrors</c>. It is never rethrown, so one failing item cannot fault an unrelated <c>Read</c>. A <c>Read</c>
+/// faults its own task. An exception escaping <c>Graph.Pump</c> is kept apart, for <c>TakePumpErrors</c>. Errors from
+/// effects and flushes go to Ranvier's <c>Root.Errors</c> and are not surfaced by the host.
 /// </para>
 /// <para>
 /// Once <c>Dispose</c> begins, work still in the inbox does not run: queued <c>Read</c>s fault with
 /// <c>ObjectDisposedException</c>, queued <c>Post</c>s are dropped, and parked <c>WhenSettled</c> calls fault.
+/// <c>Dispose</c> may be called from the host thread, in which case it does not wait for the loop to finish.
 /// </para>
 /// </remarks>
 [<Sealed; AllowNullLiteral>]
@@ -37,13 +41,36 @@ type GraphHost private (name: string) =
     let gate = obj ()
     let waiters = List<Waiter>()
     let postErrors = ConcurrentQueue<exn>()
+    let pumpErrors = ConcurrentQueue<exn>()
     let mutable closed = false
     let mutable stopping = false
     let mutable graph: Graph = Unchecked.defaultof<Graph>
     let mutable thread: Thread = null
     let mutable startupError: exn = null
 
+    let maxKeptErrors = 256
+
     let disposedError () = ObjectDisposedException name
+
+    let isStopping () = Volatile.Read &stopping
+    let isClosed () = Volatile.Read &closed
+
+    let keep (queue: ConcurrentQueue<exn>) (kind: string) (ex: exn) =
+        System.Diagnostics.Trace.WriteLine $"Rfs.Checker.GraphHost %s{name} %s{kind}: %O{ex}"
+        queue.Enqueue ex
+        let mutable dropped = Unchecked.defaultof<exn>
+
+        while queue.Count > maxKeptErrors && queue.TryDequeue &dropped do
+            ()
+
+    let drain (queue: ConcurrentQueue<exn>) =
+        let taken = List<exn>()
+        let mutable e = Unchecked.defaultof<exn>
+
+        while queue.TryDequeue &e do
+            taken.Add e
+
+        taken.ToArray()
 
     let runWaiters () =
         let snapshot = lock gate (fun () -> waiters.ToArray())
@@ -73,21 +100,23 @@ type GraphHost private (name: string) =
             ready.Set()
 
             if isNull startupError then
-                while not stopping do
+                while not (isStopping ()) do
                     wake.Wait()
                     wake.Reset()
 
-                    if not stopping then
+                    if not (isStopping ()) then
                         try
                             graph.Pump() |> ignore
                         with ex ->
-                            postErrors.Enqueue ex
+                            keep pumpErrors "pump" ex
 
-                        runWaiters ()
+                        // Work run by this pump may have disposed the host; parked reads must then fault, not settle.
+                        if not (isStopping ()) then
+                            runWaiters ()
         finally
             let parked =
                 lock gate (fun () ->
-                    closed <- true
+                    Volatile.Write(&closed, true)
                     let all = waiters.ToArray()
                     waiters.Clear()
                     all)
@@ -123,35 +152,36 @@ type GraphHost private (name: string) =
     /// Runs <c>work</c> on the host thread, after earlier posts from the same caller. Throws if the host is disposed.
     /// A failure of <c>work</c> is kept for <c>TakePostErrors</c>.
     member _.Post(work: unit -> unit) : unit =
-        if closed || stopping then
+        if isClosed () || isStopping () then
             raise (disposedError ())
 
         graph.Dispatch(
             Action(fun () ->
-                if not stopping then
+                if not (isStopping ()) then
                     try
                         work ()
                     with ex ->
-                        postErrors.Enqueue ex)
+                        keep postErrors "post" ex)
         )
 
     /// Runs <c>f</c> on the host thread. The task faults with <c>f</c>'s exception, or with
     /// <c>ObjectDisposedException</c> when the host is disposed before <c>f</c> runs.
     member _.Read(f: unit -> 'T) : Task<'T> =
-        if closed || stopping then
+        if isClosed () || isStopping () then
             Task.FromException<'T>(disposedError ())
         else
             graph.DispatchAsync(
                 Func<'T>(fun () ->
-                    if stopping then
+                    if isStopping () then
                         raise (disposedError ())
 
                     f ())
             )
 
     /// Re-runs <c>read</c> on the host thread after each pump until it returns <c>ValueSome</c>. A <c>read</c> that
-    /// keeps returning <c>ValueNone</c> is not run again until something wakes the loop. The task faults with
-    /// <c>read</c>'s exception, is canceled by <c>cancellationToken</c>, and faults with
+    /// keeps returning <c>ValueNone</c> is not run again until something wakes the loop. A <c>read</c> that throws
+    /// <c>NotReadyException</c> (a tracked read of a pending node) counts as <c>ValueNone</c>. The task otherwise faults
+    /// with <c>read</c>'s exception, is canceled by <c>cancellationToken</c>, and faults with
     /// <c>ObjectDisposedException</c> if the host is disposed first.
     member this.WhenSettled(read: unit -> 'T voption, cancellationToken: CancellationToken) : Task<'T> =
         let completion =
@@ -167,7 +197,9 @@ type GraphHost private (name: string) =
                         completion.TrySetResult v |> ignore
                         true
                     | ValueNone -> false
-                with ex ->
+                with
+                | NotReadyException _ -> false
+                | ex ->
                     completion.TrySetException ex |> ignore
                     true
 
@@ -177,7 +209,7 @@ type GraphHost private (name: string) =
 
         let registered =
             lock gate (fun () ->
-                if closed then
+                if isClosed () then
                     false
                 else
                     waiters.Add waiter
@@ -203,19 +235,15 @@ type GraphHost private (name: string) =
     member this.WhenSettled(read: unit -> 'T voption) : Task<'T> =
         this.WhenSettled(read, CancellationToken.None)
 
-    /// The failures of <c>Post</c>ed work since the last call, oldest first.
-    member _.TakePostErrors() : exn[] =
-        let taken = List<exn>()
-        let mutable e = Unchecked.defaultof<exn>
+    /// The failures of <c>Post</c>ed work since the last call, oldest first (the newest 256 are kept).
+    member _.TakePostErrors() : exn[] = drain postErrors
 
-        while postErrors.TryDequeue(&e) do
-            taken.Add e
-
-        taken.ToArray()
+    /// The failures of graph pumps since the last call, oldest first (the newest 256 are kept).
+    member _.TakePumpErrors() : exn[] = drain pumpErrors
 
     /// Stops the loop, faults what is pending and disposes the graph. Idempotent.
     member _.Dispose() =
-        stopping <- true
+        Volatile.Write(&stopping, true)
         wake.Set()
 
         if not (obj.ReferenceEquals(Thread.CurrentThread, thread)) then
