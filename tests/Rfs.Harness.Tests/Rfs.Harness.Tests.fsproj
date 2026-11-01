@@ -8,9 +8,13 @@
     <Compile Include="../Rfs.Lsp.Tests/FakeServer.fs" Link="FakeServer.fs" />
     <Compile Include="MetricsTests.fs" />
     <Compile Include="RunnerTests.fs" />
+    <Compile Include="ReportTests.fs" />
     <Compile Include="ProjectSpecTests.fs" />
     <Compile Include="OracleTests.fs" />
     <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="golden\*.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">

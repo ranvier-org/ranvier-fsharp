@@ -1,10 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>rfs-harness</AssemblyName>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="Scenario.fs" />
     <Compile Include="Servers.fs" />
     <Compile Include="Metrics.fs" />
     <Compile Include="OracleClient.fs" />
     <Compile Include="Runner.fs" />
+    <Compile Include="Report.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" />
