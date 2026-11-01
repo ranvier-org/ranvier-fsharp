@@ -1,0 +1,25 @@
+{
+  "repos": [
+    {
+      "name": "small",
+      "url": "https://github.com/fsprojects/FSharp.Data.Adaptive.git",
+      "tag": "1.2.27",
+      "sha": "76afc00027b10933606e733ff6258275c53224b3",
+      "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj"
+    },
+    {
+      "name": "mid",
+      "url": "https://github.com/ionide/FsAutoComplete.git",
+      "tag": null,
+      "sha": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+      "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj"
+    },
+    {
+      "name": "large",
+      "url": "https://github.com/fsprojects/fantomas.git",
+      "tag": "v8.1.0",
+      "sha": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+      "project": "src/Fantomas.Core/Fantomas.Core.fsproj"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Scenario.fs" />
+    <Compile Include="Servers.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
+  </ItemGroup>
+</Project>

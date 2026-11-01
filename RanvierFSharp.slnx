@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Rfs.Harness/Rfs.Harness.fsproj" />
     <Project Path="src/Rfs.Lsp/Rfs.Lsp.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj" />
     <Project Path="tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj" />
   </Folder>
 </Solution>
