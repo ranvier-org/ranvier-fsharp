@@ -6,6 +6,7 @@
     <Project Path="src/Rfs.Projects/Rfs.Projects.fsproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj" />
     <Project Path="tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj" />
     <Project Path="tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj" />
   </Folder>
