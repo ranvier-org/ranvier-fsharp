@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>rfs-checkpoint</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Engine.fs" />
+    <Compile Include="Driver.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rfs.Checker\Rfs.Checker.fsproj" />
+    <ProjectReference Include="..\Rfs.Harness\Rfs.Harness.fsproj" />
+    <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" />
+  </ItemGroup>
+</Project>

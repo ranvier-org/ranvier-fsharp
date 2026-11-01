@@ -53,7 +53,7 @@ module Cli =
             | _ -> usageError $"%s{flag} must be a positive number, got '%s{text}'")
 
     /// `*` and `?` in the file name only; the directory part is literal.
-    let private expandGlob (pattern: string) =
+    let expandGlob (pattern: string) =
         let dir =
             match Path.GetDirectoryName pattern with
             | null
@@ -172,8 +172,7 @@ module Cli =
             | _ -> return usageError "compare takes exactly two result directories"
         }
 
-    /// Checks each corpus project unedited with the oracle: any error means the corpus is not set up (a missing
-    /// reference, say), and every measurement against it would be meaningless.
+    /// Checks each corpus project unedited with the oracle (CorpusCheck.verify).
     let private verifyCorpusCommand (args: Args) : Task<int> =
         task {
             let manifest = single args "--manifest" |> Option.defaultValue "corpus/corpus.json"
@@ -195,18 +194,9 @@ module Cli =
                     let project =
                         Path.Combine(corpus, name, repo["project"].GetValue<string>().Replace('/', Path.DirectorySeparatorChar))
 
-                    try
-                        let! diagnostics = oracle.Check project Map.empty
-                        let errors = diagnostics |> List.filter (fun d -> d.Severity = 1)
-                        printfn "%s: %d errors, %d other diagnostics" name errors.Length (diagnostics.Length - errors.Length)
+                    let! clean = CorpusCheck.verify oracle name project
 
-                        for d in errors |> List.truncate 20 do
-                            printfn "  %s:%d:%d %s %s" d.File (d.Range.Start.Line + 1) (d.Range.Start.Character + 1) d.Code d.Message
-
-                        if not errors.IsEmpty then
-                            failed <- true
-                    with e ->
-                        eprintfn "%s: %s" name e.Message
+                    if not clean then
                         failed <- true
             finally
                 (oracle :> IAsyncDisposable).DisposeAsync().AsTask().GetAwaiter().GetResult()

@@ -8,6 +8,7 @@
     <Compile Include="Servers.fs" />
     <Compile Include="Metrics.fs" />
     <Compile Include="OracleClient.fs" />
+    <Compile Include="CorpusCheck.fs" />
     <Compile Include="Runner.fs" />
     <Compile Include="Report.fs" />
     <Compile Include="Program.fs" />

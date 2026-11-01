@@ -1,0 +1,125 @@
+namespace Rfs.Checkpoint
+
+open System
+open System.Collections.Generic
+open System.IO
+open System.Threading.Tasks
+open FSharp.Compiler.Diagnostics
+open FSharp.Compiler.SourceCodeServices
+open Rfs.Checker
+open Rfs.Lsp
+open Rfs.Projects
+
+/// The whole project's diagnostics after a check.
+type EngineResult =
+    { Diagnostics: Diagnostic list
+      /// Declarations checked by this call; None for an engine that does not check by declaration.
+      DeclsChecked: int option }
+
+/// A checker holding one project in memory, created from the texts on disk.
+type IEngine =
+    inherit IDisposable
+    /// The first full check.
+    abstract Check: unit -> Task<EngineResult>
+    /// Replaces a source file's text and checks again.
+    abstract SetText: file: string * text: string -> Task<EngineResult>
+
+type EngineFactory =
+    { Name: string
+      Create: ProjectSpec -> Task<IEngine> }
+
+[<Sealed>]
+type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
+    let settle (before: int64) =
+        task {
+            let! all = graph.AllDiagnostics()
+            let failures = Array.append (host.TakePostErrors()) (host.TakePumpErrors())
+
+            if failures.Length > 0 then
+                raise (AggregateException("the graph host reported errors", failures))
+
+            return
+                { Diagnostics = [ for KeyValue(_, ds) in all do for d in ds -> FcsDiagnostics.ofFcs d ]
+                  DeclsChecked = Some(int (graph.CheckedCount - before)) }
+        }
+
+    interface IEngine with
+        member _.Check() = settle 0L
+
+        member _.SetText(file, text) =
+            let before = graph.CheckedCount
+            graph.SetText(file, text)
+            settle before
+
+        member _.Dispose() = host.Dispose()
+
+/// The fork's whole-project check, reusing earlier results file by file. In graph checking mode a changed file whose
+/// signature fingerprint is unchanged keeps its dependents' results; in sequential mode every file from the edited
+/// one on is checked again.
+[<Sealed>]
+type private FileSlimEngine(spec: ProjectSpec) =
+    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+    let files = Array.ofList spec.SourceFiles
+
+    // Hashed once per text, not on every read: the reader is called for every file on every check.
+    let texts = Dictionary<string, int * Lazy<string>>(StringComparer.OrdinalIgnoreCase)
+
+    let store (file: string) (text: string) =
+        texts[Path.GetFullPath file] <- (hash text, lazy text)
+
+    do
+        for f in files do
+            store f (File.ReadAllText f)
+
+    let reader (file: string) = texts[Path.GetFullPath file]
+
+    let check () =
+        task {
+            let! results = checker.ParseAndCheckProject(spec.ProjectFile, files, reader) |> Async.StartAsTask
+
+            return
+                { Diagnostics = [ for d in results.Diagnostics -> FcsDiagnostics.ofFcs d ]
+                  DeclsChecked = None }
+        }
+
+    interface IEngine with
+        member _.Check() = check ()
+
+        member _.SetText(file, text) =
+            if not (texts.ContainsKey(Path.GetFullPath file)) then
+                invalidArg (nameof file) $"%s{file} is not a source file of the project"
+
+            store file text
+            check ()
+
+        member _.Dispose() = ()
+
+module Engines =
+    /// ProjectGraph: declaration-level re-checking on a Ranvier graph.
+    let decl: EngineFactory =
+        { Name = "decl"
+          Create =
+            fun spec ->
+                task {
+                    let host = GraphHost.Start "checkpoint"
+
+                    try
+                        let! graph = ProjectGraph.Create(host, spec)
+                        return new DeclEngine(host, graph) :> IEngine
+                    with e ->
+                        host.Dispose()
+                        return raise e
+                } }
+
+    /// The fork's InteractiveChecker with its file-level signature cutoff.
+    let fileSlim: EngineFactory =
+        { Name = "file-slim"
+          Create =
+            fun spec ->
+                // The fork reads the variable once, when its checker module initialises.
+                if Environment.GetEnvironmentVariable "FICKL_FCS_SIGNATURE_CUTOFF" = "0" then
+                    failwith "file-slim measures the fork's signature cutoff, which FICKL_FCS_SIGNATURE_CUTOFF=0 turns off; unset it"
+
+                Task.FromResult(new FileSlimEngine(spec) :> IEngine) }
+
+    let all = [ decl; fileSlim ]

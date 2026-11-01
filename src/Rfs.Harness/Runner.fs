@@ -154,7 +154,7 @@ module Runner =
               Character = inserted.Length - last - 1 }
 
     /// The edit that undoes `forward` when applied to the text `forward` produced.
-    let private inverse (text: string) (forward: Edit) : Edit =
+    let inverse (text: string) (forward: Edit) : Edit =
         let first = Document.offsetOf text forward.Range.Start
         let last = max first (Document.offsetOf text forward.Range.End)
 
@@ -165,7 +165,8 @@ module Runner =
 
     let private describe (p: Position) = $"%d{p.Line}:%d{p.Character}"
 
-    let private commitOf (repo: string) =
+    /// HEAD of `repo`, or "unknown" when it is not a git checkout.
+    let commitOf (repo: string) =
         try
             let info = ProcessStartInfo("git")
             info.ArgumentList.Add "-C"
