@@ -72,6 +72,46 @@ let three = two + 1
 let four: string = string three
 """
 
+let private duplicateLet =
+    """module Tiny.C
+
+let x = 1
+
+let x = 2
+"""
+
+let private globalDuplicates =
+    """namespace global
+
+type T = A
+
+namespace global
+
+type T = B
+
+namespace global
+
+module M =
+    let a = 1
+
+namespace global
+
+module M =
+    let b = 2
+"""
+
+let private augmented =
+    """module Tiny.C
+
+type T() =
+    member _.A = 1
+
+type T with
+    member _.B = 2
+
+let three = 3
+"""
+
 type private Fixture =
     { Spec: ProjectSpec
       Context: ProjectContext
@@ -107,6 +147,27 @@ let private moduleValues (fileResult: FileResult) (path: string list) =
         |> Seq.find (fun e -> e.FullName = fullName)
 
     [ for v in entity.MembersFunctionsAndValues -> v.DisplayName ]
+
+/// Checks the project with C.fs replaced, and expects the same diagnostics for C.fs as a full check.
+let private matchesFileCheck (cText: string) =
+    async {
+        let! fixture = checkTiny cText
+        let texts = sources fixture.Spec (Map.ofList [ "C.fs", cText ])
+        let! expected = oracle fixture.Spec texts fixture.C.File
+        let diff = Diagnostics.compare (toLsp expected) (toLsp fixture.C.FileResult.Diagnostics)
+        Expect.isEmpty diff $"decl-by-decl diagnostics equal the file check:\n%s{String.concat Environment.NewLine diff}"
+        Expect.isNonEmpty expected "the file check reports"
+        return fixture
+    }
+
+/// The names of the members of the entity that declares the value with the given name.
+let private declaringEntityMembers (fileResult: FileResult) (name: string) =
+    let definition =
+        fileResult.CheckResults.GetAllUsesOfAllSymbolsInFile()
+        |> Seq.find (fun u -> u.IsFromDefinition && u.Symbol.DisplayName = name && (u.Symbol :? FSharpMemberOrFunctionOrValue))
+
+    let value = definition.Symbol :?> FSharpMemberOrFunctionOrValue
+    [ for v in value.DeclaringEntity.Value.MembersFunctionsAndValues -> v.DisplayName ]
 
 /// Checks C.fs, then re-checks only declaration `index` (not the first) of the edited text against the old environment after the
 /// declaration before it, and finishes the file with the old results of the others.
@@ -177,6 +238,40 @@ let tests =
               let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; again; third; _fourth |])
               Expect.equal (moduleValues finished [ "Tiny"; "C" ]) [ "one"; "two"; "three"; "four" ] "one value per declaration"
           }
+
+          testAsync "a duplicate module-level let matches file check" {
+              let! fixture = matchesFileCheck duplicateLet
+              Expect.isTrue (fixture.C.FileResult.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 37)) "duplicate definition"
+          }
+
+          testAsync "duplicate types and modules in namespace global fragments match file check" {
+              let! fixture = matchesFileCheck globalDuplicates
+              Expect.equal fixture.C.Results.Length 4 "each fragment is one declaration"
+          }
+
+          testAsync "a module value's declaring entity lists it" {
+              let! fixture = checkTiny fourDecls
+              let c = fixture.C
+              Expect.equal (declaringEntityMembers c.FileResult "three") [ "one"; "two"; "three"; "four" ] "after the full check"
+
+              let finished = DeclarationChecker.FinishFile(c.Start, c.Results)
+              Expect.equal (declaringEntityMembers finished "three") [ "one"; "two"; "three"; "four" ] "after finishing again"
+          }
+
+          // R11: re-checking an augmentation alone adds its members to T again; Task 13 makes it re-check T too.
+          ptestCase "re-checking an augmentation alone leaves its type with one copy of its members" <| fun () ->
+              async {
+                  let! fixture = checkTiny augmented
+                  let c = fixture.C
+                  let rechecked = check c c.Results[0].EnvAfter c.Declarations[1]
+                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0]; rechecked; c.Results[2] |])
+
+                  Expect.equal
+                      (moduleValues finished [ "Tiny"; "C"; "T" ] |> List.filter ((=) "B"))
+                      [ "B" ]
+                      "one B"
+              }
+              |> Async.RunSynchronously
 
           testAsync "results don't leak" {
               let! fixture = checkTiny heavySecond
