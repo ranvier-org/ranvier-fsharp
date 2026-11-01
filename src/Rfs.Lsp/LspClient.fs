@@ -74,12 +74,28 @@ module internal Protocol =
         o["end"] <- toJson r.End
         o
 
+    /// One spelling per file: servers emit `file:///c%3A/...` while callers pass `C:\...`, and paths are compared ordinally.
+    let normalizePath (path: string) =
+        let full = Path.GetFullPath path
+
+        if full.Length >= 2 && full[1] = ':' then
+            string (Char.ToUpperInvariant full[0]) + full.Substring 1
+        else
+            full
+
     let pathOfUri (uri: string) =
         match Uri.TryCreate(uri, UriKind.Absolute) with
-        | true, u when u.IsFile -> u.LocalPath
+        | true, u when u.IsFile ->
+            // LocalPath keeps the leading slash when the colon is percent-encoded (`/c%3A/...`)
+            let path = Uri.UnescapeDataString u.AbsolutePath
+
+            if path.Length >= 3 && path[0] = '/' && Char.IsAsciiLetter path[1] && path[2] = ':' then
+                normalizePath (path.Substring 1)
+            else
+                normalizePath u.LocalPath
         | _ -> uri
 
-    let uriOfPath (path: string) = Uri(path).AbsoluteUri
+    let uriOfPath (path: string) = Uri(normalizePath path).AbsoluteUri
 
     let diagnostic (file: string) (node: JsonNode) : Diagnostic =
         { File = file
@@ -110,6 +126,13 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     let diagnostics = Broadcast<int64 * string * int option * Diagnostic list>()
     let notifications = Broadcast<Received>()
     let mutable nextId = 0
+    [<VolatileField>]
+    let mutable ended = false
+    [<VolatileField>]
+    let mutable endedBecause: exn = null
+
+    let closedError () =
+        IOException("The server connection is closed", endedBecause)
 
     let message () =
         let m = JsonObject()
@@ -119,22 +142,44 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     let notify (method: string) (parameters: JsonNode) =
         let m = message ()
         m["method"] <- JsonValue.Create method
-        m["params"] <- parameters
+
+        if not (isNull parameters) then
+            m["params"] <- parameters
+
         connection.Send m
 
-    let send (method: string) (parameters: JsonNode) : Task<Received * int64> =
+    let send (method: string) (parameters: JsonNode) (timeout: TimeSpan option) : Task<Received * int64> =
         task {
+            if ended then
+                raise (closedError ())
+
             let id = Interlocked.Increment &nextId
             let tcs = TaskCompletionSource<Received>(TaskCreationOptions.RunContinuationsAsynchronously)
             pending[id] <- tcs
-            let m = message ()
-            m["id"] <- JsonValue.Create id
-            m["method"] <- JsonValue.Create method
-            m["params"] <- parameters
-            let sentAt = Stopwatch.GetTimestamp()
-            do! connection.Send m
-            let! response = tcs.Task
-            return response, sentAt
+
+            try
+                // the read loop sets `ended` before failing pending requests, so one of the two sees this entry
+                if ended then
+                    tcs.TrySetException(closedError ()) |> ignore
+
+                let m = message ()
+                m["id"] <- JsonValue.Create id
+                m["method"] <- JsonValue.Create method
+
+                if not (isNull parameters) then
+                    m["params"] <- parameters
+
+                let sentAt = Stopwatch.GetTimestamp()
+                do! connection.Send m
+
+                let! response =
+                    match timeout with
+                    | Some t -> tcs.Task.WaitAsync t
+                    | None -> tcs.Task
+
+                return response, sentAt
+            finally
+                pending.TryRemove id |> ignore
         }
 
     /// Server -> client requests are answered with empty results so the server never blocks on us.
@@ -179,23 +224,37 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
 
         diagnostics.Publish((received.ReceivedAt, file, version, list))
 
+    /// A frame we could not handle is skipped and reported as a `$/rfs/malformedMessage` notification.
+    let surface (received: Received) (error: exn) =
+        let m = message ()
+        m["method"] <- JsonValue.Create "$/rfs/malformedMessage"
+
+        m["params"] <-
+            Protocol.obj' [ "error", Protocol.str error.Message
+                            "message", Protocol.str (received.Message.ToJsonString()) ]
+
+        notifications.Publish { Message = m; ReceivedAt = received.ReceivedAt }
+
     let dispatch (received: Received) : Task =
         task {
-            let m = received.Message
-            let id = m["id"]
-            let method = m["method"]
+            try
+                let m = received.Message
+                let id = m["id"]
+                let method = m["method"]
 
-            if not (isNull method) && not (isNull id) then
-                do! answer m
-            elif not (isNull method) then
-                if method.GetValue<string>() = "textDocument/publishDiagnostics" then
-                    handlePublish received
+                if not (isNull method) && not (isNull id) then
+                    do! answer m
+                elif not (isNull method) then
+                    if method.GetValue<string>() = "textDocument/publishDiagnostics" then
+                        handlePublish received
 
-                notifications.Publish received
-            elif not (isNull id) then
-                match pending.TryRemove(id.GetValue<int>()) with
-                | true, tcs -> tcs.SetResult received
-                | _ -> ()
+                    notifications.Publish received
+                elif not (isNull id) then
+                    match pending.TryRemove(id.GetValue<int>()) with
+                    | true, tcs -> tcs.SetResult received
+                    | _ -> ()
+            with error ->
+                surface received error
         }
 
     let readLoop =
@@ -208,11 +267,12 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                         while! e.MoveNextAsync() do
                             do! dispatch e.Current
                     with error ->
-                        for tcs in pending.Values do
-                            tcs.TrySetException error |> ignore
+                        endedBecause <- error
                 finally
+                    ended <- true
+
                     for tcs in pending.Values do
-                        tcs.TrySetException(IOException "The server closed the connection") |> ignore
+                        tcs.TrySetException(closedError ()) |> ignore
 
                     diagnostics.Complete()
                     notifications.Complete()
@@ -272,7 +332,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                                 "workspaceFolders",
                                 JsonArray(Protocol.obj' [ "uri", Protocol.str rootUri; "name", Protocol.str "root" ]) ]
 
-            let! response, sentAt = send "initialize" parameters
+            let! response, sentAt = send "initialize" parameters None
 
             match response.Message["error"] with
             | null -> ()
@@ -283,11 +343,11 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
         }
 
     /// The client's current text of a file opened with DidOpen and updated with DidChange.
-    member _.Text(path: string) : string = documents[path]
+    member _.Text(path: string) : string = documents[Protocol.normalizePath path]
 
     /// Opens the file at version 0, so the first DidChange should use version 1.
     member _.DidOpen(path: string, text: string) : Task =
-        documents[path] <- text
+        documents[Protocol.normalizePath path] <- text
 
         let languageId =
             match Path.GetExtension(path).ToLowerInvariant() with
@@ -306,7 +366,8 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
 
     /// Sends one incremental change and applies it to the client's copy of the text.
     member _.DidChange(path: string, version: int, edit: Edit) : Task =
-        documents[path] <- Document.apply documents[path] edit
+        let key = Protocol.normalizePath path
+        documents[key] <- Document.apply documents[key] edit
 
         let change =
             Protocol.obj' [ "range", Protocol.rangeToJson edit.Range; "text", Protocol.str edit.Text ]
@@ -324,10 +385,11 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
             (Protocol.obj' [ "textDocument", Protocol.obj' [ "uri", Protocol.str (Protocol.uriOfPath path) ] ])
 
     /// Returns the response's result (null when the server answered null) and the time from sending the request
-    /// to the response's receive timestamp. A JSON-RPC error response raises.
-    member _.Request(method: string, parameters: JsonNode) : Task<JsonNode * TimeSpan> =
+    /// to the response's receive timestamp. A JSON-RPC error response raises, as does a closed connection; with
+    /// `timeout` the wait is bounded and raises TimeoutException.
+    member _.Request(method: string, parameters: JsonNode, ?timeout: TimeSpan) : Task<JsonNode * TimeSpan> =
         task {
-            let! response, sentAt = send method parameters
+            let! response, sentAt = send method parameters timeout
             let m = response.Message
 
             match m["error"] with
@@ -348,21 +410,29 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     /// Sends shutdown and exit, then waits briefly for a spawned process to leave before killing it.
     member _.Shutdown() : Task =
         task {
+            let bound = TimeSpan.FromSeconds 5.
+
+            // a server that is already gone or unresponsive must not hang the shutdown
             try
-                let! _ = send "shutdown" null
-                do! notify "exit" null
-            with :? IOException | :? ObjectDisposedException ->
-                ()
+                let! _ = send "shutdown" null (Some bound)
+                do! (notify "exit" null).WaitAsync bound
+            with
+            | :? IOException
+            | :? ObjectDisposedException
+            | :? TimeoutException -> ()
 
             match server with
             | Some p ->
                 try
-                    do! p.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds 5.)
+                    do! p.WaitForExitAsync().WaitAsync bound
                 with :? TimeoutException ->
                     p.Kill true
             | None -> ()
 
-            do! readLoop.WaitAsync(TimeSpan.FromSeconds 5.)
+            try
+                do! readLoop.WaitAsync bound
+            with :? TimeoutException ->
+                ()
         }
 
     interface IDisposable with

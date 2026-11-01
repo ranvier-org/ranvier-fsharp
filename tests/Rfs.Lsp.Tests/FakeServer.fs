@@ -10,12 +10,12 @@ open System.Threading.Tasks
 open Rfs.Lsp
 
 type FakeDiagnostic =
-    { Line: int
-      StartChar: int
-      EndChar: int
-      Severity: int
-      Code: string
-      Message: string }
+    { DiagLine: int
+      DiagStartChar: int
+      DiagEndChar: int
+      DiagSeverity: int
+      DiagCode: string
+      DiagMessage: string }
 
 /// An in-process LSP server for tests. Hand ClientInput/ClientOutput to LspClient.Connect:
 /// the client reads what the server sends from ClientInput and writes to ClientOutput.
@@ -23,10 +23,13 @@ type FakeDiagnostic =
 type FakeServer() =
     let toClient = Pipe()
     let toServer = Pipe()
+    let clientInput = toClient.Reader.AsStream()
+    let clientOutput = toServer.Writer.AsStream()
     let connection = JsonRpcConnection(toServer.Reader.AsStream(), toClient.Writer.AsStream())
     let cts = new CancellationTokenSource()
     let received = ConcurrentQueue<JsonObject>()
     let handlers = ConcurrentDictionary<string, JsonNode -> JsonNode>()
+    let silent = ConcurrentDictionary<string, unit>()
     let pending = ConcurrentDictionary<string, TaskCompletionSource<JsonNode>>()
     let arrivals = Collections.Generic.List<TaskCompletionSource>()
     let mutable nextId = 0
@@ -62,13 +65,14 @@ type FakeServer() =
             | method, id ->
                 let name = method.GetValue<string>()
 
-                let result =
-                    match handlers.TryGetValue name with
-                    | true, h -> h message["params"]
-                    | _ when name = "initialize" -> JsonNode.Parse """{"capabilities":{"textDocumentSync":2}}"""
-                    | _ -> null
+                if not (silent.ContainsKey name) then
+                    let result =
+                        match handlers.TryGetValue name with
+                        | true, h -> h message["params"]
+                        | _ when name = "initialize" -> JsonNode.Parse """{"capabilities":{"textDocumentSync":2}}"""
+                        | _ -> null
 
-                do! reply id result
+                    do! reply id result
         }
 
     let loop =
@@ -90,15 +94,18 @@ type FakeServer() =
             :> Task)
 
     /// The stream the client should read from.
-    member _.ClientInput: Stream = toClient.Reader.AsStream()
+    member _.ClientInput: Stream = clientInput
     /// The stream the client should write to.
-    member _.ClientOutput: Stream = toServer.Writer.AsStream()
+    member _.ClientOutput: Stream = clientOutput
 
     /// Every message received from the client so far, in order.
     member _.Received: JsonObject list = received.ToArray() |> List.ofArray
 
     /// Answers requests for `method` with the handler's result (the handler gets the request params).
     member _.OnRequest(method: string, handler: JsonNode -> JsonNode) = handlers[method] <- handler
+
+    /// Requests for `method` get no reply at all.
+    member _.NeverAnswer(method: string) = silent[method] <- ()
 
     /// Waits for a client message satisfying `predicate`, including ones that already arrived.
     member _.WaitFor(predicate: JsonObject -> bool) : Task<JsonObject> =
@@ -147,19 +154,19 @@ type FakeServer() =
         for d in diagnostics do
             let position character =
                 let p = JsonObject()
-                p["line"] <- JsonValue.Create d.Line
+                p["line"] <- JsonValue.Create d.DiagLine
                 p["character"] <- JsonValue.Create(character: int)
                 p
 
             let range = JsonObject()
-            range["start"] <- position d.StartChar
-            range["end"] <- position d.EndChar
+            range["start"] <- position d.DiagStartChar
+            range["end"] <- position d.DiagEndChar
             let item = JsonObject()
             item["range"] <- range
-            item["severity"] <- JsonValue.Create d.Severity
-            item["code"] <- JsonValue.Create d.Code
+            item["severity"] <- JsonValue.Create d.DiagSeverity
+            item["code"] <- JsonValue.Create d.DiagCode
             item["source"] <- JsonValue.Create "fake"
-            item["message"] <- JsonValue.Create d.Message
+            item["message"] <- JsonValue.Create d.DiagMessage
             items.Add item
 
         let parameters = JsonObject()

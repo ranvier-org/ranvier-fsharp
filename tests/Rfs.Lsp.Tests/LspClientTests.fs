@@ -48,12 +48,12 @@ let private withClient(body: FakeServer -> LspClient -> Task) : Task =
 let private filePath = Path.Combine(Path.GetTempPath(), "rfs-lsp-tests", "A.fs")
 
 let private oneDiagnostic =
-    [ { Line = 2
-        StartChar = 1
-        EndChar = 4
-        Severity = 1
-        Code = "FS0001"
-        Message = "boom" } ]
+    [ { DiagLine = 2
+        DiagStartChar = 1
+        DiagEndChar = 4
+        DiagSeverity = 1
+        DiagCode = "FS0001"
+        DiagMessage = "boom" } ]
 
 [<Tests>]
 let tests =
@@ -179,4 +179,97 @@ let tests =
                           let! r = seen.Next()
                           Expect.equal (r.Message |> at [ "method" ] |> str) "$/progress" "method"
                       })
+          }
+
+          testTask "a malformed message is skipped and reported, later requests still complete" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          server.OnRequest("custom/echo", fun p -> p.DeepClone())
+                          let seen = Collector<Received>()
+                          use _ = client.Notifications.Subscribe seen
+
+                          // no uri, and a diagnostic without a range
+                          do! server.Notify("textDocument/publishDiagnostics", JsonNode.Parse """{"diagnostics":[{"severity":"x"}]}""")
+                          do! server.Notify("textDocument/publishDiagnostics", JsonNode.Parse """{"uri":"file:///x.fs","diagnostics":[{"severity":"x"}]}""")
+
+                          let! (result, _) = client.Request("custom/echo", JsonNode.Parse """{"a":1}""", TimeSpan.FromSeconds 10.)
+                          Expect.equal (result |> at [ "a" ] |> num) 1 "request answered after bad frames"
+
+                          let! r = seen.Next()
+                          Expect.equal (r.Message |> at [ "method" ] |> str) "$/rfs/malformedMessage" "first bad frame surfaced"
+                          let! r = seen.Next()
+                          Expect.equal (r.Message |> at [ "method" ] |> str) "$/rfs/malformedMessage" "second bad frame surfaced"
+                      })
+          }
+
+          testTask "request after the connection ends faults instead of hanging" {
+              let server = new FakeServer()
+              let client = LspClient.Connect(server.ClientInput, server.ClientOutput)
+              let ended = TaskCompletionSource()
+
+              let _subscription =
+                  client.Notifications.Subscribe
+                      { new IObserver<Received> with
+                          member _.OnNext _ = ()
+                          member _.OnError _ = ()
+                          member _.OnCompleted() = ended.SetResult() }
+
+              (server :> IDisposable).Dispose()
+              do! ended.Task.WaitAsync(TimeSpan.FromSeconds 10.)
+
+              let! outcome =
+                  task {
+                      try
+                          let! _ = client.Request("custom/echo", null, TimeSpan.FromSeconds 5.)
+                          return (None: exn option)
+                      with e ->
+                          return Some e
+                  }
+
+              match outcome with
+              | Some(e: exn) when (e :? IOException) -> ()
+              | other -> failtestf "expected IOException, got %A" other
+          }
+
+          testTask "request times out when the server never answers" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          server.NeverAnswer "custom/never"
+
+                          let! outcome =
+                              task {
+                                  try
+                                      let! _ = client.Request("custom/never", null, TimeSpan.FromMilliseconds 200.)
+                                      return "answered"
+                                  with :? TimeoutException ->
+                                      return "timeout"
+                              }
+
+                          Expect.equal outcome "timeout" "bounded wait"
+                      })
+          }
+
+          testTask "file URIs from servers map onto the opened path" {
+              if OperatingSystem.IsWindows() then
+                  do!
+                      withClient (fun server client ->
+                          task {
+                              let seen = Collector<int64 * string * int option * Diagnostic list>()
+                              use _ = client.Diagnostics.Subscribe seen
+                              do! client.DidOpen(@"C:\rfs-uri-test\y.fs", "let x = 1")
+
+                              do!
+                                  server.Notify(
+                                      "textDocument/publishDiagnostics",
+                                      JsonNode.Parse """{"uri":"file:///c%3A/rfs-uri-test/y.fs","diagnostics":[]}"""
+                                  )
+
+                              let! (_, file, _, _) = seen.Next()
+                              Expect.equal file @"C:\rfs-uri-test\y.fs" "drive letter and separators normalised"
+                              Expect.equal (client.Text @"c:\rfs-uri-test\y.fs") "let x = 1" "same document under either spelling"
+                              let! opened = server.WaitForMethod "textDocument/didOpen"
+                              Expect.equal (opened |> at [ "params"; "textDocument"; "uri" ] |> str) "file:///C:/rfs-uri-test/y.fs" "sent URI"
+                          })
           } ]
