@@ -1,0 +1,11 @@
+{
+  "name": "small-cold",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "cold",
+  "steps": [
+    {
+      "open": "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+    }
+  ]
+}

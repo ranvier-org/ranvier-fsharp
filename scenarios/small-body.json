@@ -1,0 +1,29 @@
+{
+  "name": "small-body",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "range": {
+          "start": {
+            "line": 339,
+            "character": 39
+          },
+          "end": {
+            "line": 339,
+            "character": 40
+          }
+        },
+        "text": "C",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

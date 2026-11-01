@@ -1,0 +1,82 @@
+[
+  {
+    "name": "fsac-core-bg",
+    "command": "dotnet",
+    "cwd": ".",
+    "args": [ "../ranvier-fsharp-fsac/src/FsAutoComplete/bin/Release/net10.0/fsautocomplete.dll" ],
+    "oracle": "report",
+    "projectLoad": "fsharp/workspaceLoad",
+    "initOptions": {
+      "AutomaticWorkspaceInit": false,
+      "Linter": false,
+      "UnionCaseStubGeneration": false,
+      "RecordStubGeneration": false,
+      "InterfaceStubGeneration": false,
+      "AbstractClassStubGeneration": false,
+      "AddPrivateAccessModifier": false,
+      "UnusedOpensAnalyzer": false,
+      "UnusedDeclarationsAnalyzer": false,
+      "SimplifyNameAnalyzer": false,
+      "UnnecessaryParenthesesAnalyzer": false,
+      "ResolveNamespaces": false,
+      "EnableReferenceCodeLens": false,
+      "EnableAnalyzers": false,
+      "GenerateBinlog": false,
+      "LineLens": { "Enabled": "never", "Prefix": "" },
+      "CodeLenses": { "Signature": { "Enabled": false }, "References": { "Enabled": false } },
+      "PipelineHints": { "Enabled": false },
+      "InlayHints": { "typeAnnotations": false, "parameterNames": false, "disableLongTooltip": true },
+      "Notifications": { "Trace": false, "BackgroundServiceProgress": false },
+      "Fsac": { "CachedTypeCheckCount": 200, "ParallelReferenceResolution": true }
+    }
+  },
+  {
+    "name": "fsac-core-tc",
+    "command": "dotnet",
+    "cwd": ".",
+    "args": [ "../ranvier-fsharp-fsac/src/FsAutoComplete/bin/Release/net10.0/fsautocomplete.dll", "--use-fcs-transparent-compiler" ],
+    "oracle": "report",
+    "projectLoad": "fsharp/workspaceLoad",
+    "initOptions": {
+      "AutomaticWorkspaceInit": false,
+      "Linter": false,
+      "UnionCaseStubGeneration": false,
+      "RecordStubGeneration": false,
+      "InterfaceStubGeneration": false,
+      "AbstractClassStubGeneration": false,
+      "AddPrivateAccessModifier": false,
+      "UnusedOpensAnalyzer": false,
+      "UnusedDeclarationsAnalyzer": false,
+      "SimplifyNameAnalyzer": false,
+      "UnnecessaryParenthesesAnalyzer": false,
+      "ResolveNamespaces": false,
+      "EnableReferenceCodeLens": false,
+      "EnableAnalyzers": false,
+      "GenerateBinlog": false,
+      "LineLens": { "Enabled": "never", "Prefix": "" },
+      "CodeLenses": { "Signature": { "Enabled": false }, "References": { "Enabled": false } },
+      "PipelineHints": { "Enabled": false },
+      "InlayHints": { "typeAnnotations": false, "parameterNames": false, "disableLongTooltip": true },
+      "Notifications": { "Trace": false, "BackgroundServiceProgress": false },
+      "Fsac": { "CachedTypeCheckCount": 200, "ParallelReferenceResolution": true }
+    }
+  },
+  {
+    "name": "fsac-default-bg",
+    "command": "dotnet",
+    "cwd": ".",
+    "args": [ "../ranvier-fsharp-fsac/src/FsAutoComplete/bin/Release/net10.0/fsautocomplete.dll" ],
+    "oracle": "report",
+    "projectLoad": "fsharp/workspaceLoad",
+    "initOptions": {}
+  },
+  {
+    "name": "fsac-default-tc",
+    "command": "dotnet",
+    "cwd": ".",
+    "args": [ "../ranvier-fsharp-fsac/src/FsAutoComplete/bin/Release/net10.0/fsautocomplete.dll", "--use-fcs-transparent-compiler" ],
+    "oracle": "report",
+    "projectLoad": "fsharp/workspaceLoad",
+    "initOptions": {}
+  }
+]

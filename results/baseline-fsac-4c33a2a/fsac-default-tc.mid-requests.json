@@ -1,0 +1,291 @@
+{
+  "server": "fsac-default-tc",
+  "scenario": "mid-requests",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-01T16:31:44.1690332Z",
+  "coldMs": 6409.515,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FsAutoComplete.Core/DocumentationFormatter.fs",
+      "latencyMs": 4170.3247,
+      "publishes": 2,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 112:17",
+      "latencyMs": 133.766,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 72:25",
+      "latencyMs": 47.4703,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 96:17",
+      "latencyMs": 14.5056,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 126:60",
+      "latencyMs": 4.9777,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 99:9",
+      "latencyMs": 1.583,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 107:41",
+      "latencyMs": 100.0722,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 13:25",
+      "latencyMs": 146.9586,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 16:79",
+      "latencyMs": 6.5913,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 541:32",
+      "latencyMs": 2.0211,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 109:19",
+      "latencyMs": 19.3065,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 65:13",
+      "latencyMs": 103.8179,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 71:24",
+      "latencyMs": 10.3053,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 101:38",
+      "latencyMs": 7.6955,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 96:15",
+      "latencyMs": 31.5406,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 121:27",
+      "latencyMs": 45.8474,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 126:27",
+      "latencyMs": 58.2532,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 52:12",
+      "latencyMs": 7.6078,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 41:17",
+      "latencyMs": 7.8873,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 49:17",
+      "latencyMs": 9.7824,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 113:13",
+      "latencyMs": 9.92,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 96:17",
+      "latencyMs": 32.0697,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 123:8",
+      "latencyMs": 2.5432,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 95:22",
+      "latencyMs": 0.7978,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 99:8",
+      "latencyMs": 0.7872,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 109:15",
+      "latencyMs": 0.856,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 26,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 541:31",
+      "latencyMs": 0.6724,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 27,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 314:12",
+      "latencyMs": 0.6126,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 587:25",
+      "latencyMs": 0.5605,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 29,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 164:45",
+      "latencyMs": 0.4907,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 30,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 16:16",
+      "latencyMs": 0.6543,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 707.86328125,
+  "allocatedMb": 1723.066146850586,
+  "gen2": 9
+}

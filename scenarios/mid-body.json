@@ -1,0 +1,29 @@
+{
+  "name": "mid-body",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 541,
+            "character": 59
+          },
+          "end": {
+            "line": 541,
+            "character": 60
+          }
+        },
+        "text": "4",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

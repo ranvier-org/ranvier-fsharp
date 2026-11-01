@@ -1,0 +1,29 @@
+{
+  "name": "mid-signature",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "signature",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 595,
+            "character": 52
+          },
+          "end": {
+            "line": 595,
+            "character": 52
+          }
+        },
+        "text": " |> String.length",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "server": "fsac-core-bg",
+  "scenario": "small-cold",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-01T16:46:02.7663313Z",
+  "coldMs": 7516.1574,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FSharp.Data.Adaptive/Core/Transaction.fs",
+      "latencyMs": 5801.4578,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 432.74609375,
+  "allocatedMb": 1585.193130493164,
+  "gen2": 4
+}

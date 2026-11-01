@@ -1,0 +1,32 @@
+{
+  "name": "mid-openmany",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "openMany",
+  "steps": [
+    {
+      "openMany": [
+        "src/FsAutoComplete.Core/SemaphoreSlimLocks.fsi",
+        "src/FsAutoComplete.Core/SemaphoreSlimLocks.fs",
+        "src/FsAutoComplete.Core/AdaptiveExtensions.fsi",
+        "src/FsAutoComplete.Core/AdaptiveExtensions.fs",
+        "src/FsAutoComplete.Core/Consts.fs",
+        "src/FsAutoComplete.Core/Debug.fs",
+        "src/FsAutoComplete.Core/Utils.fsi",
+        "src/FsAutoComplete.Core/Utils.fs",
+        "src/FsAutoComplete.Core/VSTestWrapper.fs",
+        "src/FsAutoComplete.Core/TestServer.fs",
+        "src/FsAutoComplete.Core/TestAdapter.fs",
+        "src/FsAutoComplete.Core/DotnetNewTemplate.fs",
+        "src/FsAutoComplete.Core/DotnetCli.fs",
+        "src/FsAutoComplete.Core/FsprojEdit.fs",
+        "src/FsAutoComplete.Core/ProcessWatcher.fs",
+        "src/FsAutoComplete.Core/UntypedAstUtils.fsi",
+        "src/FsAutoComplete.Core/UntypedAstUtils.fs",
+        "src/FsAutoComplete.Core/TypedAstUtils.fsi",
+        "src/FsAutoComplete.Core/TypedAstUtils.fs",
+        "src/FsAutoComplete.Core/TypedAstPatterns.fsi"
+      ]
+    }
+  ]
+}

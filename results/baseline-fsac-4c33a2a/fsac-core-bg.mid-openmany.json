@@ -1,0 +1,21 @@
+{
+  "server": "fsac-core-bg",
+  "scenario": "mid-openmany",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-01T16:28:32.9126876Z",
+  "coldMs": 13395.4947,
+  "steps": [
+    {
+      "index": 0,
+      "step": "openMany 20",
+      "latencyMs": 10505.4738,
+      "publishes": 20,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 3120.44921875,
+  "allocatedMb": 7499.74715423584,
+  "gen2": 12
+}

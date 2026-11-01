@@ -1,0 +1,11 @@
+{
+  "name": "large-cold",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "cold",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    }
+  ]
+}

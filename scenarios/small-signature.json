@@ -1,0 +1,29 @@
+{
+  "name": "small-signature",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "signature",
+  "steps": [
+    {
+      "open": "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "range": {
+          "start": {
+            "line": 286,
+            "character": 20
+          },
+          "end": {
+            "line": 286,
+            "character": 20
+          }
+        },
+        "text": " |> string",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

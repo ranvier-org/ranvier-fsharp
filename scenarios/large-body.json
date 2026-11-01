@@ -1,0 +1,29 @@
+{
+  "name": "large-body",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 15,
+            "character": 20
+          },
+          "end": {
+            "line": 15,
+            "character": 22
+          }
+        },
+        "text": "37",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

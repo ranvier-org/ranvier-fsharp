@@ -1,0 +1,29 @@
+{
+  "name": "large-signature",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "signature",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 124,
+            "character": 54
+          },
+          "end": {
+            "line": 124,
+            "character": 54
+          }
+        },
+        "text": " |> string",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "server": "fsac-core-tc",
+  "scenario": "mid-cold",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-01T16:28:09.3368717Z",
+  "coldMs": 7230.5299,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FsAutoComplete.Core/DocumentationFormatter.fs",
+      "latencyMs": 4609.4691,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 707.88671875,
+  "allocatedMb": 1558.3752212524414,
+  "gen2": 10
+}

@@ -1,0 +1,281 @@
+{
+  "name": "mid-requests",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 112,
+          "character": 17
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 72,
+          "character": 25
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 96,
+          "character": 17
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 126,
+          "character": 60
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 99,
+          "character": 9
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 107,
+          "character": 41
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 13,
+          "character": 25
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 16,
+          "character": 79
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 541,
+          "character": 32
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 109,
+          "character": 19
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 65,
+          "character": 13
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 71,
+          "character": 24
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 101,
+          "character": 38
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 96,
+          "character": 15
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 121,
+          "character": 27
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 126,
+          "character": 27
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 52,
+          "character": 12
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 41,
+          "character": 17
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 49,
+          "character": 17
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 113,
+          "character": 13
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 96,
+          "character": 17
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 123,
+          "character": 8
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 95,
+          "character": 22
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 99,
+          "character": 8
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 109,
+          "character": 15
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 541,
+          "character": 31
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 314,
+          "character": 12
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 587,
+          "character": 25
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 164,
+          "character": 45
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "position": {
+          "line": 16,
+          "character": 16
+        }
+      }
+    }
+  ]
+}

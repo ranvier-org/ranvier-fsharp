@@ -1,0 +1,32 @@
+{
+  "name": "large-openmany",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "openMany",
+  "steps": [
+    {
+      "openMany": [
+        "src/Fantomas.Core/AssemblyInfo.fs",
+        "src/Fantomas.Core/RangeHelpers.fsi",
+        "src/Fantomas.Core/RangeHelpers.fs",
+        "src/Fantomas.Core/Utils.fsi",
+        "src/Fantomas.Core/Utils.fs",
+        "src/Fantomas.Core/Exceptions.fs",
+        "src/Fantomas.Core/FormatConfig.fs",
+        "src/Fantomas.Core/SyntaxOak.fs",
+        "src/Fantomas.Core/ASTTransformer.fsi",
+        "src/Fantomas.Core/ASTTransformer.fs",
+        "src/Fantomas.Core/Version.fs",
+        "src/Fantomas.Core/Queue.fs",
+        "src/Fantomas.Core/Trivia.fsi",
+        "src/Fantomas.Core/Trivia.fs",
+        "src/Fantomas.Core/Defines.fsi",
+        "src/Fantomas.Core/Defines.fs",
+        "src/Fantomas.Core/CodeFormatterTypes.fs",
+        "src/Fantomas.Core/WriterEvent.fs",
+        "src/Fantomas.Core/EventList.fs",
+        "src/Fantomas.Core/Context.fsi"
+      ]
+    }
+  ]
+}

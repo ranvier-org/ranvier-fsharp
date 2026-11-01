@@ -1,0 +1,291 @@
+{
+  "server": "fsac-core-bg",
+  "scenario": "large-requests",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-01T16:20:45.9122070Z",
+  "coldMs": 11432.1029,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/Fantomas.Core/Queue.fs",
+      "latencyMs": 9096.0276,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "hover src/Fantomas.Core/Queue.fs 15:42",
+      "latencyMs": 186.2498,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "hover src/Fantomas.Core/Queue.fs 17:10",
+      "latencyMs": 5.5462,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "hover src/Fantomas.Core/Queue.fs 23:18",
+      "latencyMs": 5.9419,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "hover src/Fantomas.Core/Queue.fs 30:19",
+      "latencyMs": 4.1554,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "hover src/Fantomas.Core/Queue.fs 45:29",
+      "latencyMs": 2.5111,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "hover src/Fantomas.Core/Queue.fs 48:13",
+      "latencyMs": 6.3556,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "hover src/Fantomas.Core/Queue.fs 58:16",
+      "latencyMs": 2.7461,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "hover src/Fantomas.Core/Queue.fs 79:19",
+      "latencyMs": 1.1516,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "hover src/Fantomas.Core/Queue.fs 99:19",
+      "latencyMs": 1.0971,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "hover src/Fantomas.Core/Queue.fs 136:101",
+      "latencyMs": 4.1418,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "completion src/Fantomas.Core/Queue.fs 15:42",
+      "latencyMs": 100.8683,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "completion src/Fantomas.Core/Queue.fs 24:22",
+      "latencyMs": 11.4695,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "completion src/Fantomas.Core/Queue.fs 25:21",
+      "latencyMs": 5.4688,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "completion src/Fantomas.Core/Queue.fs 30:18",
+      "latencyMs": 10.2071,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "completion src/Fantomas.Core/Queue.fs 41:17",
+      "latencyMs": 6.9069,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "completion src/Fantomas.Core/Queue.fs 45:28",
+      "latencyMs": 7.5836,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "completion src/Fantomas.Core/Queue.fs 58:45",
+      "latencyMs": 9.3994,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "completion src/Fantomas.Core/Queue.fs 77:22",
+      "latencyMs": 2.326,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "completion src/Fantomas.Core/Queue.fs 99:18",
+      "latencyMs": 4.9424,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "completion src/Fantomas.Core/Queue.fs 129:38",
+      "latencyMs": 2.5093,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "definition src/Fantomas.Core/Queue.fs 22:15",
+      "latencyMs": 32.1669,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "definition src/Fantomas.Core/Queue.fs 23:18",
+      "latencyMs": 1.1915,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "definition src/Fantomas.Core/Queue.fs 24:23",
+      "latencyMs": 0.6946,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "definition src/Fantomas.Core/Queue.fs 79:18",
+      "latencyMs": 0.5049,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "definition src/Fantomas.Core/Queue.fs 96:34",
+      "latencyMs": 1.0856,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 26,
+      "step": "definition src/Fantomas.Core/Queue.fs 115:40",
+      "latencyMs": 0.7179,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 27,
+      "step": "definition src/Fantomas.Core/Queue.fs 117:43",
+      "latencyMs": 0.4363,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "step": "definition src/Fantomas.Core/Queue.fs 133:45",
+      "latencyMs": 0.4719,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 29,
+      "step": "definition src/Fantomas.Core/Queue.fs 136:100",
+      "latencyMs": 0.5195,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 30,
+      "step": "definition src/Fantomas.Core/Queue.fs 129:39",
+      "latencyMs": 0.4806,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 1036.046875,
+  "allocatedMb": 5148.163833618164,
+  "gen2": 13
+}

@@ -1,0 +1,11 @@
+{
+  "name": "mid-cold",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "cold",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    }
+  ]
+}

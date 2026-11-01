@@ -1,0 +1,21 @@
+{
+  "server": "fsac-default-tc",
+  "scenario": "large-cold",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-01T16:19:21.5469901Z",
+  "coldMs": 11814.8812,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/Fantomas.Core/Queue.fs",
+      "latencyMs": 9340.9604,
+      "publishes": 2,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 1004.4375,
+  "allocatedMb": 5131.690185546875,
+  "gen2": 10
+}

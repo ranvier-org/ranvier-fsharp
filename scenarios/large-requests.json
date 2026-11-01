@@ -1,0 +1,281 @@
+{
+  "name": "large-requests",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 24,
+          "character": 22
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 25,
+          "character": 21
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 18
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 41,
+          "character": 17
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 28
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 45
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 77,
+          "character": 22
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 18
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 129,
+          "character": 38
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 22,
+          "character": 15
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 24,
+          "character": 23
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 18
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 96,
+          "character": 34
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 115,
+          "character": 40
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 117,
+          "character": 43
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 133,
+          "character": 45
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 100
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 129,
+          "character": 39
+        }
+      }
+    }
+  ]
+}

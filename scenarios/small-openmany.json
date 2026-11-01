@@ -1,0 +1,32 @@
+{
+  "name": "small-openmany",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "openMany",
+  "steps": [
+    {
+      "openMany": [
+        "src/FSharp.Data.Adaptive/AssemblyInfo.fs",
+        "src/FSharp.Data.Adaptive/ShallowEquality.fs",
+        "src/FSharp.Data.Adaptive/Equality.fs",
+        "src/FSharp.Data.Adaptive/FableHelpers.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/HashCollections.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/Operations.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/Index.fsi",
+        "src/FSharp.Data.Adaptive/Datastructures/Index.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/MapExt.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/IndexList.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/HashSetDelta.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/HashMapDelta.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/IndexListDelta.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/Deltas.fs",
+        "src/FSharp.Data.Adaptive/Datastructures/MultiSetMap.fs",
+        "src/FSharp.Data.Adaptive/Utilities/Utilities.fs",
+        "src/FSharp.Data.Adaptive/Utilities/PriorityQueue.fs",
+        "src/FSharp.Data.Adaptive/Utilities/Cache.fs",
+        "src/FSharp.Data.Adaptive/Core/Core.fs",
+        "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+      ]
+    }
+  ]
+}

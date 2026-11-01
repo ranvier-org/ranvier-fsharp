@@ -1,0 +1,281 @@
+{
+  "name": "small-requests",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 128,
+          "character": 34
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 274,
+          "character": 11
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 312,
+          "character": 18
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 227,
+          "character": 36
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 182,
+          "character": 20
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 113,
+          "character": 30
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 173,
+          "character": 34
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 264,
+          "character": 10
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 244,
+          "character": 28
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 102,
+          "character": 15
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 168,
+          "character": 20
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 189,
+          "character": 18
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 154,
+          "character": 10
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 220,
+          "character": 53
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 245,
+          "character": 32
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 285,
+          "character": 24
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 338,
+          "character": 31
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 334,
+          "character": 35
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 313,
+          "character": 10
+        }
+      }
+    },
+    {
+      "completion": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 217,
+          "character": 37
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 102,
+          "character": 14
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 104,
+          "character": 28
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 227,
+          "character": 35
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 312,
+          "character": 17
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 333,
+          "character": 20
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 181,
+          "character": 19
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 121,
+          "character": 21
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 244,
+          "character": 27
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 321,
+          "character": 25
+        }
+      }
+    },
+    {
+      "definition": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 236,
+          "character": 24
+        }
+      }
+    }
+  ]
+}
