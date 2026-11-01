@@ -5,6 +5,9 @@
   <ItemGroup>
     <Compile Include="ScenarioTests.fs" />
     <Compile Include="ServersTests.fs" />
+    <Compile Include="../Rfs.Lsp.Tests/FakeServer.fs" Link="FakeServer.fs" />
+    <Compile Include="MetricsTests.fs" />
+    <Compile Include="RunnerTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -30,6 +30,12 @@ type Scenario =
       Steps: Step list }
 
 module Scenario =
+    /// The checkout a scenario runs against; its file paths are relative to this.
+    let repoRoot (corpusRoot: string) (scenario: Scenario) = Path.Combine(corpusRoot, scenario.Corpus)
+
+    let resolve (corpusRoot: string) (scenario: Scenario) (relative: string) =
+        Path.Combine(repoRoot corpusRoot scenario, relative)
+
     let private kinds = set [ "cold"; "body"; "signature"; "requests"; "openMany" ]
 
     let private fail message = raise (FormatException message)
@@ -158,10 +164,8 @@ module Scenario =
             fail $"%s{file}: column %d{p.Character} is past the end of line %d{p.Line} (length %d{length})"
 
     let private validate (corpusRoot: string) (scenario: Scenario) =
-        let repo = Path.Combine(corpusRoot, scenario.Corpus)
-
         let resolve (relative: string) =
-            let full = Path.Combine(repo, relative)
+            let full = resolve corpusRoot scenario relative
 
             if not (File.Exists full) then
                 fail $"file not found: %s{relative} (looked in %s{full})"

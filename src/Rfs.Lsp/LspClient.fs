@@ -309,6 +309,9 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                 new LspClient(JsonRpcConnection(proc.StandardOutput.BaseStream, proc.StandardInput.BaseStream), Some proc)
         }
 
+    /// The spelling of a path that diagnostics and `Text` use.
+    static member NormalizePath(path: string) : string = Protocol.normalizePath path
+
     /// The server's process id, or -1 for a client made with Connect.
     member _.ProcessId: int =
         match server with

@@ -22,7 +22,7 @@ module Document =
         offset
 
     /// Lines end at '\n'; a '\r' right before it belongs to the terminator, so a column never lands after it.
-    let private offsetOf (text: string) (position: Position) =
+    let offsetOf (text: string) (position: Position) =
         let start = lineStart text position.Line
 
         let contentEnd =
