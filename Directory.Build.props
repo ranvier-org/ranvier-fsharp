@@ -5,5 +5,14 @@
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <FickleFcsDir>C:\Users\shaya\RiderProjects\fickle-fsharp\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\</FickleFcsDir>
     <RanvierDir>C:\Users\shaya\RiderProjects\Ranvier\src\Ranvier\</RanvierDir>
+    <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Overrides the FSharp.Core that packages like Ionide.ProjInfo and Expecto depend on, with no assets, so only the fork one is loaded. -->
+    <PackageReference Include="FSharp.Core" ExcludeAssets="all" />
+    <Reference Include="FSharp.Core">
+      <HintPath>$(FickleFcsDir)FSharp.Core.dll</HintPath>
+    </Reference>
+  </ItemGroup>
 </Project>

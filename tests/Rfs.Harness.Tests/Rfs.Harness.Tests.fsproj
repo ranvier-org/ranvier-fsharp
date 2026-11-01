@@ -8,13 +8,17 @@
     <Compile Include="../Rfs.Lsp.Tests/FakeServer.fs" Link="FakeServer.fs" />
     <Compile Include="MetricsTests.fs" />
     <Compile Include="RunnerTests.fs" />
+    <Compile Include="ProjectSpecTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="FSharp.Core" />
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
     <PackageReference Include="Expecto" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rfs.Harness\Rfs.Harness.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Projects\Rfs.Projects.fsproj" />
   </ItemGroup>
 </Project>

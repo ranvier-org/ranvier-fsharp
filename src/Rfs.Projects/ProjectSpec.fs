@@ -1,0 +1,123 @@
+namespace Rfs.Projects
+
+open System
+open System.Diagnostics
+open System.IO
+open System.Text.Json.Nodes
+open System.Threading.Tasks
+open FSharp.Compiler.CodeAnalysis
+open Ionide.ProjInfo
+
+type ProjectSpec =
+    { ProjectFile: string
+      SourceFiles: string list
+      OtherOptions: string list
+      ReferencedProjects: string list }
+
+module ProjectSpec =
+
+    let toJson (spec: ProjectSpec) =
+        let arr (xs: string list) =
+            JsonArray(xs |> List.map (fun x -> JsonValue.Create x :> JsonNode) |> Array.ofList)
+
+        let o = JsonObject()
+        o["ProjectFile"] <- JsonValue.Create spec.ProjectFile
+        o["SourceFiles"] <- arr spec.SourceFiles
+        o["OtherOptions"] <- arr spec.OtherOptions
+        o["ReferencedProjects"] <- arr spec.ReferencedProjects
+        o.ToJsonString()
+
+    let ofJson (json: string) : ProjectSpec =
+        let root = JsonNode.Parse json
+        let strings (name: string) = [ for n in root[name].AsArray() -> n.GetValue<string>() ]
+
+        { ProjectFile = root["ProjectFile"].GetValue<string>()
+          SourceFiles = strings "SourceFiles"
+          OtherOptions = strings "OtherOptions"
+          ReferencedProjects = strings "ReferencedProjects" }
+
+    let private objDir (fsproj: string) =
+        Path.Combine(Path.GetDirectoryName fsproj, "obj")
+
+    let private cachePath fsproj = Path.Combine(objDir fsproj, "rfs-spec.json")
+    let private assetsPath fsproj = Path.Combine(objDir fsproj, "project.assets.json")
+
+    let private isFresh (fsproj: string) =
+        let cache = cachePath fsproj
+        let assets = assetsPath fsproj
+
+        File.Exists cache
+        && File.Exists assets
+        && (let c = File.GetLastWriteTimeUtc cache
+            c >= File.GetLastWriteTimeUtc fsproj && c >= File.GetLastWriteTimeUtc assets)
+
+    let private restore (fsproj: string) =
+        task {
+            let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\"")
+            psi.RedirectStandardOutput <- true
+            psi.RedirectStandardError <- true
+            use p = Process.Start psi
+            let stdout = p.StandardOutput.ReadToEndAsync()
+            let stderr = p.StandardError.ReadToEndAsync()
+            do! p.WaitForExitAsync()
+
+            if p.ExitCode <> 0 then
+                failwith $"dotnet restore failed for {fsproj}:\n{stdout.Result}{stderr.Result}"
+        }
+
+    // MSBuildLocator may register only once per process.
+    let private toolsPath =
+        lazy (Init.init (DirectoryInfo(Path.GetDirectoryName(Environment.ProcessPath))) None)
+
+    let private loadFresh (fsproj: string) : ProjectSpec =
+        // AssemblyInfo and TargetFramework attribute files generated into obj do not take part in declaration checking.
+        let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
+        let loader = WorkspaceLoader.Create(toolsPath.Value, [])
+
+        match loader.LoadProjects([ fsproj ]) |> Seq.tryHead with
+        | None -> failwith $"Ionide.ProjInfo returned no project for {fsproj}"
+        | Some p ->
+            { ProjectFile = fsproj
+              SourceFiles =
+                p.SourceFiles
+                |> List.filter (fun f -> not (f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase)))
+              OtherOptions = p.OtherOptions
+              ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName) }
+
+    let load (fsproj: string) : Task<ProjectSpec> =
+        task {
+            let fsproj = Path.GetFullPath fsproj
+
+            let cached =
+                if isFresh fsproj then
+                    try
+                        Some(ofJson (File.ReadAllText(cachePath fsproj)))
+                    with _ ->
+                        None
+                else
+                    None
+
+            match cached with
+            | Some spec -> return spec
+            | None ->
+                if not (File.Exists(assetsPath fsproj)) then
+                    do! restore fsproj
+
+                let spec = loadFresh fsproj
+                Directory.CreateDirectory(objDir fsproj) |> ignore
+                File.WriteAllText(cachePath fsproj, toJson spec)
+                return spec
+        }
+
+    let toFcsOptions (spec: ProjectSpec) : FSharpProjectOptions =
+        { ProjectFileName = spec.ProjectFile
+          ProjectId = None
+          SourceFiles = Array.ofList spec.SourceFiles
+          OtherOptions = Array.ofList spec.OtherOptions
+          ReferencedProjects = [||]
+          IsIncompleteTypeCheckEnvironment = false
+          UseScriptResolutionRules = false
+          LoadTime = DateTime.Now
+          UnresolvedReferences = None
+          OriginalLoadReferences = []
+          Stamp = None }
