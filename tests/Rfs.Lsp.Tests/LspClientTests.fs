@@ -83,6 +83,28 @@ let tests =
                       })
           }
 
+          testTask "configure sends didChangeConfiguration and answers workspace/configuration by section" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          do! client.Configure(JsonNode.Parse """{"FSharp":{"x":1}}""")
+                          let! changed = server.WaitForMethod "workspace/didChangeConfiguration"
+                          Expect.equal (changed |> at [ "params"; "settings"; "FSharp"; "x" ] |> num) 1 "settings sent"
+
+                          let! config =
+                              server.Request(
+                                  "workspace/configuration",
+                                  JsonNode.Parse """{"items":[{"section":"FSharp"},{"section":"editor"},{}]}"""
+                              )
+
+                          let array = config.AsArray()
+                          Expect.equal array.Count 3 "one entry per requested item"
+                          Expect.equal (array[0] |> at [ "x" ] |> num) 1 "known section answered with its settings"
+                          Expect.isNull array[1] "unknown section answered with null"
+                          Expect.isNull array[2] "item without a section answered with null"
+                      })
+          }
+
           testTask "diagnostics carry version" {
               do!
                   withClient (fun server client ->

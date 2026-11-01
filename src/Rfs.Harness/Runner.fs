@@ -199,15 +199,14 @@ module Runner =
         (options: RunnerOptions)
         (client: LspClient)
         (pid: int option)
-        (serverName: string)
-        (initOptions: JsonNode)
+        (server: ServerConfig)
         (scenario: Scenario)
         (corpusRoot: string)
-        (mode: OracleMode)
         (oracle: (Map<string, string> -> Task<Diagnostic list>) option)
         : Task<RunResult> =
         task {
             let startedAt = DateTime.UtcNow
+            let mode = server.Oracle
             let repo = Scenario.repoRoot corpusRoot scenario
             let fullPath relative = LspClient.NormalizePath(Scenario.resolve corpusRoot scenario relative)
             let collector = pid |> Option.bind MetricsCollector.TryStart
@@ -382,15 +381,41 @@ module Runner =
             let initialized =
                 task {
                     let rootUri = Uri(LspClient.NormalizePath repo + string Path.DirectorySeparatorChar).AbsoluteUri
-                    let! init = client.Initialize(rootUri, initOptions)
+                    // a node can have one parent: the config is reused by every run of this server
+                    let! init = client.Initialize(rootUri, server.InitOptions.DeepClone())
+                    // FSAC reads later configuration from didChangeConfiguration, other servers ask for it
+                    do! client.Configure(JsonObject([ KeyValuePair("FSharp", server.InitOptions.DeepClone()) ]))
                     return init.TotalMilliseconds
                 }
 
             let! initMs = initialized
             let mutable coldMs = initMs
 
+            match server.ProjectLoad with
+            | None -> ()
+            | Some method ->
+                let project = fullPath scenario.Project
+
+                let parameters =
+                    JsonObject(
+                        [ KeyValuePair(
+                              "textDocuments",
+                              JsonArray(JsonObject([ KeyValuePair("uri", JsonValue.Create(Uri(project).AbsoluteUri) :> JsonNode) ])) :> JsonNode
+                          ) ]
+                    )
+
+                let name = $"load %s{Path.GetFileName scenario.Project}"
+
+                try
+                    let! _, elapsed = client.Request(method, parameters, options.StepTimeout)
+                    coldMs <- coldMs + elapsed.TotalMilliseconds
+                with e ->
+                    record name 0. None (Error(0., $"%s{method}: %s{e.Message}")) |> ignore
+
             // the cold number is initialize plus the first open, whichever step opens it
             let first = scenario.Steps |> List.tryHead
+            // a failed project load is recorded before any step
+            let beforeSteps = results.Count
 
             match first with
             | Some(Open _)
@@ -400,19 +425,19 @@ module Runner =
                 | Some file ->
                     let! cold = openFiles "cold open" [ file ]
                     coldMs <- coldMs + cold.LatencyMs
-                    results.Clear()
+                    results.Remove cold |> ignore
                 | None -> ()
 
             for step in scenario.Steps do
                 match step with
                 | Open file ->
-                    let isFirst = results.Count = 0
+                    let isFirst = results.Count = beforeSteps
                     let! r = openFiles $"open %s{file}" [ file ]
 
                     if isFirst then
                         coldMs <- coldMs + r.LatencyMs
                 | OpenMany files ->
-                    let isFirst = results.Count = 0
+                    let isFirst = results.Count = beforeSteps
                     let! r = openFiles $"openMany %d{files.Length}" files
 
                     if isFirst then
@@ -471,7 +496,7 @@ module Runner =
                     None
 
             return
-                { Server = serverName
+                { Server = server.Name
                   Scenario = scenario.Name
                   Commit = commitOf repo
                   StartedAt = startedAt
@@ -492,9 +517,9 @@ module Runner =
         : Task<RunResult> =
         task {
             let repo = Scenario.repoRoot corpusRoot scenario
-            let! client = LspClient.Start(server.Command, Array.ofList server.Args, server.Env, repo)
+            let! client = LspClient.Start(server.Command, Array.ofList server.Args, server.Env, defaultArg server.Cwd repo)
             use _ = client :> IDisposable
-            let! result = runConnected options client (Some client.ProcessId) server.Name server.InitOptions scenario corpusRoot server.Oracle oracle
+            let! result = runConnected options client (Some client.ProcessId) server scenario corpusRoot oracle
 
             try
                 do! client.Shutdown()

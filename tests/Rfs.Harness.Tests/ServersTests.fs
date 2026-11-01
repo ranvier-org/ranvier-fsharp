@@ -20,15 +20,25 @@ let tests =
         [ test "loads servers with defaults" {
               withFile
                   """[ { "name": "fsac", "command": "dotnet", "args": ["fsac.dll"], "env": { "A": "b" },
-                         "initOptions": { "x": 1 }, "oracle": "report" },
+                         "initOptions": { "x": 1 }, "oracle": "report", "projectLoad": "fsharp/workspaceLoad" },
                        { "name": "bare", "command": "x" } ]"""
                   (fun path ->
                       match Servers.load path with
                       | Ok [ a; b ] ->
                           Expect.equal (a.Name, a.Args, a.Env, a.Oracle) ("fsac", [ "fsac.dll" ], Map [ "A", "b" ], Report) "first"
                           Expect.equal (a.InitOptions.ToJsonString()) """{"x":1}""" "init options"
-                          Expect.equal (b.Oracle, b.Args, b.Env) (Strict, [], Map.empty) "defaults"
+                          Expect.equal a.ProjectLoad (Some "fsharp/workspaceLoad") "project load request"
+                          Expect.equal (b.Oracle, b.Args, b.Env, b.ProjectLoad) (Strict, [], Map.empty, None) "defaults"
                       | other -> failtestf "unexpected %A" other)
+          }
+
+          test "cwd is resolved against the current directory, and absent means the corpus checkout" {
+              withFile """[ { "name": "s", "command": "x", "cwd": "sub/dir" }, { "name": "t", "command": "x" } ]""" (fun path ->
+                  match Servers.load path with
+                  | Ok [ s; t ] ->
+                      Expect.equal s.Cwd (Some(Path.GetFullPath "sub/dir")) "relative cwd made absolute"
+                      Expect.equal t.Cwd None "default"
+                  | other -> failtestf "unexpected %A" other)
           }
 
           test "rejects unknown oracle mode" {

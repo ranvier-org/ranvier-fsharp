@@ -15,8 +15,15 @@ type ServerConfig =
       Command: string
       Args: string list
       Env: Map<string, string>
+      /// Sent as `initializationOptions`, and again as the "FSharp" settings section after `initialized`.
       InitOptions: JsonNode
-      Oracle: OracleMode }
+      Oracle: OracleMode
+      /// A request that loads the scenario's project, sent after `initialize` with
+      /// `{ "textDocuments": [ { "uri": <project> } ] }` (FSAC's `fsharp/workspaceLoad`); its time counts as cold.
+      ProjectLoad: string option
+      /// The server's working directory, absolute; None starts it in the scenario's corpus checkout. FSAC picks the
+      /// SDK it loads projects with from the global.json its working directory sees.
+      Cwd: string option }
 
 module Servers =
     let private fail message = raise (FormatException message)
@@ -63,7 +70,15 @@ module Servers =
                 match value.GetValue<string>() with
                 | "strict" -> Strict
                 | "report" -> Report
-                | other -> fail $"unknown oracle mode '%s{other}'" }
+                | other -> fail $"unknown oracle mode '%s{other}'"
+          ProjectLoad =
+            match obj["projectLoad"] with
+            | null -> None
+            | value -> Some(value.GetValue<string>())
+          Cwd =
+            match obj["cwd"] with
+            | null -> None
+            | value -> Some(Path.GetFullPath(value.GetValue<string>())) }
 
     /// Reads a JSON array of servers.
     let load (path: string) : Result<ServerConfig list, string> =

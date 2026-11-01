@@ -32,8 +32,18 @@ let private scenario steps : Scenario =
 let private fileA (root: string) =
     LspClient.NormalizePath(Path.Combine(root, "small", "A.fs"))
 
-let private withRunMode
-    (mode: OracleMode)
+let private fakeConfig: ServerConfig =
+    { Name = "fake"
+      Command = "fake"
+      Args = []
+      Env = Map.empty
+      InitOptions = JsonObject()
+      Oracle = Report
+      ProjectLoad = None
+      Cwd = None }
+
+let private withRunConfig
+    (config: ServerConfig)
     (opts: RunnerOptions)
     (steps: string -> Step list)
     (script: FakeServer -> string -> Task)
@@ -49,13 +59,15 @@ let private withRunMode
     let scripted = script server path
 
     let result =
-        (Runner.runConnected opts client None "fake" (JsonObject()) (scenario (steps path)) root mode oracle)
+        (Runner.runConnected opts client None config (scenario (steps path)) root oracle)
             .GetAwaiter()
             .GetResult()
 
     scripted.GetAwaiter().GetResult()
     Directory.Delete(root, true)
     result, client, path
+
+let private withRunMode (mode: OracleMode) = withRunConfig { fakeConfig with Oracle = mode }
 
 let private withRun = withRunMode Report
 
@@ -245,6 +257,93 @@ let tests =
 
               Expect.isGreaterThan result.ColdMs 100. "initialize counted"
               Expect.isGreaterThan result.ColdMs result.Steps[0].LatencyMs "more than the open alone"
+          }
+
+          test "init options are also sent as the FSharp settings after initialized" {
+              let mutable methods = []
+              let mutable settings: JsonNode = null
+              let mutable answered: JsonNode = null
+
+              let _ =
+                  withRunConfig
+                      { fakeConfig with InitOptions = JsonNode.Parse """{"Linter":false}""" }
+                      options
+                      (fun _ -> [ Open "A.fs" ])
+                      (fun server path ->
+                          task {
+                              let! changed = server.WaitForMethod "workspace/didChangeConfiguration"
+                              settings <- (changed["params"]["settings"]).DeepClone()
+
+                              let! config =
+                                  server.Request("workspace/configuration", JsonNode.Parse """{"items":[{"section":"FSharp"}]}""")
+
+                              answered <- config
+                              methods <-
+                                  server.Received
+                                  |> List.choose (fun m ->
+                                      match m["method"] with
+                                      | null -> None
+                                      | name -> Some(name.GetValue<string>()))
+                              do! afterOpen server path
+                          })
+                      None
+
+              Expect.equal (settings.ToJsonString()) """{"FSharp":{"Linter":false}}""" "didChangeConfiguration settings"
+              Expect.equal (answered.ToJsonString()) """[{"Linter":false}]""" "workspace/configuration answer"
+              let index name = methods |> List.findIndex ((=) name)
+              Expect.isLessThan (index "initialized") (index "workspace/didChangeConfiguration") "after initialized"
+          }
+
+          test "the project load request carries the project and counts towards cold" {
+              let mutable loadParams: JsonNode = null
+
+              let result, _, _ =
+                  withRunConfig
+                      { fakeConfig with ProjectLoad = Some "fsharp/workspaceLoad" }
+                      options
+                      (fun _ -> [ Open "A.fs" ])
+                      (fun server path ->
+                          task {
+                              server.OnRequest(
+                                  "fsharp/workspaceLoad",
+                                  fun p ->
+                                      loadParams <- p.DeepClone()
+                                      Threading.Thread.Sleep 150
+                                      JsonNode.Parse """{"content":"ok"}"""
+                              )
+
+                              do! afterOpen server path
+                          })
+                      None
+
+              Expect.isNotNull loadParams "load request sent"
+              let documents = loadParams["textDocuments"]
+              let document = documents[0]
+              let uri = document["uri"].GetValue<string>()
+              Expect.stringEnds uri "/small/P.fsproj" "the scenario's project"
+              Expect.isGreaterThan result.ColdMs 150. "load time counted as cold"
+              Expect.equal (result.Steps |> List.map _.Step) [ "open A.fs" ] "no extra step when the load succeeds"
+          }
+
+          test "a project load that never answers fails a step and the run goes on" {
+              let result, _, _ =
+                  withRunConfig
+                      { fakeConfig with ProjectLoad = Some "fsharp/workspaceLoad" }
+                      options
+                      (fun _ -> [ Open "A.fs" ])
+                      (fun server path ->
+                          task {
+                              server.NeverAnswer "fsharp/workspaceLoad"
+                              do! afterOpen server path
+                          })
+                      None
+
+              match result.Steps with
+              | [ load; opened ] ->
+                  Expect.stringStarts load.Step "load P.fsproj" "load step named after the project"
+                  Expect.isSome load.Error "load failed"
+                  Expect.isNone opened.Error "open still ran"
+              | other -> failtestf "unexpected steps %A" other
           }
 
           test "oracle: a server publish equal to the oracle's gives an empty diff" {

@@ -127,6 +127,8 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     let notifications = Broadcast<Received>()
     let mutable nextId = 0
     [<VolatileField>]
+    let mutable settings: JsonNode = null
+    [<VolatileField>]
     let mutable ended = false
     [<VolatileField>]
     let mutable endedBecause: exn = null
@@ -182,7 +184,22 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                 pending.TryRemove id |> ignore
         }
 
-    /// Server -> client requests are answered with empty results so the server never blocks on us.
+    let section (item: JsonNode) : JsonNode =
+        match item, settings with
+        | (:? JsonObject as i), (:? JsonObject as s) ->
+            match i["section"] with
+            | :? JsonValue as name ->
+                match name.TryGetValue<string>() with
+                | true, key ->
+                    match s[key] with
+                    | null -> null
+                    | value -> value.DeepClone()
+                | _ -> null
+            | _ -> null
+        | _ -> null
+
+    /// Server -> client requests are answered with empty results so the server never blocks on us;
+    /// workspace/configuration gets the sections set with Configure.
     let answer (request: JsonObject) =
         let result: JsonNode =
             match request["method"].GetValue<string>() with
@@ -191,14 +208,14 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                     match request["params"] with
                     | :? JsonObject as p ->
                         match p["items"] with
-                        | :? JsonArray as a -> a.Count
-                        | _ -> 0
-                    | _ -> 0
+                        | :? JsonArray as a -> List.ofSeq a
+                        | _ -> []
+                    | _ -> []
 
                 let result = JsonArray()
 
-                for _ in 1..items do
-                    result.Add null
+                for item in items do
+                    result.Add(section item)
 
                 result
             | _ -> null
@@ -344,6 +361,12 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
             do! notify "initialized" (JsonObject())
             return Stopwatch.GetElapsedTime(sentAt, response.ReceivedAt)
         }
+
+    /// Sets the settings object (section name to value) that answers workspace/configuration, and sends it as
+    /// workspace/didChangeConfiguration: servers differ in which of the two they read.
+    member _.Configure(newSettings: JsonNode) : Task =
+        settings <- newSettings.DeepClone()
+        notify "workspace/didChangeConfiguration" (Protocol.obj' [ "settings", newSettings.DeepClone() ])
 
     /// The client's current text of a file opened with DidOpen and updated with DidChange.
     member _.Text(path: string) : string = documents[Protocol.normalizePath path]
