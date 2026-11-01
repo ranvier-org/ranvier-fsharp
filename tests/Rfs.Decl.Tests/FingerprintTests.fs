@@ -190,7 +190,9 @@ let tests =
               Expect.equal (fingerprints again) (fingerprints c.FileResult) "same fingerprints"
           }
 
-          testAsync "finish twice gives equal results across a default, in both directions" {
+          // Each version's declarations are checked afresh, so no result is reused across versions; the reuse case is the
+          // pending R12 test below.
+          testAsync "finishing fresh results of two versions alternately on one setup gives equal results" {
               let! checkedTiny = checkC hAlone
               let c = checkedTiny.File "C.fs"
               let usedResults = checkAll c checkedTiny.Context hUsed
@@ -221,4 +223,78 @@ let tests =
 
               let! fresh = checkC hUsed
               Expect.equal (fingerprintOf finished "h") (fingerprintOf (fresh.File "C.fs").FileResult "h") "h as a fresh check has it"
+          }
+
+          // R12 (Task 13): the use's check solved h's free type in place, and nothing undoes it. The guard discards h's
+          // result and re-checks h when a later declaration of the file changes or is removed.
+          ptestCase "later use removed re-checks the free-typar decl" <| fun () ->
+              async {
+                  let! checkedTiny = checkC hUsed
+                  let c = checkedTiny.File "C.fs"
+                  let finished = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |])
+                  do! expectFileCheck checkedTiny.Spec hAlone c.File finished "h without its use"
+
+                  let! fresh = checkC hAlone
+                  Expect.equal (fingerprints finished) (fingerprints (fresh.File "C.fs").FileResult) "h as a fresh check has it"
+              }
+              |> Async.RunSynchronously
+
+          testAsync "inline body calling a void method is described" {
+              let! before, after =
+                  finalFingerprint
+                      "module Tiny.C\n\nlet inline log (s: string) = System.Console.WriteLine s\n"
+                      "module Tiny.C\n\nlet inline log (s: string) = System.Console.Write s\n"
+                      "log"
+
+              Expect.isFalse (before.StartsWith "?") "describable"
+              Expect.notEqual after before "a different method"
+          }
+
+          testAsync "inline body passing a byref is described" {
+              let text = "module Tiny.C\n\nlet inline parse (s: string) =\n    let mutable x = 0\n    System.Int32.TryParse(s, &x), x\n"
+              let! checkedTiny = checkC text
+              let c = checkedTiny.File "C.fs"
+              do! expectFileCheck checkedTiny.Spec text c.File c.FileResult "TryParse"
+              Expect.isFalse ((fingerprintOf c.FileResult "parse").StartsWith "?") "describable"
+
+              let bump name = $"module Tiny.C\n\nlet inline bump () =\n    let mutable x = 0\n    System.Threading.Interlocked.%s{name}(&x)\n"
+              let! before, after = finalFingerprint (bump "Increment") (bump "Decrement") "bump"
+              Expect.notEqual after before "a different method"
+          }
+
+          testAsync "inline float constant change at the 11th digit changes fingerprint" {
+              let! before, after =
+                  finalFingerprint
+                      "module Tiny.C\n\nlet inline g x = x + 1.00000000001\n"
+                      "module Tiny.C\n\nlet inline g x = x + 1.00000000002\n"
+                      "g"
+
+              Expect.notEqual after before "constants are described exactly"
+          }
+
+          testAsync "literal float change at the 11th digit changes fingerprint" {
+              let! before, after =
+                  finalFingerprint
+                      "module Tiny.C\n\n[<Literal>]\nlet k = 1.00000000001\n"
+                      "module Tiny.C\n\n[<Literal>]\nlet k = 1.00000000002\n"
+                      "k"
+
+              Expect.notEqual after before "literal values are described exactly"
+          }
+
+          testAsync "inline IL is described by its instructions" {
+              let text op = $"module Tiny.C\n\nlet inline f (x: int) : int = (# \"%s{op}\" x 1 : int #)\n"
+              let! before, after = finalFingerprint (text "add") (text "sub") "f"
+              Expect.isFalse (before.StartsWith "?") "describable"
+              Expect.notEqual after before "a different instruction"
+          }
+
+          testAsync "inline IL with a type token is never equal" {
+              let text = "module Tiny.C\n\nlet inline asString (x: obj) : obj = (# \"isinst [System.Runtime]System.String\" x : obj #)\n"
+              let! checkedTiny = checkC text
+              let c = checkedTiny.File "C.fs"
+              let again = DeclarationChecker.FinishFile(c.Start, c.Results)
+              let fingerprint = fingerprintOf c.FileResult "asString"
+              Expect.isTrue (fingerprint.StartsWith "?") $"not describable: %s{fingerprint}"
+              Expect.notEqual (fingerprintOf again "asString") fingerprint "counts as changed every time"
           } ]
