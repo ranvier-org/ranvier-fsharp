@@ -21,50 +21,17 @@ type PlannedStep =
     | Planned of PlannedEdit
     | Unrunnable of name: string * reason: string
 
-/// Peak working set by polling, allocations and gen-2 collections from the runtime's counters: both engines run in
-/// this process, so an EventPipe session on it (MetricsCollector) would count its own event processing.
-[<Sealed>]
-type private InProcessMetrics() =
-    let mb (bytes: float) = bytes / 1048576.
-    let proc = Process.GetCurrentProcess()
-    let stop = new CancellationTokenSource()
-    let allocatedAtStart = GC.GetTotalAllocatedBytes true
-    let gen2AtStart = GC.CollectionCount 2
-    let mutable peak = 0L
-
-    let sample () =
-        proc.Refresh()
-        peak <- max peak proc.WorkingSet64
-
-    let poll =
-        Task.Run(fun () ->
-            task {
-                use timer = new PeriodicTimer(TimeSpan.FromMilliseconds 50.)
-                sample ()
-
-                try
-                    while! timer.WaitForNextTickAsync stop.Token do
-                        sample ()
-                with :? OperationCanceledException ->
-                    ()
-            }
-            :> Task)
-
-    member _.Stop() : MetricsSnapshot =
-        stop.Cancel()
-        poll.Wait()
-        sample ()
-
-        { PeakWorkingSetMb = mb (float peak)
-          AllocatedMb = mb (float (GC.GetTotalAllocatedBytes true - allocatedAtStart))
-          Gen2 = GC.CollectionCount 2 - gen2AtStart }
-
-    interface IDisposable with
-        member _.Dispose() =
-            stop.Cancel()
-            poll.Wait()
-            proc.Dispose()
-            stop.Dispose()
+/// What one engine's run measured, beyond its RunResult.
+type EngineRun =
+    { Result: RunResult
+      /// Allocated by creating the engine and its first check.
+      ColdAllocatedMb: float
+      /// Allocated by the engine's edits, without the oracle comparisons between them.
+      EditAllocatedMb: float
+      /// Per edit step (index, name), the fork's graph-check counts when they were logged.
+      GraphChecks: (int * string * GraphCheckCounts) list
+      /// Why the run stopped before its last step.
+      Stopped: string option }
 
 module Driver =
     let private describe (p: Position) = $"%d{p.Line}:%d{p.Character}"
@@ -148,8 +115,13 @@ module Driver =
             return! work
         }
 
-    /// Creates the engine, runs the first full check (ColdMs, excluded from the edit latencies), then replays `steps`,
-    /// comparing the whole project's diagnostics with the oracle after every edit. A mismatch is a step Error.
+    let private mb (bytes: int64) = float bytes / 1048576.
+
+    /// Warms the oracle up, creates the engine and runs its first full check (ColdMs, excluded from the edit
+    /// latencies), then replays `steps`, comparing the whole project's diagnostics with the oracle after every edit. A
+    /// mismatch is a step Error. A timeout ends the run at that step: the engine (or the oracle) is still busy, so
+    /// later numbers would be meaningless. Allocations are counted around the engine's own work only; the peak working
+    /// set is the process's, so it is the engine's alone when the engine has the process to itself.
     let runEngine
         (timeout: TimeSpan)
         (factory: EngineFactory)
@@ -158,12 +130,17 @@ module Driver =
         (corpusRoot: string)
         (steps: PlannedStep list)
         (oracle: Map<string, string> -> Task<Diagnostic list>)
-        : Task<RunResult> =
+        : Task<EngineRun> =
         task {
+            // the oracle's own start-up must not overlap the cold check
+            let! _ = oracle Map.empty |> within timeout
             fullGc ()
-            use metrics = new InProcessMetrics()
+            let gen2AtStart = GC.CollectionCount 2
             let startedAt = DateTime.UtcNow
             let results = List<StepResult>()
+            let graphChecks = List<int * string * GraphCheckCounts>()
+            let mutable editAllocated = 0L
+            let mutable stopped = None
 
             let record name latency decls diff error =
                 results.Add
@@ -175,16 +152,20 @@ module Driver =
                       OracleDiff = diff
                       Error = error }
 
+            let coldAllocatedBefore = GC.GetTotalAllocatedBytes true
             let coldClock = Stopwatch.StartNew()
             let! engine = factory.Create spec |> within timeout
             use _ = engine
             let! _ = engine.Check() |> within timeout
             let coldMs = coldClock.Elapsed.TotalMilliseconds
+            let coldAllocated = GC.GetTotalAllocatedBytes true - coldAllocatedBefore
 
             for step in steps do
-                match step with
-                | Unrunnable(name, reason) -> record name 0. None None (Some reason)
-                | Planned edit ->
+                match step, stopped with
+                | _, Some _ -> ()
+                | Unrunnable(name, reason), None -> record name 0. None None (Some reason)
+                | Planned edit, None ->
+                    let allocatedBefore = GC.GetTotalAllocatedBytes true
                     let clock = Stopwatch.StartNew()
 
                     let! outcome =
@@ -193,35 +174,51 @@ module Driver =
                                 let! r = engine.SetText(edit.File, edit.Text) |> within timeout
                                 return Ok r
                             with e ->
-                                return Error e.Message
+                                return Error e
                         }
 
                     let latency = clock.Elapsed.TotalMilliseconds
+                    editAllocated <- editAllocated + (GC.GetTotalAllocatedBytes true - allocatedBefore)
 
                     match outcome with
-                    | Error why -> record edit.Name latency None None (Some why)
+                    | Error(:? TimeoutException as e) ->
+                        record edit.Name latency None None (Some $"engine timed out: %s{e.Message}; run stopped")
+                        stopped <- Some $"%s{edit.Name}: engine timed out"
+                    | Error e -> record edit.Name latency None None (Some e.Message)
                     | Ok r ->
+                        r.GraphCheck |> Option.iter (fun counts -> graphChecks.Add((results.Count, edit.Name, counts)))
+
                         try
-                            let! expected = oracle edit.Overrides
+                            let! expected = oracle edit.Overrides |> within timeout
                             let diff = Diagnostics.compare expected r.Diagnostics
 
                             let error =
                                 if diff.IsEmpty then None else Some $"oracle mismatch: %d{diff.Length} diffs"
 
                             record edit.Name latency r.DeclsChecked (Some diff) error
-                        with e ->
-                            record edit.Name latency r.DeclsChecked None (Some $"oracle failed: %s{e.Message}")
+                        with
+                        | :? TimeoutException as e ->
+                            record edit.Name latency r.DeclsChecked None (Some $"oracle timed out: %s{e.Message}; run stopped")
+                            stopped <- Some $"%s{edit.Name}: oracle timed out"
+                        | e -> record edit.Name latency r.DeclsChecked None (Some $"oracle failed: %s{e.Message}")
 
-            let snapshot = metrics.Stop()
+            use proc = Process.GetCurrentProcess()
 
-            return
+            let result =
                 { Server = factory.Name
                   Scenario = scenario.Name
                   Commit = Runner.commitOf (Scenario.repoRoot corpusRoot scenario)
                   StartedAt = startedAt
                   ColdMs = coldMs
                   Steps = List.ofSeq results
-                  PeakWorkingSetMb = snapshot.PeakWorkingSetMb
-                  AllocatedMb = snapshot.AllocatedMb
-                  Gen2 = snapshot.Gen2 }
+                  PeakWorkingSetMb = mb proc.PeakWorkingSet64
+                  AllocatedMb = mb (coldAllocated + editAllocated)
+                  Gen2 = GC.CollectionCount 2 - gen2AtStart }
+
+            return
+                { Result = result
+                  ColdAllocatedMb = mb coldAllocated
+                  EditAllocatedMb = mb editAllocated
+                  GraphChecks = List.ofSeq graphChecks
+                  Stopped = stopped }
         }

@@ -3,6 +3,8 @@ namespace Rfs.Checkpoint
 open System
 open System.Collections.Generic
 open System.IO
+open System.Text
+open System.Text.RegularExpressions
 open System.Threading.Tasks
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.SourceCodeServices
@@ -10,11 +12,16 @@ open Rfs.Checker
 open Rfs.Lsp
 open Rfs.Projects
 
+/// How the fork's graph check obtained each file's result (FICKL_FCS_GRAPH_LOG).
+type GraphCheckCounts = { Reused: int; Kept: int; Replaced: int }
+
 /// The whole project's diagnostics after a check.
 type EngineResult =
     { Diagnostics: Diagnostic list
       /// Declarations checked by this call; None for an engine that does not check by declaration.
-      DeclsChecked: int option }
+      DeclsChecked: int option
+      /// The fork's graph-check line for this call, when FICKL_FCS_GRAPH_LOG is set and the project checks in graph mode.
+      GraphCheck: GraphCheckCounts option }
 
 /// A checker holding one project in memory, created from the texts on disk.
 type IEngine =
@@ -40,7 +47,8 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
 
             return
                 { Diagnostics = [ for KeyValue(_, ds) in all do for d in ds -> FcsDiagnostics.ofFcs d ]
-                  DeclsChecked = Some(int (graph.CheckedCount - before)) }
+                  DeclsChecked = Some(int (graph.CheckedCount - before))
+                  GraphCheck = None }
         }
 
     interface IEngine with
@@ -52,6 +60,50 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
             settle before
 
         member _.Dispose() = host.Dispose()
+
+/// Takes the fork's "Graph check: R reused, K kept, P replaced" lines off stderr, passing every other line on.
+[<Sealed>]
+type private GraphCheckLog(inner: TextWriter) =
+    inherit TextWriter()
+    static let pattern = Regex(@"^Graph check: (\d+) reused, (\d+) kept, (\d+) replaced\s*$")
+    let line = StringBuilder()
+    let mutable last = None
+
+    static let installed =
+        lazy
+            (let log = new GraphCheckLog(Console.Error)
+             Console.SetError(TextWriter.Synchronized log)
+             log)
+
+    /// Captures the process's stderr from now on.
+    static member Install() = installed.Value
+
+    override _.Encoding = inner.Encoding
+
+    override _.Write(c: char) =
+        lock line (fun () ->
+            if c = '\n' then
+                let text = line.ToString().TrimEnd('\r')
+                line.Clear() |> ignore
+                let m = pattern.Match text
+
+                if m.Success then
+                    last <-
+                        Some
+                            { Reused = int m.Groups[1].Value
+                              Kept = int m.Groups[2].Value
+                              Replaced = int m.Groups[3].Value }
+                else
+                    inner.WriteLine text
+            else
+                line.Append c |> ignore)
+
+    /// The counts of the latest graph check since the last call, if any.
+    member _.Take() =
+        lock line (fun () ->
+            let r = last
+            last <- None
+            r)
 
 /// The fork's whole-project check, reusing earlier results file by file. In graph checking mode a changed file whose
 /// signature fingerprint is unchanged keeps its dependents' results; in sequential mode every file from the edited
@@ -73,13 +125,22 @@ type private FileSlimEngine(spec: ProjectSpec) =
 
     let reader (file: string) = texts[Path.GetFullPath file]
 
+    // The fork reads the variable on every graph check.
+    let log =
+        if isNull (Environment.GetEnvironmentVariable "FICKL_FCS_GRAPH_LOG") then
+            None
+        else
+            Some(GraphCheckLog.Install())
+
     let check () =
         task {
+            log |> Option.iter (fun l -> l.Take() |> ignore)
             let! results = checker.ParseAndCheckProject(spec.ProjectFile, files, reader) |> Async.StartAsTask
 
             return
                 { Diagnostics = [ for d in results.Diagnostics -> FcsDiagnostics.ofFcs d ]
-                  DeclsChecked = None }
+                  DeclsChecked = None
+                  GraphCheck = log |> Option.bind _.Take() }
         }
 
     interface IEngine with

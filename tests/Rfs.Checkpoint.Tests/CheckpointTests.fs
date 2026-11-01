@@ -8,6 +8,7 @@ open Expecto
 open Rfs.Checkpoint
 open Rfs.Harness
 open Rfs.Lsp
+open Rfs.Projects
 
 let private fixturesDir =
     let rec up (d: DirectoryInfo) =
@@ -98,7 +99,8 @@ let private wrongEngine: EngineFactory =
             let result =
                 Task.FromResult
                     { Diagnostics = [ bogus ]
-                      DeclsChecked = None }
+                      DeclsChecked = None
+                      GraphCheck = None }
 
             Task.FromResult
                 { new IEngine with
@@ -144,6 +146,121 @@ let tests =
               Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "decl counts its checks"
               Expect.isTrue (slim.Steps |> List.forall (fun s -> s.DeclsChecked.IsNone)) "file-slim has no declaration count"
               Expect.isLessThan slim.StartedAt decl.StartedAt "the baseline runs first"
+          }
+
+          testTask "the oracle sees each edit's text" {
+              // An empty diff proves nothing if engine and oracle both saw stale text: the int64 steps must give errors.
+              let work = freshDir "seen"
+              let scenarioFile = writeDepsScenario "Deps" work
+              let scenario = Scenario.load scenarioFile fixturesDir |> Result.defaultWith failtest
+              let steps = Driver.plan fixturesDir scenario |> Result.defaultWith failtest
+              let! spec = ProjectSpec.load (Path.Combine(fixturesDir, "Deps", "Deps.fsproj"))
+              let! (oracle: OracleClient) = OracleClient.start ()
+
+              try
+                  for engine in Engines.all do
+                      let seen = Collections.Generic.List<Map<string, string> * Diagnostic list>()
+
+                      let ask (overrides: Map<string, string>) =
+                          task {
+                              let! d = oracle.Check spec.ProjectFile overrides
+                              seen.Add((overrides, d))
+                              return d
+                          }
+
+                      let! run = Driver.runEngine (TimeSpan.FromMinutes 2.) engine spec scenario fixturesDir steps ask
+
+                      Expect.isNone run.Stopped $"%s{engine.Name}: ran to the end"
+                      Expect.isTrue (run.Result.Steps |> List.forall (fun s -> s.Error.IsNone)) $"%s{engine.Name}: no step failed"
+
+                      let wrongType =
+                          seen
+                          |> Seq.filter (fun (overrides, _) -> overrides |> Map.exists (fun _ t -> t.Contains ": int64 = x * 2"))
+                          |> List.ofSeq
+
+                      Expect.equal wrongType.Length 2 $"%s{engine.Name}: two int64 steps reached the oracle"
+
+                      for _, diagnostics in wrongType do
+                          Expect.isTrue (diagnostics |> List.exists (fun d -> d.Severity = 1)) $"%s{engine.Name}: the oracle reports errors for int64"
+              finally
+                  (oracle :> IAsyncDisposable).DisposeAsync().AsTask().Wait()
+          }
+
+          testTask "--log-cutoff records file-slim's graph-check counts" {
+              let work = freshDir "cutoff"
+              let out = Path.Combine(work, "out")
+              let scenario = writeDepsScenario "Deps" work
+
+              let! code =
+                  Checkpoint.execute Engines.all [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--log-cutoff" |]
+
+              Expect.equal code 0 "exit code"
+              let log = Path.Combine(out, "file-slim.deps-five.cutoff.tsv")
+              Expect.isTrue (File.Exists log) "cutoff log written"
+              Expect.isFalse (File.Exists(Path.Combine(out, "decl.deps-five.cutoff.tsv"))) "only for file-slim"
+              let rows = File.ReadAllLines log |> Array.tail
+              let! spec = ProjectSpec.load (Path.Combine(fixturesDir, "Deps", "Deps.fsproj"))
+              // The fork logs graph checks only; whether Deps checks in graph mode depends on its project file.
+              let graph = spec.OtherOptions |> List.filter (fun o -> o.StartsWith "--parallelcompilation") |> List.tryLast <> Some "--parallelcompilation-"
+
+              if graph then
+                  Expect.equal rows.Length 5 "one row per edit"
+
+                  for row in rows do
+                      let cells = row.Split('\t')
+                      Expect.equal cells.Length 5 "step, name, reused, kept, replaced"
+                      Expect.isGreaterThan (int cells[2] + int cells[3] + int cells[4]) 0 "counts every file"
+              else
+                  Expect.isEmpty rows "no graph checks in sequential mode"
+          }
+
+          testTask "a step timeout stops the run at that step" {
+              let work = freshDir "timeout"
+              let scenarioFile = writeDepsScenario "Deps" work
+              let scenario = Scenario.load scenarioFile fixturesDir |> Result.defaultWith failtest
+              let steps = Driver.plan fixturesDir scenario |> Result.defaultWith failtest
+              let! spec = ProjectSpec.load (Path.Combine(fixturesDir, "Deps", "Deps.fsproj"))
+              let checks = ref 0
+
+              let hanging: EngineFactory =
+                  { Name = "hanging"
+                    Create =
+                      fun _ ->
+                          let ok = Task.FromResult { Diagnostics = []; DeclsChecked = None; GraphCheck = None }
+
+                          Task.FromResult
+                              { new IEngine with
+                                  member _.Check() = ok
+
+                                  member _.SetText(_, _) =
+                                      checks.Value <- checks.Value + 1
+                                      if checks.Value = 2 then Task.Delay(-1).ContinueWith(fun _ -> ok.Result) else ok
+                                interface IDisposable with
+                                    member _.Dispose() = () } }
+
+              let! run = Driver.runEngine (TimeSpan.FromSeconds 1.) hanging spec scenario fixturesDir steps (fun _ -> Task.FromResult [])
+
+              Expect.equal checks.Value 2 "no edit after the one that timed out"
+              Expect.equal run.Result.Steps.Length 2 "the run ends at the timed-out step"
+              Expect.stringContains (defaultArg run.Result.Steps[1].Error "") "timed out" "the step says why"
+              Expect.isSome run.Stopped "the run says it stopped"
+          }
+
+          testTask "refuses to run outside the repo root" {
+              let work = freshDir "cwd"
+              let scenario = writeDepsScenario "Deps" work
+              let previous = Environment.CurrentDirectory
+
+              let! code =
+                  task {
+                      try
+                          Environment.CurrentDirectory <- work
+                          return! Checkpoint.execute Engines.all [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; Path.Combine(work, "out") |]
+                      finally
+                          Environment.CurrentDirectory <- previous
+                  }
+
+              Expect.equal code 2 "exit code"
           }
 
           testTask "a failing child process fails the run" {

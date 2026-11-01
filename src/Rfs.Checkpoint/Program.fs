@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.Globalization
 open System.IO
+open System.Threading
 open System.Threading.Tasks
 open Rfs.Harness
 open Rfs.Projects
@@ -11,20 +12,24 @@ open Rfs.Projects
 module Checkpoint =
     let private usage =
         """usage:
-  rfs-checkpoint --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>] [--in-process]
-  rfs-checkpoint --engine <name> --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>]
+  rfs-checkpoint --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>] [--child-timeout-min <n>]
+                 [--log-cutoff] [--in-process]
+  rfs-checkpoint --engine <name> --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>] [--log-cutoff]
 
-By default each engine runs in a child process of its own (--engine), so cold time, peak working set and allocations
-are its alone. --in-process runs every engine in this process instead. --engine skips the corpus check, which the
-parent has already run."""
+Run it from the ranvier-fsharp repo root (R9). By default each engine runs in a child process of its own (--engine), so
+cold time, peak working set and allocations are its alone; a child that runs past --child-timeout-min (default 60) is
+killed. --in-process runs every engine in this process instead. --engine skips the corpus check, which the parent has
+already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its reused/kept/replaced counts per edit
+to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default."""
 
-    let private header =
-        """rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+    let private header (logCutoff: bool) =
+        $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
   decl: ProjectGraph.SetText, then AllDiagnostics; checks per declaration, each file seeing every earlier file.
   file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
     the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
 Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
 LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
 TODO(Task 15): finish-file share of decl latency not recorded: ProjectGraph exposes no finish-time counter yet.
@@ -34,10 +39,10 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
 
     let private usageError message = raise (Usage message)
 
-    let private switches = set [ "--in-process" ]
+    let private switches = set [ "--in-process"; "--log-cutoff" ]
 
     let private valued =
-        set [ "--scenario"; "--out"; "--corpus"; "--step-timeout-s"; "--engine" ]
+        set [ "--scenario"; "--out"; "--corpus"; "--step-timeout-s"; "--child-timeout-min"; "--engine" ]
 
     /// Every flag but a switch takes exactly one value.
     let private parse (argv: string list) : Map<string, string> =
@@ -63,10 +68,14 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
         | Some v -> v.ToString("F1", CultureInfo.InvariantCulture)
         | None -> "-"
 
+    let private graphLogVariable = "FICKL_FCS_GRAPH_LOG"
+
     type private Settings =
         { Corpus: string
           Out: string
           Timeout: TimeSpan
+          ChildTimeout: TimeSpan
+          LogCutoff: bool
           /// Each scenario with the file it came from and its planned edits.
           Scenarios: (string * Scenario * PlannedStep list) list }
 
@@ -83,6 +92,15 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                 (oracle :> IAsyncDisposable).DisposeAsync().AsTask().GetAwaiter().GetResult()
         }
 
+    let private writeCutoffLog (out: string) (run: EngineRun) =
+        let path = Path.Combine(out, Path.ChangeExtension(Report.fileName run.Result, ".cutoff.tsv"))
+
+        let lines =
+            [ yield "step\tname\treused\tkept\treplaced"
+              for index, name, c in run.GraphChecks -> $"%d{index}\t%s{name}\t%d{c.Reused}\t%d{c.Kept}\t%d{c.Replaced}" ]
+
+        File.WriteAllLines(path, lines)
+
     /// Runs `engines` here, one after the other per scenario; true when every step of every run succeeded.
     let private runHere (settings: Settings) (engines: EngineFactory list) : Task<bool> =
         withOracle (fun oracle ->
@@ -96,38 +114,57 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
 
                     for engine in engines do
                         printfn "running %s on %s (process %d)" engine.Name scenario.Name Environment.ProcessId
+                        let logs = settings.LogCutoff && engine.Name = Engines.fileSlim.Name
+
+                        if logs then
+                            Environment.SetEnvironmentVariable(graphLogVariable, "1")
 
                         try
-                            let! result =
-                                Driver.runEngine settings.Timeout engine spec scenario settings.Corpus steps (fun overrides ->
-                                    oracle.Check project overrides)
+                            try
+                                let! run =
+                                    Driver.runEngine settings.Timeout engine spec scenario settings.Corpus steps (fun overrides ->
+                                        oracle.Check project overrides)
 
-                            File.WriteAllText(Path.Combine(settings.Out, Report.fileName result), Report.resultToJson result)
-                            let row = Report.summarise [ result ] |> List.exactlyOne
+                                let result = run.Result
+                                File.WriteAllText(Path.Combine(settings.Out, Report.fileName result), Report.resultToJson result)
 
-                            printfn
-                                "  %s: cold %s ms, edit p50 %s ms, p95 %s ms, decls/edit %s, allocated %s MB, peak %s MB"
-                                engine.Name
-                                (fmt (Some row.ColdMs))
-                                (fmt row.EditP50)
-                                (fmt row.EditP95)
-                                (fmt row.DeclsPerEdit)
-                                (fmt (Some row.AllocatedMb))
-                                (fmt (Some row.PeakMb))
+                                if logs then
+                                    writeCutoffLog settings.Out run
 
-                            let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
+                                let row = Report.summarise [ result ] |> List.exactlyOne
 
-                            for e in errors do
-                                eprintfn "  step %d (%s): %s" e.Index e.Step e.Error.Value
+                                printfn
+                                    "  %s: cold %s ms, edit p50 %s ms, p95 %s ms, decls/edit %s, allocated %s MB (cold %s, edits %s), peak %s MB"
+                                    engine.Name
+                                    (fmt (Some row.ColdMs))
+                                    (fmt row.EditP50)
+                                    (fmt row.EditP95)
+                                    (fmt row.DeclsPerEdit)
+                                    (fmt (Some row.AllocatedMb))
+                                    (fmt (Some run.ColdAllocatedMb))
+                                    (fmt (Some run.EditAllocatedMb))
+                                    (fmt (Some row.PeakMb))
 
-                                for d in defaultArg e.OracleDiff [] |> List.truncate 10 do
-                                    eprintfn "    %s" d
+                                let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
 
-                            if not errors.IsEmpty then
+                                for e in errors do
+                                    eprintfn "  step %d (%s): %s" e.Index e.Step e.Error.Value
+
+                                    for d in defaultArg e.OracleDiff [] |> List.truncate 10 do
+                                        eprintfn "    %s" d
+
+                                match run.Stopped with
+                                | Some why -> eprintfn "  run stopped early: %s" why
+                                | None -> ()
+
+                                if not errors.IsEmpty then
+                                    ok <- false
+                            with e ->
+                                eprintfn "  run failed: %s" e.Message
                                 ok <- false
-                        with e ->
-                            eprintfn "  run failed: %s" e.Message
-                            ok <- false
+                        finally
+                            if logs then
+                                Environment.SetEnvironmentVariable(graphLogVariable, null)
 
                 return ok
             })
@@ -142,13 +179,16 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
         else
             failwith $"rfs-checkpoint apphost not found in %s{dir}"
 
-    /// Runs one engine on one scenario in a child process, in this process's working directory (the repo, R9), with
-    /// output going to this console. Returns the child's exit code.
-    let private runChild (settings: Settings) (scenarioFile: string) (engine: EngineFactory) : Task<int> =
+    /// Runs one engine on one scenario in a child process in `repo` (R9), with output going to this console. Returns
+    /// the child's exit code; a child past the timeout is killed with its tree and counts as exit 1.
+    let private runChild (settings: Settings) (repo: string) (scenarioFile: string) (engine: EngineFactory) : Task<int> =
         task {
             let psi = ProcessStartInfo(apphost ())
             psi.UseShellExecute <- false
-            psi.WorkingDirectory <- Environment.CurrentDirectory
+            psi.WorkingDirectory <- repo
+
+            if settings.LogCutoff && engine.Name = Engines.fileSlim.Name then
+                psi.Environment[graphLogVariable] <- "1"
 
             for arg in
                 [ "--engine"
@@ -163,9 +203,24 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                   settings.Timeout.TotalSeconds.ToString(CultureInfo.InvariantCulture) ] do
                 psi.ArgumentList.Add arg
 
+            if settings.LogCutoff then
+                psi.ArgumentList.Add "--log-cutoff"
+
             use child = Process.Start psi
-            do! child.WaitForExitAsync()
-            return child.ExitCode
+            use cts = new CancellationTokenSource(settings.ChildTimeout)
+
+            try
+                do! child.WaitForExitAsync cts.Token
+                return child.ExitCode
+            with :? OperationCanceledException ->
+                try
+                    child.Kill true
+                with _ ->
+                    ()
+
+                child.WaitForExit()
+                eprintfn "%s child timed out after %.0f min and was killed" engine.Name settings.ChildTimeout.TotalMinutes
+                return 1
         }
 
     let private modeOf (spec: ProjectSpec) =
@@ -173,10 +228,24 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
         | Some "--parallelcompilation-" -> "sequential"
         | _ -> "graph"
 
-    /// Exit codes: 0 success, 1 a step, run or child failed, 2 bad usage, 3 a scenario's project does not check clean.
+    let private positive (args: Map<string, string>) (flag: string) =
+        Map.tryFind flag args
+        |> Option.map (fun text ->
+            match Double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture) with
+            | true, v when v > 0. -> v
+            | _ -> usageError $"%s{flag} must be a positive number, got '%s{text}'")
+
+    /// Exit codes: 0 success, 1 a step, run or child failed (or timed out), 2 bad usage or not run from the repo root,
+    /// 3 a scenario's project does not check clean.
     let execute (engines: EngineFactory list) (argv: string[]) : Task<int> =
         task {
             try
+                // R9: the corpus clones carry global.json files that break project loading from anywhere else.
+                let repo = Environment.CurrentDirectory
+
+                if not (File.Exists(Path.Combine(repo, "RanvierFSharp.slnx"))) then
+                    usageError $"run rfs-checkpoint from the ranvier-fsharp repo root (no RanvierFSharp.slnx in %s{repo})"
+
                 let args = parse (List.ofArray argv)
 
                 let required flag =
@@ -186,15 +255,6 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
 
                 let pattern = required "--scenario"
                 let corpus = Map.tryFind "--corpus" args |> Option.defaultValue "../ranvier-fsharp-corpus" |> Path.GetFullPath
-
-                let timeout =
-                    match Map.tryFind "--step-timeout-s" args with
-                    | None -> TimeSpan.FromMinutes 5.
-                    | Some text ->
-                        match Double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture) with
-                        | true, v when v > 0. -> TimeSpan.FromSeconds v
-                        | _ -> usageError $"--step-timeout-s must be a positive number, got '%s{text}'"
-
                 let files = Cli.expandGlob pattern
 
                 if files.IsEmpty then
@@ -203,7 +263,12 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                 let settings =
                     { Corpus = corpus
                       Out = required "--out"
-                      Timeout = timeout
+                      Timeout = positive args "--step-timeout-s" |> Option.map TimeSpan.FromSeconds |> Option.defaultValue (TimeSpan.FromMinutes 5.)
+                      ChildTimeout =
+                        positive args "--child-timeout-min"
+                        |> Option.map TimeSpan.FromMinutes
+                        |> Option.defaultValue (TimeSpan.FromMinutes 60.)
+                      LogCutoff = args.ContainsKey "--log-cutoff"
                       Scenarios =
                         [ for file in files ->
                               match Scenario.load file corpus with
@@ -215,8 +280,8 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
 
                 match Map.tryFind "--engine" args with
                 | Some name ->
-                    if args.ContainsKey "--in-process" then
-                        usageError "--engine runs in-process already; drop --in-process"
+                    if args.ContainsKey "--in-process" || args.ContainsKey "--child-timeout-min" then
+                        usageError "--engine is the child's mode: drop --in-process and --child-timeout-min"
 
                     let engine =
                         match engines |> List.tryFind (fun e -> e.Name = name) with
@@ -229,7 +294,7 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                     return if ok then 0 else 1
                 | None ->
                     let inProcess = args.ContainsKey "--in-process"
-                    printfn "%s" header
+                    printfn "%s" (header settings.LogCutoff)
 
                     printfn
                         "engine order: %s, %s\n"
@@ -262,7 +327,7 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                             printfn "%s: file-slim checks in %s mode" scenario.Name (modeOf spec)
 
                             for engine in engines do
-                                let! code = runChild settings file engine
+                                let! code = runChild settings repo file engine
 
                                 if code <> 0 then
                                     eprintfn "%s on %s: child exited with %d" engine.Name scenario.Name code
