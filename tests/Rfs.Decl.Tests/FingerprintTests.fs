@@ -240,6 +240,7 @@ let tests =
               let! fresh = checkC hAlone
               let freshFingerprints = fingerprints (fresh.File "C.fs").FileResult
               Expect.isTrue c.Results[0].LeavesFreeTypars "h's type is left open for later declarations"
+              Expect.isTrue c.Results[0].DependsOnLaterDeclarations "so h depends on every later declaration"
 
               let kept = DeclarationChecker.FinishFile(c.Start, [| c.Results[0] |], aloneParse)
               Expect.notEqual (fingerprints kept) freshFingerprints "the kept result stays float -> float: it is invalid"

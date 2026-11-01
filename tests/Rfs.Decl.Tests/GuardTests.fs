@@ -101,33 +101,85 @@ let freeTyparTests =
               do! expectOracle t edited c.File finished "r and f re-checked"
           } ]
 
+let private bHeader = "module Tiny.B\n\nlet two = Tiny.A.one + 1\n\n"
+
+/// B.fs, whose signature declares only `two`, checked one declaration at a time with extra options: the check, a
+/// parse of an edited body, and a comparison with the full check of an edited body.
+let private checkB (options: string list) (body: string) =
+    async {
+        let! t = tiny.Value |> Async.AwaitTask
+        let spec = { t.Spec with OtherOptions = t.Spec.OtherOptions @ options }
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+        let b = declByDecl ctx spec (sources spec (Map.ofList [ "B.fs", bHeader + body ])) |> List.find (fun f -> f.File.EndsWith "B.fs")
+
+        let parseB (edited: string) =
+            let parse = DeclarationChecker.Parse(ctx, b.File, bHeader + edited)
+            parse, DeclarationChecker.Split parse
+
+        let oracleB (edited: string) (fileResult: FileResult) (what: string) =
+            async {
+                let! expected = oracle spec (sources spec (Map.ofList [ "B.fs", bHeader + edited ])) b.File
+                let diff = Diagnostics.compare (toLsp expected) (toLsp fileResult.Diagnostics)
+                Expect.isEmpty diff $"%s{what}: diagnostics equal a full check:\n%s{String.concat Environment.NewLine diff}"
+                return expected
+            }
+
+        let! _ = oracleB body b.FileResult "the original"
+        return b, parseB, oracleB
+    }
+
+let private unusedAt (line: int) (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1182 && d.Range.StartLine = line)
+
+/// R15: a hidden value's body edited alone. Its user is kept, and the user's tree referenced the old value.
+let private editHiddenAlone (options: string list) =
+    async {
+        let body = "let hidden = 1\n\nlet user = hidden + 1\n"
+        let! b, parseB, oracleB = checkB options body
+        let edited = body.Replace("let hidden = 1", "let hidden = 2")
+        let parse, decls = parseB edited
+        let finished = DeclarationChecker.FinishFile(b.Start, recheck b decls b.Results [ 1 ], parse)
+        let! expected = oracleB edited finished "hidden re-checked, user kept"
+        Expect.isFalse (unusedAt 5 expected) "hidden is used"
+        Expect.isTrue (unusedAt 7 expected) "user is unused"
+        Expect.isFalse b.Results[1].DependsOnLaterDeclarations "a value row of a file with a signature, no free typars"
+    }
+
 [<Tests>]
 let unusedValueTests =
     testList
         "Guard.UnusedValues"
-        [ testAsync "with --warnon:1182 a later use removed re-checks a value the signature leaves out" {
-              let! t = tiny.Value |> Async.AwaitTask
-              let spec = { t.Spec with OtherOptions = t.Spec.OtherOptions @ [ "--warnon:1182" ] }
-              let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
-              let original = "module Tiny.B\n\nlet two = Tiny.A.one + 1\n\nlet hidden = 1\n\nlet user = hidden + 1\n"
-              let edited = original.Replace("let user = hidden + 1\n", "")
-              let b = declByDecl ctx spec (sources spec (Map.ofList [ "B.fs", original ])) |> List.find (fun f -> f.File.EndsWith "B.fs")
-              let hidden = b.Results[1]
-              Expect.isFalse hidden.LeavesFreeTypars "no free typars"
-              Expect.isTrue hidden.DependsOnLaterDeclarations "FS1182 is on, B.fs has a signature and hidden is a module value"
+        [ testAsync "a hidden value edited alone keeps the reference its kept user made" { do! editHiddenAlone [ "--warnon:1182" ] }
 
-              let parse = DeclarationChecker.Parse(ctx, b.File, edited)
-              let decls = DeclarationChecker.Split parse
-              let! expected = oracle spec (sources spec (Map.ofList [ "B.fs", edited ])) b.File
-              Expect.isTrue (expected |> Array.exists (fun d -> d.ErrorNumber = 1182)) "hidden is unused"
+          testAsync "the same with FS1182 as an error" { do! editHiddenAlone [ "--warnon:1182"; "--warnaserror:1182" ] }
 
-              let kept = DeclarationChecker.FinishFile(b.Start, [| b.Results[0]; hidden |], parse)
-              Expect.isNonEmpty (Diagnostics.compare (toLsp expected) (toLsp kept.Diagnostics)) "keeping hidden's result misses the warning"
+          testAsync "a removed use reports the kept value unused" {
+              let body = "let hidden = 1\n\nlet user = hidden + 1\n"
+              let! b, parseB, oracleB = checkB [ "--warnon:1182" ] body
+              let edited = body.Replace("let user = hidden + 1\n", "")
+              let parse, _ = parseB edited
+              let finished = DeclarationChecker.FinishFile(b.Start, b.Results[.. 1], parse)
+              let! expected = oracleB edited finished "hidden's result kept, user removed"
+              Expect.isTrue (unusedAt 5 expected) "hidden is unused"
+          }
 
-              let rechecked = recheck b decls b.Results[.. 1] [ 0; 1 ]
-              let finished = DeclarationChecker.FinishFile(b.Start, rechecked, parse)
-              let diff = Diagnostics.compare (toLsp expected) (toLsp finished.Diagnostics)
-              Expect.isEmpty diff $"re-checked from the first such result:\n%s{String.concat Environment.NewLine diff}"
+          testAsync "a new use of an unused value clears its warning, re-checking only the user" {
+              let body = "let hidden = 1\n\nlet z = 0\n"
+              let! b, parseB, oracleB = checkB [ "--warnon:1182" ] body
+              Expect.isTrue (unusedAt 5 b.FileResult.Diagnostics) "hidden is unused at first"
+              let edited = body.Replace("let z = 0", "let z = hidden")
+              let parse, decls = parseB edited
+              let finished = DeclarationChecker.FinishFile(b.Start, recheck b decls b.Results [ 2 ], parse)
+              let! expected = oracleB edited finished "only z re-checked"
+              Expect.isFalse (unusedAt 5 expected) "hidden is used"
+          }
+
+          testAsync "a rec group referencing itself" {
+              let body = "let rec loop n = if n = 0 then 0 else loop (n - 1)\n\nlet unused = 0\n"
+              let! b, _, oracleB = checkB [ "--warnon:1182" ] body
+              let again = DeclarationChecker.FinishFile(b.Start, b.Results, b.Start.Parse)
+              let! expected = oracleB body again "finished again"
+              Expect.isTrue (unusedAt 7 expected) "the full check reports unused"
           } ]
 
 [<Tests>]
@@ -237,6 +289,22 @@ let typedDependencyTests =
 
               let edited = original.Replace("interface System.IDisposable with member _.Dispose() = ()", "member _.Dispose() = ()")
               do! typedDependency original edited "U" [ "T"; "c" ] "b"
+          }
+
+          // Later files see a copy of an earlier file's contents (new stamps), or its signature file's declarations
+          testAsync "typed uses reach declarations of earlier files" {
+              let! t = tiny.Value |> Async.AwaitTask
+              let a = "module Tiny.A\n\ntype T = { X: int }\n\nlet one = 1\n\nlet a = { X = 1 }\n"
+              let c = "module Tiny.C\n\nlet b = Tiny.A.a = Tiny.A.a\n\nlet c = Tiny.B.two\n"
+              let files = declByDecl t.Context t.Spec (sources t.Spec (Map.ofList [ "A.fs", a; "C.fs", c ]))
+              let fileOf (name: string) = files |> List.find (fun f -> f.File.EndsWith name)
+              let aFile, cFile = fileOf "A.fs", fileOf "C.fs"
+              let keyOf (name: string) = aFile.Declarations[rowOf aFile name].Key
+              let bUses = cFile.Results[rowOf cFile "b"].TypedUses
+              Expect.contains bUses ({ File = aFile.File; Key = Some(keyOf "a") }: DeclarationRef) "the value of A.fs"
+              Expect.contains bUses ({ File = aFile.File; Key = Some(keyOf "T") }: DeclarationRef) "its type, through equality"
+              let bFsi = t.Spec.SourceFiles |> List.find (fun f -> f.EndsWith "B.fsi")
+              Expect.contains cFile.Results[rowOf cFile "c"].TypedUses ({ File = bFsi; Key = None }: DeclarationRef) "what B.fsi declares"
           } ]
 
 /// Every row of `body` checked again in the environment folded with ExtendEnv from the results before it, none
@@ -323,4 +391,14 @@ let assembledEnvTests =
 
               let! c = foldedMatchesFullCheck body
               Expect.equal [ for d in c.FileResult.Diagnostics -> d.ErrorNumber ] [ 193 ] "only m's type error: Math, G and N resolve"
+          }
+
+          // A recursive fragment adds its modules, then its opens, then its types, whatever their order: the union case
+          // Max shadows the value Max that `open A` brings, where adding them in order would do the reverse
+          testAsync "the same over a recursive namespace global fragment with an open after a type" {
+              let body =
+                  "namespace rec global\n\nmodule A =\n    let Max = 5\n\ntype U = | Max\n\nopen A\n\nnamespace global\n\nmodule M =\n    let m: int = Max\n"
+
+              let! c = foldedMatchesFullCheck body
+              Expect.isTrue (c.FileResult.Diagnostics |> Array.exists (fun d -> d.Range.StartLine = 13 && d.ErrorNumber = 1)) "Max is U's case in m"
           } ]
