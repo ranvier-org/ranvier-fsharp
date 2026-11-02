@@ -1,0 +1,29 @@
+{
+  "name": "huge-il-lineinsert",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Compiler/AbstractIL/il.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Compiler/AbstractIL/il.fs",
+        "range": {
+          "start": {
+            "line": 99,
+            "character": 0
+          },
+          "end": {
+            "line": 99,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

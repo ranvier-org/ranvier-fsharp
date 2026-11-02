@@ -1,0 +1,11 @@
+{
+  "name": "huge-cold",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "cold",
+  "steps": [
+    {
+      "open": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    }
+  ]
+}

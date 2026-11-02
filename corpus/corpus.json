@@ -24,6 +24,17 @@
       "prepare": ["dotnet", "fsi", "build.fsx", "-p", "Init"],
       "prepareUnless": ".deps",
       "notes": "fetch-corpus.ps1 also builds the project in Debug (builds Fantomas.FCS, whose artifacts/obj/Fantomas.FCS/debug/ref assembly ProjectSpec passes as -r:). Fantomas.FCS runs 'build.fsx -p Init' during restore, which fails under MSBuild (fsi nuget resolution); the script runs it up front outside MSBuild, and the restore target then skips because .deps exists. The repo pins SDK 11.0.100-rc.2, which is not installed, so the script idempotently rewrites the clone's global.json to 10.0.100 with rollForward latestMajor (the clone is dirty by that one file)."
+    },
+    {
+      "name": "huge",
+      "url": "https://github.com/dotnet/fsharp.git",
+      "tag": null,
+      "sha": "fbc9be3aa8159670bbb660c3b7b7e22368f4e279",
+      "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+      "prepare": ["pwsh", "-NoProfile", "-File", "{repo}/build/prepare-huge.ps1"],
+      "prepareUnless": "artifacts/bin/FSharp.Compiler.Service/Debug/net10.0/FSharp.Compiler.Service.dll",
+      "build": false,
+      "notes": "The 10k-line files: src/Compiler/Checking/Expressions/CheckExpressions.fs (13,757 lines; one let rec group from line 4254 to the end) and src/Compiler/AbstractIL/il.fs (6,284 lines, not rec). build/prepare-huge.ps1 builds buildtools/fslex, buildtools/fsyacc, src/FSharp.Build (which src/Compiler builds for its resource tasks without restoring it) and src/Compiler in Debug with BUILDING_USING_DOTNET=true and -p:FSharpNetCoreProductTargetFramework=net10.0, as build/fork.ps1 builds the fork, so the generated sources and the referenced assemblies exist. The repo targets net11.0, which this repo's SDK 10 MSBuild (Ionide.ProjInfo in the harness) cannot evaluate, so the script writes the clone's gitignored Directory.Build.props.user to pin net10.0 for every evaluation; the clone stays clean. Its global.json pins SDK 11.0.100-rc.1, which is installed, so the script does not rewrite it."
     }
   ]
 }

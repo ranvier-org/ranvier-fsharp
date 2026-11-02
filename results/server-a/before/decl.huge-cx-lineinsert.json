@@ -1,0 +1,122 @@
+{
+  "server": "decl",
+  "scenario": "huge-cx-lineinsert",
+  "commit": "fbc9be3aa8159670bbb660c3b7b7e22368f4e279",
+  "startedAt": "2026-11-02T02:09:12.2380374Z",
+  "coldMs": 313024.38,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #1 fwd",
+      "latencyMs": 2147.456,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 1,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #2 inv",
+      "latencyMs": 7527.3562,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 2,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #3 fwd",
+      "latencyMs": 2415.6816,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 3,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #4 inv",
+      "latencyMs": 3014.117,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 4,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #5 fwd",
+      "latencyMs": 7905.5028,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 5,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #6 inv",
+      "latencyMs": 2579.4177,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 6,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #7 fwd",
+      "latencyMs": 2716.2041,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 7,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #8 inv",
+      "latencyMs": 8241.704,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 8,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #9 fwd",
+      "latencyMs": 2353.9838,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    },
+    {
+      "index": 9,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #10 inv",
+      "latencyMs": 2381.8297,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [
+        "unexpected: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp\\pars.fsy 6346:28-6346:72 sev=3 FS3886 This list expression contains a single tuple element. Did you mean to use \u0027;\u0027 instead of \u0027,\u0027 to separate list elements?"
+      ],
+      "error": "oracle mismatch: 1 diffs"
+    }
+  ],
+  "peakWorkingSetMb": 49388.75,
+  "allocatedMb": 255459.22068023682,
+  "gen2": 22
+}

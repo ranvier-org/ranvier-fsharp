@@ -221,6 +221,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable adoptedCount = 0L
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
+    let finishPhaseTicks = Dictionary<string, int64>()
     let premise = Subject<DeclarationKey * string>()
     let published = Subject<DeclarationKey * string>()
     let ran = Subject<DeclarationKey * string>()
@@ -236,6 +237,17 @@ type internal ProjectShared(ctx: ProjectContext) =
         ran.Next((key, file))
 
     member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
+
+    /// Adds a finish's FileResult.PhaseTicks to the running totals; finishes of different files run concurrently.
+    member _.AddFinishPhaseTicks(phases: IReadOnlyDictionary<string, int64>) =
+        lock finishPhaseTicks (fun () ->
+            for KeyValue(phase, ticks) in phases do
+                finishPhaseTicks[phase] <- (match finishPhaseTicks.TryGetValue phase with | true, t -> t | _ -> 0L) + ticks)
+
+    /// A copy of the running totals of FileResult.PhaseTicks.
+    member _.FinishPhaseTicks: IReadOnlyDictionary<string, int64> =
+        lock finishPhaseTicks (fun () -> Dictionary<string, int64>(finishPhaseTicks) :> IReadOnlyDictionary<_, _>)
+
     member _.CountPremiseBreak(key: DeclarationKey, file: string) =
         Interlocked.Increment &premiseBreaks |> ignore
         premise.Next((key, file))
@@ -797,6 +809,7 @@ module internal FileNodes =
                             DeclarationChecker.FinishFile(i.Start.Start, i.Checks |> Array.map (fun (_, c) -> c.Result), i.Parsed.Parse)
 
                         project.AddFinishTicks watch.ElapsedTicks
+                        project.AddFinishPhaseTicks fileResult.PhaseTicks
 
                         return
                             { Version = i.Parsed.Version

@@ -105,6 +105,7 @@ let private wrongEngine: EngineFactory =
             Task.FromResult
                 { new IEngine with
                     member _.Counters() = None
+                    member _.DeclarationLines(_, _) = None
                     member _.Check() = result
                     member _.SetText(_, _) = result
                   interface IDisposable with
@@ -211,6 +212,35 @@ let tests =
                   (oracle :> IAsyncDisposable).DisposeAsync().AsTask().Wait()
           }
 
+          testTask "checkpoint records cold premise breaks and row sizes" {
+              let work = freshDir "rows"
+              let out = Path.Combine(work, "out")
+              let scenario = writeDepsScenario "Deps" work
+              let phases = [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+
+              let! code = Checkpoint.execute Engines.all [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--in-process" |]
+              Expect.equal code 0 "exit code"
+              let extraOf (server: string) = JsonNode.Parse(File.ReadAllText(Path.Combine(out, "extra", $"%s{server}.deps-five.json")))
+              let optInt (node: JsonNode) = if isNull node then None else Some(node.GetValue<int>())
+
+              let decl = extraOf "decl"
+              Expect.equal (decl["premiseBreaksAtCold"].GetValue<int64>()) 0L "the cold check breaks no D1 premise"
+              Expect.isNotNull decl["segmentRowsAtCold"] "segment rows after the cold check"
+              let largest, edited = optInt decl["largestRowLines"], optInt decl["editedRowLines"]
+              Expect.isSome edited "the first edit falls in a declaration"
+              Expect.isGreaterThanOrEqual edited.Value 1 "the edited declaration has a line"
+              Expect.isGreaterThanOrEqual largest.Value edited.Value "no declaration of the edited file is larger than the largest"
+
+              for s in decl["steps"].AsArray() do
+                  let ms = s["finishPhaseMs"].AsObject()
+                  Expect.equal (ms |> Seq.map _.Key |> Seq.sort |> List.ofSeq) (List.sort phases) $"""{s["step"]}: the ten parts of the finish"""
+
+              let slim = extraOf "file-slim"
+
+              for field in [ "premiseBreaksAtCold"; "segmentRowsAtCold"; "largestRowLines"; "editedRowLines" ] do
+                  Expect.isNull slim[field] $"file-slim has no %s{field}"
+          }
+
           testTask "--log-cutoff records file-slim's graph-check counts" {
               let work = freshDir "cutoff"
               let out = Path.Combine(work, "out")
@@ -256,6 +286,7 @@ let tests =
                           Task.FromResult
                               { new IEngine with
                                   member _.Counters() = None
+                                  member _.DeclarationLines(_, _) = None
                                   member _.Check() = ok
 
                                   member _.SetText(_, _) =

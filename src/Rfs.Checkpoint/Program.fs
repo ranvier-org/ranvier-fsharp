@@ -25,9 +25,11 @@ already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its 
 to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default.
 
 Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json holds what RunResult has no field for:
-cold and edit allocations, decl's counters after the cold check, and per edit the CheckDeclaration runs (superseded
-flights included), adopted checks, FinishFile time and its share of the latency, rows inside R11/R12 segments, and
-file-slim's graph-check counts when logged. It sits in a subdirectory so `rfs-harness compare` reads only results."""
+cold and edit allocations, decl's counters after the cold check (with its D1 premise breaks and segment rows), the
+largest declaration of the edited files and the one the first edit falls in (in lines), and per edit the
+CheckDeclaration runs (superseded flights included), adopted checks, FinishFile time, its share of the latency and its
+time per part, rows inside R11/R12 segments, and file-slim's graph-check counts when logged. It sits in a
+subdirectory so `rfs-harness compare` reads only results."""
 
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
@@ -118,6 +120,14 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
             | Some v -> JsonValue.Create v
             | None -> null
 
+        let phasesMs (phases: Map<string, float>) : JsonNode =
+            let o = JsonObject()
+
+            for KeyValue(phase, ms) in phases do
+                o[phase] <- JsonValue.Create ms
+
+            o
+
         let counters (c: EngineCounters option) : JsonNode =
             match c with
             | None -> null
@@ -127,6 +137,8 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                 o["adopted"] <- JsonValue.Create c.Adopted
                 o["finishMs"] <- JsonValue.Create(float c.FinishTicks * 1000. / float Stopwatch.Frequency)
                 o["segmentRows"] <- JsonValue.Create c.SegmentRows
+                o["premiseBreaks"] <- JsonValue.Create c.PremiseBreaks
+                o["finishPhaseMs"] <- phasesMs (c.FinishPhaseTicks |> Map.map (fun _ t -> float t * 1000. / float Stopwatch.Frequency))
                 o
 
         let step (e: StepExtra) : JsonNode =
@@ -139,6 +151,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
             o["finishMs"] <- opt e.FinishMs
             o["finishShare"] <- opt e.FinishShare
             o["segmentRows"] <- opt e.SegmentRows
+            o["finishPhaseMs"] <- e.FinishPhaseMs |> Option.map phasesMs |> Option.toObj
 
             o["graphCheck"] <-
                 match e.GraphCheck with
@@ -158,6 +171,10 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
         o["coldAllocatedMb"] <- JsonValue.Create run.ColdAllocatedMb
         o["editAllocatedMb"] <- JsonValue.Create run.EditAllocatedMb
         o["coldCounters"] <- counters run.ColdCounters
+        o["premiseBreaksAtCold"] <- opt run.PremiseBreaksAtCold
+        o["segmentRowsAtCold"] <- opt run.SegmentRowsAtCold
+        o["largestRowLines"] <- opt run.LargestRowLines
+        o["editedRowLines"] <- opt run.EditedRowLines
         o["finishShareP50"] <- opt (Driver.finishShareP50 run)
         o["stopped"] <- opt run.Stopped
         o["steps"] <- JsonArray([| for e in run.StepExtras -> step e |])

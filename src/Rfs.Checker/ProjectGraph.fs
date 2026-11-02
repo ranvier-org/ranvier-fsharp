@@ -95,6 +95,12 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
             return ProjectGraph(host, project, files)
         }
 
+    /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Reads no graph
+    /// state, so any thread may call it.
+    member _.DeclarationLines(file: string, text: string) : (int * int)[] =
+        DeclarationChecker.Split(DeclarationChecker.Parse(project.Context, file, text))
+        |> Array.map (fun d -> d.Range.StartLine, d.Range.EndLine)
+
     /// Sets a file's text; checks follow on the graph thread.
     member _.SetText(file: string, text: string) : unit =
         let i = indexOf file
@@ -171,6 +177,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
 
     /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
     member _.FinishTicks: int64 = project.FinishTicks
+
+    /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks), summed over every call.
+    member _.FinishPhaseTicks: IReadOnlyDictionary<string, int64> = project.FinishPhaseTicks
 
     /// How many published results of declarations checked on their own had a final fingerprint other than the one
     /// their check left (the D1 premise broke). Such a declaration is then checked as a segment leader.

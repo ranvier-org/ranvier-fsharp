@@ -1,0 +1,29 @@
+{
+  "name": "huge-cx-top",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 183,
+            "character": 63
+          },
+          "end": {
+            "line": 183,
+            "character": 64
+          }
+        },
+        "text": "1",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

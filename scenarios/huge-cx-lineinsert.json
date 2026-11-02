@@ -1,0 +1,29 @@
+{
+  "name": "huge-cx-lineinsert",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 99,
+            "character": 0
+          },
+          "end": {
+            "line": 99,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

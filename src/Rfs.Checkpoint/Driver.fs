@@ -14,6 +14,8 @@ open Rfs.Projects
 type PlannedEdit =
     { Name: string
       File: string
+      /// Where the edit starts, in the text before it.
+      Start: Position
       Text: string
       Overrides: Map<string, string> }
 
@@ -34,6 +36,8 @@ type StepExtra =
       FinishMs: float option
       /// Rows inside R11/R12 segments after the edit.
       SegmentRows: int option
+      /// Time inside each part of FinishFile during the edit (FileResult.PhaseTicks).
+      FinishPhaseMs: Map<string, float> option
       /// The fork's graph-check counts, when logged.
       GraphCheck: GraphCheckCounts option }
 
@@ -50,6 +54,14 @@ type EngineRun =
       EditAllocatedMb: float
       /// The engine's counters after its first check.
       ColdCounters: EngineCounters option
+      /// D1 premise breaks published by the first check.
+      PremiseBreaksAtCold: int64 option
+      /// Rows inside R11/R12 segments after the first check.
+      SegmentRowsAtCold: int option
+      /// The largest declaration of the edited files, in lines, as their texts on disk split.
+      LargestRowLines: int option
+      /// The innermost declaration the first edit falls in, in lines; None also when it falls between declarations.
+      EditedRowLines: int option
       /// One per edit that returned a result.
       StepExtras: StepExtra list
       /// Why the run stopped before its last step.
@@ -118,6 +130,7 @@ module Driver =
                                       { Name =
                                           $"edit %s{file} %s{describe edit.Range.Start}-%s{describe edit.Range.End} #%d{i + 1}%s{direction}"
                                         File = path
+                                        Start = forward.Range.Start
                                         Text = next
                                         Overrides = overrides }
                       | _ -> () ]
@@ -187,6 +200,30 @@ module Driver =
             let coldAllocated = GC.GetTotalAllocatedBytes true - coldAllocatedBefore
             let coldCounters = engine.Counters()
             let toMs (ticks: int64) = float ticks * 1000. / float Stopwatch.Frequency
+            let edits = steps |> List.choose (function Planned e -> Some e | Unrunnable _ -> None)
+            let linesOf (lines: int * int) = snd lines - fst lines + 1
+
+            let largestRowLines =
+                edits
+                |> List.map _.File
+                |> List.distinct
+                |> List.choose (fun file -> engine.DeclarationLines(file, File.ReadAllText file))
+                |> List.collect (Array.map linesOf >> List.ofArray)
+                |> List.fold (fun largest lines -> Some(max lines (defaultArg largest 0))) None
+
+            let editedRowLines =
+                edits
+                |> List.tryHead
+                |> Option.bind (fun e ->
+                    let line = e.Start.Line + 1
+
+                    engine.DeclarationLines(e.File, File.ReadAllText e.File)
+                    |> Option.bind (fun rows ->
+                        rows
+                        |> Array.filter (fun (first, last) -> first <= line && line <= last)
+                        |> Array.map linesOf
+                        |> Array.sort
+                        |> Array.tryHead))
 
             for step in steps do
                 match step, stopped with
@@ -230,6 +267,14 @@ module Driver =
                               Adopted = delta _.Adopted
                               FinishMs = delta _.FinishTicks |> Option.map toMs
                               SegmentRows = countersAfter |> Option.map _.SegmentRows
+                              FinishPhaseMs =
+                                match countersBefore, countersAfter with
+                                | Some b, Some a ->
+                                    a.FinishPhaseTicks
+                                    |> Map.map (fun phase ticks ->
+                                        toMs (ticks - (b.FinishPhaseTicks |> Map.tryFind phase |> Option.defaultValue 0L)))
+                                    |> Some
+                                | _ -> None
                               GraphCheck = r.GraphCheck }
                             : StepExtra
                         )
@@ -266,6 +311,10 @@ module Driver =
                   ColdAllocatedMb = mb coldAllocated
                   EditAllocatedMb = mb editAllocated
                   ColdCounters = coldCounters
+                  PremiseBreaksAtCold = coldCounters |> Option.map _.PremiseBreaks
+                  SegmentRowsAtCold = coldCounters |> Option.map _.SegmentRows
+                  LargestRowLines = largestRowLines
+                  EditedRowLines = editedRowLines
                   StepExtras = List.ofSeq extras
                   Stopped = stopped }
         }

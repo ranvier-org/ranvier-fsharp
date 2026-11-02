@@ -32,7 +32,11 @@ type EngineCounters =
       /// Stopwatch ticks inside FinishFile.
       FinishTicks: int64
       /// Rows checked inside R11/R12 segments, now.
-      SegmentRows: int }
+      SegmentRows: int
+      /// Published results whose final fingerprint broke the D1 premise.
+      PremiseBreaks: int64
+      /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks).
+      FinishPhaseTicks: Map<string, int64> }
 
 /// A checker holding one project in memory, created from the texts on disk.
 type IEngine =
@@ -43,6 +47,9 @@ type IEngine =
     abstract Check: unit -> Task<EngineResult>
     /// Replaces a source file's text and checks again.
     abstract SetText: file: string * text: string -> Task<EngineResult>
+    /// The first and last line (1-based) of each declaration of `text` as the file's text, for an engine that checks
+    /// by declaration; read outside the timed region.
+    abstract DeclarationLines: file: string * text: string -> (int * int)[] option
 
 type EngineFactory =
     { Name: string
@@ -70,7 +77,11 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
                 { Checked = graph.CheckedCount
                   Adopted = graph.AdoptedChecks
                   FinishTicks = graph.FinishTicks
-                  SegmentRows = graph.SegmentRowsTotal }
+                  SegmentRows = graph.SegmentRowsTotal
+                  PremiseBreaks = graph.PremiseBreaks
+                  FinishPhaseTicks = graph.FinishPhaseTicks |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq }
+
+        member _.DeclarationLines(file, text) = Some(graph.DeclarationLines(file, text))
 
         member _.Check() = settle 0L
 
@@ -165,6 +176,7 @@ type private FileSlimEngine(spec: ProjectSpec) =
 
     interface IEngine with
         member _.Counters() = None
+        member _.DeclarationLines(_, _) = None
         member _.Check() = check ()
 
         member _.SetText(file, text) =

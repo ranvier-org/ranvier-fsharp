@@ -1,0 +1,32 @@
+{
+  "server": "decl",
+  "scenario": "huge-cold",
+  "coldAllocatedMb": 237628.2926864624,
+  "editAllocatedMb": 0,
+  "coldCounters": {
+    "checked": 16803,
+    "adopted": 16712,
+    "finishMs": 21908.0642,
+    "segmentRows": 4767,
+    "premiseBreaks": 197,
+    "finishPhaseMs": {
+      "assemble": 76.8786,
+      "fingerprints": 12460.8433,
+      "leftovers": 10.0657,
+      "refilter": 10.0431,
+      "render": 2.6389,
+      "replay": 32.8203,
+      "signature": 35.5805,
+      "sinks": 346.9793,
+      "tail": 6191.286,
+      "typedUses": 2737.3544
+    }
+  },
+  "premiseBreaksAtCold": 197,
+  "segmentRowsAtCold": 4767,
+  "largestRowLines": null,
+  "editedRowLines": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": []
+}

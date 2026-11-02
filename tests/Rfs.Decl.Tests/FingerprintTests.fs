@@ -309,4 +309,22 @@ let tests =
               let fingerprint = fingerprintOf c.FileResult "asString"
               Expect.isTrue (fingerprint.StartsWith "?") $"not describable: %s{fingerprint}"
               Expect.notEqual (fingerprintOf again "asString") fingerprint "counts as changed every time"
+          }
+
+          testAsync "phase ticks cover the finish" {
+              let! checkedTiny = checkTiny []
+              let a = checkedTiny.File "A.fs"
+              let started = System.Diagnostics.Stopwatch.GetTimestamp()
+              let finished = DeclarationChecker.FinishFile(a.Start, a.Results, a.Start.Parse)
+              let elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - started
+
+              let phases =
+                  [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+
+              Expect.equal (List.ofSeq finished.PhaseTicks.Keys) phases "the ten parts of the finish, in source order"
+
+              for KeyValue(phase, ticks) in finished.PhaseTicks do
+                  Expect.isGreaterThanOrEqual ticks 0L $"%s{phase} is not negative"
+
+              Expect.isLessThanOrEqual (Seq.sum finished.PhaseTicks.Values) elapsed "the parts fit in the finish's own time"
           } ]
