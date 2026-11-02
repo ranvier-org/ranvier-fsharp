@@ -230,6 +230,13 @@ let fileLevelTests =
               // The check reports nothing for the second N.T (the clash surfaces only when compiling); the edge stays
           }
 
+          testTask "a module named like another's suffixed name depends on it" {
+              // X.fs's module X sits next to type X, so it compiles as S.XModule, the name Other.fs declares
+              let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChain (fixture "Suffix")
+              let indexOf name = p.Spec.SourceFiles |> List.findIndex (fun f -> Path.GetFileName f = name)
+              Expect.contains dependencies[indexOf "Other.fs"] (indexOf "X.fs") "module XModule depends on the file whose module X is XModule"
+          }
+
           testTask "scoped setup covers the dependency graph's shapes" {
               // A ghost namespace, a namespace split across files, a type extension in another file, fully qualified
               // uses without open, an AutoOpen module and a .fsi before its dependant
