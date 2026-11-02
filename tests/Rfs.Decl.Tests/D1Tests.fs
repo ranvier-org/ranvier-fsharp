@@ -106,6 +106,37 @@ type U =
 let after = 1
 """
 
+let private ordinary =
+    """module Tiny.C
+
+let map f xs = List.map f xs
+
+let inline add x y = x + y
+
+let inline callM (x: ^a) = (^a: (member M: int) x)
+
+type Box<'T>(v: 'T) =
+    member _.V = v
+    member inline _.Map f = f v
+
+type Pair<'T> = { First: 'T; Second: 'T }
+
+type Tree<'T> =
+    | Leaf
+    | Node of Tree<'T> * 'T * Tree<'T>
+
+let empty = []
+
+type Counter() =
+    member val X = 0 with get, set
+    override _.ToString() = "counter"
+
+type Queue<'T>(items: 'T list) =
+    member _.Head = List.head items
+
+let inline head (q: Queue<'T>) = q.Head
+"""
+
 let private shape (attribute: string) (field: string) =
     $"module Tiny.C\n\n%s{attribute}type Shape =\n    | Circle of radius: %s{field}\n    | Square of side: int\n\nlet after = 1\n"
 
@@ -134,6 +165,7 @@ let tests =
                     let! plain = check tinyProject [ "C.fs", shape "" "int" ]
                     let! noComparison = check tinyProject [ "C.fs", shape "[<NoComparison>]\n" "int" ]
                     do! expectOracle noComparison
+                    expectPremise noComparison
 
                     Expect.notEqual
                         (noComparison.Result("C.fs", "Shape").Fingerprint)
@@ -159,6 +191,9 @@ let tests =
                     let again = DeclarationChecker.FinishFile(f.Start, f.Results, parse)
                     let diff = Diagnostics.compare (toLsp f.FileResult.Diagnostics) (toLsp again.Diagnostics)
                     Expect.isEmpty diff $"same diagnostics:\n%s{String.concat Environment.NewLine diff}"
+                    let! expected = oracle c.Spec c.Texts f.File
+                    let diff = Diagnostics.compare (toLsp expected) (toLsp again.Diagnostics)
+                    Expect.isEmpty diff $"the second finish equals a full check:\n%s{String.concat Environment.NewLine diff}"
 
                     for r in f.Results do
                         Expect.equal again.Fingerprints[r.Key] f.FileResult.Fingerprints[r.Key] $"%s{r.Key.Name}'s final fingerprint"
@@ -205,4 +240,27 @@ let tests =
                     let! c = check tinyProject [ "C.fs", text ]
                     do! expectOracle c
                     expectPremise c
-                } ] ]
+                    Expect.isTrue (c.Result("C.fs", "k").DependsOnLaterDeclarations) "the finish's default changes k's inline body"
+                }
+
+                testAsync "a member val whose type a later use can decide depends on later declarations" {
+                    let text = "module Tiny.C\n\ntype T() =\n    member val X = ResizeArray() with get\n\nlet after = 1\n"
+                    let! c = check tinyProject [ "C.fs", text ]
+                    do! expectOracle c
+                    expectPremise c
+                    // The variable stays in the environment, so after leaves it open too, as rows after an unsolved
+                    // `let r = ref []` do
+                    Expect.equal (dependsOnLater c) [ "C.fs T"; "C.fs after" ] "X's element type is open: a later T().X.Add 1 decides it"
+                } ]
+
+          // The declared 'T of a generic class stays in the environment after it, rigid: it once flagged the class and
+          // every later declaration of its file
+          testAsync "ordinary generic, inline and SRTP code depends on nothing later" {
+              let! c = check tinyProject [ "C.fs", ordinary ]
+              do! expectOracle c
+              expectPremise c
+              Expect.equal (dependsOnLater c) [] "no declaration is flagged"
+
+              for r in (c.File "C.fs").Results do
+                  Expect.equal (c.Final("C.fs", r.Key.Name)) r.Fingerprint $"%s{r.Key.Name}: final = provisional"
+          } ]
