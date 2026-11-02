@@ -1,0 +1,121 @@
+{
+  "server": "file-slim",
+  "scenario": "mid-signature",
+  "coldAllocatedMb": 1692.3590393066406,
+  "editAllocatedMb": 4717.080451965332,
+  "coldCounters": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #1 fwd",
+      "latencyMs": 940.7487,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #2 inv",
+      "latencyMs": 981.0268,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #3 fwd",
+      "latencyMs": 472.6975,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #4 inv",
+      "latencyMs": 392.7065,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #5 fwd",
+      "latencyMs": 393.0522,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #6 inv",
+      "latencyMs": 489.7832,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #7 fwd",
+      "latencyMs": 353.2591,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #8 inv",
+      "latencyMs": 335.0777,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #9 fwd",
+      "latencyMs": 362.4234,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 595:52-595:52 #10 inv",
+      "latencyMs": 395.7366,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    }
+  ]
+}

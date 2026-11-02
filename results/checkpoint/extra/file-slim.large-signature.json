@@ -1,0 +1,121 @@
+{
+  "server": "file-slim",
+  "scenario": "large-signature",
+  "coldAllocatedMb": 956.0363616943359,
+  "editAllocatedMb": 3255.2878036499023,
+  "coldCounters": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #1 fwd",
+      "latencyMs": 765.8632,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #2 inv",
+      "latencyMs": 762.0616,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #3 fwd",
+      "latencyMs": 319.9402,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #4 inv",
+      "latencyMs": 356.9535,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #5 fwd",
+      "latencyMs": 447.7427,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #6 inv",
+      "latencyMs": 292.5863,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #7 fwd",
+      "latencyMs": 329.9757,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #8 inv",
+      "latencyMs": 267.4932,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #9 fwd",
+      "latencyMs": 277.8106,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #10 inv",
+      "latencyMs": 313.5672,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    }
+  ]
+}

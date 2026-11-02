@@ -1,0 +1,29 @@
+{
+  "name": "large-lineinsert",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 4,
+            "character": 0
+          },
+          "end": {
+            "line": 4,
+            "character": 0
+          }
+        },
+        "text": "\r\n",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

@@ -1,0 +1,236 @@
+{
+  "server": "decl",
+  "scenario": "large-body",
+  "coldAllocatedMb": 2059.2984924316406,
+  "editAllocatedMb": 361.60135650634766,
+  "coldCounters": {
+    "checked": 310,
+    "adopted": 310,
+    "finishMs": 1675.3913,
+    "segmentRows": 16
+  },
+  "finishShareP50": 0.4909231927236718,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #1 fwd",
+      "latencyMs": 59.0895,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 23.501,
+      "finishShare": 0.39771871483089216,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #2 inv",
+      "latencyMs": 36.142,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 17.8217,
+      "finishShare": 0.4931022079575009,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #3 fwd",
+      "latencyMs": 47.6714,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 18.0025,
+      "finishShare": 0.3776373255243186,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #4 inv",
+      "latencyMs": 34.9407,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 17.1532,
+      "finishShare": 0.4909231927236718,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #5 fwd",
+      "latencyMs": 34.8048,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 18.3692,
+      "finishShare": 0.5277777777777778,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #6 inv",
+      "latencyMs": 26.1989,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 13.3661,
+      "finishShare": 0.5101779082327884,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #7 fwd",
+      "latencyMs": 34.0075,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 17.5138,
+      "finishShare": 0.5149981621701095,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #8 inv",
+      "latencyMs": 28.8497,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 15.8889,
+      "finishShare": 0.5507474947746424,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #9 fwd",
+      "latencyMs": 35.508,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 22.1753,
+      "finishShare": 0.6245156021178325,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #10 inv",
+      "latencyMs": 26.701,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 11.6558,
+      "finishShare": 0.43653046702370696,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #11 fwd",
+      "latencyMs": 32.7409,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 12.8401,
+      "finishShare": 0.39217309237070447,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #12 inv",
+      "latencyMs": 26.4342,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 12.8376,
+      "finishShare": 0.4856435980661416,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #13 fwd",
+      "latencyMs": 25.9213,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 13.04,
+      "finishShare": 0.5030611890607338,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #14 inv",
+      "latencyMs": 30.0345,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 15.5663,
+      "finishShare": 0.5182806439261516,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #15 fwd",
+      "latencyMs": 30.606,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 14.9691,
+      "finishShare": 0.489090374436385,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #16 inv",
+      "latencyMs": 36.3403,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 20.8264,
+      "finishShare": 0.5730937829351986,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #17 fwd",
+      "latencyMs": 30.1906,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 14.7527,
+      "finishShare": 0.48865209701032775,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #18 inv",
+      "latencyMs": 29.4693,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 12.8036,
+      "finishShare": 0.4344724849249897,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #19 fwd",
+      "latencyMs": 25.9,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 12.5827,
+      "finishShare": 0.4858185328185329,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/Fantomas.Core/Queue.fs 15:20-15:22 #20 inv",
+      "latencyMs": 29.8932,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 17.507,
+      "finishShare": 0.5856515863139443,
+      "segmentRows": 16,
+      "graphCheck": null
+    }
+  ]
+}

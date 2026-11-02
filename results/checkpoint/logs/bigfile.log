@@ -1,0 +1,28 @@
+[rtk] /!\ No hook installed — run `rtk init -g` for automatic token savings
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks per declaration, each file seeing every earlier file.
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  decl decls/edit counts adopted checks; extra/<server>.<scenario>.json also has every run, finish time and share,
+    and segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+large: 0 errors, 16 other diagnostics
+large-bigfile-narrow: file-slim checks in graph mode
+running file-slim on large-bigfile-narrow (process 55344)
+  file-slim: cold 3191.7 ms, edit p50 212.3 ms, p95 570.1 ms, decls/edit -, allocated 4318.4 MB (cold 950.3, edits 3368.1), peak 420.6 MB
+running decl on large-bigfile-narrow (process 74220)
+  decl: cold 6788.0 ms, edit p50 312.5 ms, p95 648.4 ms, decls/edit 1.0, allocated 6465.7 MB (cold 2057.5, edits 4408.1), peak 742.4 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 19.7%, segment rows 16 cold, 16 after the last edit
+large-bigfile-wide: file-slim checks in graph mode
+running file-slim on large-bigfile-wide (process 46504)
+  file-slim: cold 3205.4 ms, edit p50 216.2 ms, p95 626.8 ms, decls/edit -, allocated 4322.6 MB (cold 952.9, edits 3369.7), peak 403.1 MB
+running decl on large-bigfile-wide (process 11144)
+  decl: cold 7258.0 ms, edit p50 322.9 ms, p95 470.0 ms, decls/edit 1.0, allocated 6453.9 MB (cold 2058.2, edits 4395.7), peak 742.2 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 20.3%, segment rows 16 cold, 16 after the last edit
+exit 0

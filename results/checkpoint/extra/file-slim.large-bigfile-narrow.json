@@ -1,0 +1,231 @@
+{
+  "server": "file-slim",
+  "scenario": "large-bigfile-narrow",
+  "coldAllocatedMb": 950.2564468383789,
+  "editAllocatedMb": 3368.1397399902344,
+  "coldCounters": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #1 fwd",
+      "latencyMs": 570.1359,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #2 inv",
+      "latencyMs": 691.8774,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #3 fwd",
+      "latencyMs": 258.2617,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #4 inv",
+      "latencyMs": 222.9415,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #5 fwd",
+      "latencyMs": 320.4406,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #6 inv",
+      "latencyMs": 212.2985,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #7 fwd",
+      "latencyMs": 200.8072,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #8 inv",
+      "latencyMs": 230.2034,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #9 fwd",
+      "latencyMs": 212.4411,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #10 inv",
+      "latencyMs": 208.1739,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #11 fwd",
+      "latencyMs": 205.4689,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #12 inv",
+      "latencyMs": 200.9619,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #13 fwd",
+      "latencyMs": 191.3291,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #14 inv",
+      "latencyMs": 198.3781,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #15 fwd",
+      "latencyMs": 262.3742,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #16 inv",
+      "latencyMs": 239.4286,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #17 fwd",
+      "latencyMs": 258.2038,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #18 inv",
+      "latencyMs": 189.5916,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #19 fwd",
+      "latencyMs": 200.8973,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #20 inv",
+      "latencyMs": 194.5948,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    }
+  ]
+}

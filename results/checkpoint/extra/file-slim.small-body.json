@@ -1,0 +1,231 @@
+{
+  "server": "file-slim",
+  "scenario": "small-body",
+  "coldAllocatedMb": 1831.0414199829102,
+  "editAllocatedMb": 1438.4227676391602,
+  "coldCounters": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #1 fwd",
+      "latencyMs": 184.4515,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #2 inv",
+      "latencyMs": 162.4602,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #3 fwd",
+      "latencyMs": 72.0927,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #4 inv",
+      "latencyMs": 71.6391,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #5 fwd",
+      "latencyMs": 74.3306,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #6 inv",
+      "latencyMs": 61.9413,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #7 fwd",
+      "latencyMs": 85.0204,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #8 inv",
+      "latencyMs": 64.9538,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #9 fwd",
+      "latencyMs": 126.8068,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #10 inv",
+      "latencyMs": 57.179,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #11 fwd",
+      "latencyMs": 72.1277,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #12 inv",
+      "latencyMs": 59.5096,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #13 fwd",
+      "latencyMs": 59.3263,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #14 inv",
+      "latencyMs": 59.7349,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #15 fwd",
+      "latencyMs": 71.1371,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #16 inv",
+      "latencyMs": 56.8388,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #17 fwd",
+      "latencyMs": 68.2025,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #18 inv",
+      "latencyMs": 59.6661,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #19 fwd",
+      "latencyMs": 63.1496,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #20 inv",
+      "latencyMs": 68.0658,
+      "checked": null,
+      "adopted": null,
+      "finishMs": null,
+      "finishShare": null,
+      "segmentRows": null,
+      "graphCheck": null
+    }
+  ]
+}

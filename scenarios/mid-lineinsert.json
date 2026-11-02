@@ -1,0 +1,29 @@
+{
+  "name": "mid-lineinsert",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

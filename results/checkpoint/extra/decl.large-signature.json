@@ -1,0 +1,126 @@
+{
+  "server": "decl",
+  "scenario": "large-signature",
+  "coldAllocatedMb": 2058.380096435547,
+  "editAllocatedMb": 6518.884223937988,
+  "coldCounters": {
+    "checked": 310,
+    "adopted": 310,
+    "finishMs": 1638.8595,
+    "segmentRows": 16
+  },
+  "finishShareP50": 0.24519075988700392,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #1 fwd",
+      "latencyMs": 2285.9414,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 472.0382,
+      "finishShare": 0.20649619452187182,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #2 inv",
+      "latencyMs": 1026.3336,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 294.7099,
+      "finishShare": 0.287148252770834,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #3 fwd",
+      "latencyMs": 957.0298,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 231.8137,
+      "finishShare": 0.24222202903190684,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #4 inv",
+      "latencyMs": 960.4042,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 293.5223,
+      "finishShare": 0.3056237155147801,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #5 fwd",
+      "latencyMs": 1004.4541,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 206.5783,
+      "finishShare": 0.20566225972894134,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #6 inv",
+      "latencyMs": 863.594,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 229.7689,
+      "finishShare": 0.26606125100452294,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #7 fwd",
+      "latencyMs": 829.1265,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 200.6954,
+      "finishShare": 0.24205642926622176,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #8 inv",
+      "latencyMs": 821.3655,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 222.9577,
+      "finishShare": 0.2714476076728326,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #9 fwd",
+      "latencyMs": 807.2845,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 197.9387,
+      "finishShare": 0.24519075988700392,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/Queue.fs 124:54-124:54 #10 inv",
+      "latencyMs": 827.5547,
+      "checked": 223,
+      "adopted": 223,
+      "finishMs": 214.6764,
+      "finishShare": 0.2594105259748993,
+      "segmentRows": 16,
+      "graphCheck": null
+    }
+  ]
+}

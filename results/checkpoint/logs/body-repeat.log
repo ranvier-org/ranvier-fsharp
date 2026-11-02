@@ -1,0 +1,36 @@
+[rtk] /!\ No hook installed — run `rtk init -g` for automatic token savings
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks per declaration, each file seeing every earlier file.
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  decl decls/edit counts adopted checks; extra/<server>.<scenario>.json also has every run, finish time and share,
+    and segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+large: 0 errors, 16 other diagnostics
+mid: 0 errors, 3 other diagnostics
+small: 0 errors, 6 other diagnostics
+large-body: file-slim checks in graph mode
+running file-slim on large-body (process 596)
+  file-slim: cold 3280.4 ms, edit p50 36.0 ms, p95 75.9 ms, decls/edit -, allocated 1663.8 MB (cold 954.2, edits 709.5), peak 308.1 MB
+running decl on large-body (process 63048)
+  decl: cold 6945.6 ms, edit p50 31.3 ms, p95 39.7 ms, decls/edit 1.0, allocated 2419.4 MB (cold 2057.8, edits 361.6), peak 366.7 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 51.1%, segment rows 16 cold, 16 after the last edit
+mid-body: file-slim checks in graph mode
+running file-slim on mid-body (process 68972)
+  file-slim: cold 3907.9 ms, edit p50 83.3 ms, p95 265.1 ms, decls/edit -, allocated 3232.3 MB (cold 1709.4, edits 1523.0), peak 418.6 MB
+running decl on mid-body (process 26000)
+  decl: cold 10276.3 ms, edit p50 27.2 ms, p95 57.7 ms, decls/edit 1.0, allocated 3972.7 MB (cold 3681.4, edits 291.2), peak 445.6 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 63.8%, segment rows 323 cold, 323 after the last edit
+small-body: file-slim checks in graph mode
+running file-slim on small-body (process 65580)
+  file-slim: cold 6710.6 ms, edit p50 61.1 ms, p95 95.0 ms, decls/edit -, allocated 3269.0 MB (cold 1831.9, edits 1437.1), peak 286.7 MB
+running decl on small-body (process 59612)
+  decl: cold 16802.6 ms, edit p50 31.5 ms, p95 35.0 ms, decls/edit 1.0, allocated 8334.2 MB (cold 8000.9, edits 333.2), peak 414.1 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 70.8%, segment rows 444 cold, 444 after the last edit
+exit 0

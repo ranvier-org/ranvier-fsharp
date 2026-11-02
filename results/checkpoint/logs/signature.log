@@ -1,0 +1,36 @@
+[rtk] /!\ No hook installed — run `rtk init -g` for automatic token savings
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks per declaration, each file seeing every earlier file.
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  decl decls/edit counts adopted checks; extra/<server>.<scenario>.json also has every run, finish time and share,
+    and segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+large: 0 errors, 16 other diagnostics
+mid: 0 errors, 3 other diagnostics
+small: 0 errors, 6 other diagnostics
+large-signature: file-slim checks in graph mode
+running file-slim on large-signature (process 68156)
+  file-slim: cold 3304.7 ms, edit p50 319.9 ms, p95 765.9 ms, decls/edit -, allocated 4211.3 MB (cold 956.0, edits 3255.3), peak 384.7 MB
+running decl on large-signature (process 75904)
+  decl: cold 7032.1 ms, edit p50 863.6 ms, p95 2285.9 ms, decls/edit 223.0, allocated 8577.3 MB (cold 2058.4, edits 6518.9), peak 670.0 MB
+  decl: adopted/edit 223.0, runs/edit 223.0, finish share p50 24.5%, segment rows 16 cold, 16 after the last edit
+mid-signature: file-slim checks in graph mode
+running file-slim on mid-signature (process 65288)
+  file-slim: cold 3877.8 ms, edit p50 393.1 ms, p95 981.0 ms, decls/edit -, allocated 6409.4 MB (cold 1692.4, edits 4717.1), peak 490.6 MB
+running decl on mid-signature (process 72796)
+  decl: cold 10137.0 ms, edit p50 1410.1 ms, p95 3600.9 ms, decls/edit 467.0, allocated 15497.3 MB (cold 3689.8, edits 11807.6), peak 911.1 MB
+  decl: adopted/edit 467.0, runs/edit 467.0, finish share p50 23.3%, segment rows 323 cold, 323 after the last edit
+small-signature: file-slim checks in graph mode
+running file-slim on small-signature (process 69212)
+  file-slim: cold 6342.7 ms, edit p50 540.6 ms, p95 1500.1 ms, decls/edit -, allocated 9361.7 MB (cold 1831.3, edits 7530.4), peak 357.4 MB
+running decl on small-signature (process 72244)
+  decl: cold 16578.4 ms, edit p50 3127.2 ms, p95 4009.6 ms, decls/edit 590.0, allocated 39234.8 MB (cold 8024.6, edits 31210.2), peak 1009.9 MB
+  decl: adopted/edit 590.0, runs/edit 590.0, finish share p50 29.6%, segment rows 444 cold, 444 after the last edit
+exit 0

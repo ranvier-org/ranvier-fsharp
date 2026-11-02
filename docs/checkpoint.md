@@ -1,0 +1,307 @@
+# Checkpoint: declaration graph vs file-level cutoff
+
+## Decision: GO
+
+The decision rule (plan, Task 17): **GO** when `decl` has a lower p50 edit latency than `file-slim` on the body
+scenarios of both `mid` and `large`, with zero oracle diffs. Signature scenarios are reported but do not gate.
+
+| scenario | engine | edit p50 ms | edit p95 ms | oracle diffs | failed steps |
+|---|---|---|---|---|---|
+| mid-body | **decl** | **28.0** | **61.7** | 0 | 0 |
+| mid-body | file-slim | 81.9 | 308.6 | 0 | 0 |
+| large-body | **decl** | **30.2** | **47.7** | 0 | 0 |
+| large-body | file-slim | 35.2 | 77.1 | 0 | 0 |
+
+- decl is faster on both gating scenarios: 2.9x on mid-body (p50), but only 1.17x on large-body (5.0 ms).
+- I repeated the three body scenarios once, to check that the large-body margin is not noise
+  (`results/checkpoint/logs/body-repeat.log`, not the committed result files). The repeat gave:
+  - large-body: decl 31.3 / 39.7 ms (p50 / p95) against file-slim 36.0 / 75.9 ms;
+  - mid-body: decl 27.2 / 57.7 ms against file-slim 83.3 / 265.1 ms;
+  - small-body: decl 31.5 / 35.0 ms against file-slim 61.1 / 95.0 ms.
+- **Zero oracle diffs.** Every run, all four scenario globs, recorded 0 oracle diffs and 0 failed steps.
+  - That is 150 edit steps per engine, 300 in all. Each was compared in Strict mode with a sequential
+    from-scratch check of the whole project (R17).
+  - All five checkpoint invocations exited 0.
+  - The oracle compares diagnostics only. It does not check the fingerprints or typed trees that decl caches.
+
+GO holds on the gating rule, but the numbers outside it are mixed. decl is slower than file-slim on:
+- every signature edit, by 2.7x to 5.8x;
+- the big `module rec` file, by about 1.5x;
+- cold start, by 2.2x to 3.0x.
+
+It also uses more memory, and on real code it forms more segments than the fixtures predicted (see "Segment rows").
+These are the server plan's risks, listed at the end.
+
+## Setup
+
+| | |
+|---|---|
+| ranvier-fsharp (R) | `8f97578` (main) plus the two line-insert scenarios added here |
+| FCS fork | `fickle-fsharp` `9ed3e709b` (`fickle_decl`), Release |
+| Ranvier | worktree `ranvier-fsharp-ranvier`, branch `fix/late-link-dirty` at `b0a70d3f` (not merged) |
+| build | `dotnet build RanvierFSharp.slnx -c Release` |
+| command | `dotnet run --project src/Rfs.Checkpoint -c Release -- --scenario <glob> --corpus ../ranvier-fsharp-corpus --out results/checkpoint`, cwd = R (R9), one glob per invocation |
+| preflight | `rfs-harness verify-corpus`: small, mid and large each 0 errors (6, 3 and 16 other diagnostics) |
+| engines | one child process per engine and scenario, file-slim first; `--log-cutoff` off |
+
+Machine, as in the FSAC baseline README:
+
+| | |
+|---|---|
+| CPU | AMD Ryzen 9 9900X, 12 cores / 24 threads |
+| RAM | 61.6 GB |
+| OS | Windows 11 Pro 10.0.26200 |
+| .NET SDK | 10.0.403 (R's `global.json`) |
+
+**The machine was not idle.** About 13 `fsautocomplete` processes (editor sessions, up to ~700 MB each) were running,
+along with several Claude, Codex and ChatGPT desktop sessions, Spotify, and dotnet build servers. CPU load was 9% at
+preflight. Nothing was closed.
+
+Each scenario was run once for the committed files; the body scenarios were run a second time (above). Percentiles
+are nearest-rank: with 20 edits p95 is the 19th value, and with 10 edits (signature, line insert) p95 is the maximum.
+
+## Full table per scenario
+
+decl vs file-slim, from `results/checkpoint/*.json` and the side files `results/checkpoint/extra/*.json`.
+- Cold MB: allocations during create plus the first check.
+- Edit MB: allocations per edit, as a mean.
+- Decls/edit: adopted checks.
+- Runs/edit: `CheckDeclaration` runs, superseded flights included, so runs/edit minus decls/edit is the wasted work.
+- Finish share: the p50 over edits of FinishFile time divided by edit latency.
+
+| scenario | engine | p50 ms | p95 ms | cold ms | peak MB | cold MB | edit MB | decls/edit | runs/edit | finish share p50 | oracle diffs |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| small-body | decl | 29.1 | 35.2 | 16253.6 | 415.7 | 8021 | 16.6 | 1.0 | 1.0 | 72.3% | 0 |
+| small-body | file-slim | 68.1 | 162.5 | 6325.2 | 285.8 | 1831 | 71.9 | - | - | - | 0 |
+| mid-body | decl | 28.0 | 61.7 | 11094.2 | 453.9 | 3694 | 14.5 | 1.0 | 1.0 | 64.4% | 0 |
+| mid-body | file-slim | 81.9 | 308.6 | 3751.4 | 415.8 | 1701 | 76.1 | - | - | - | 0 |
+| large-body | decl | 30.2 | 47.7 | 7433.4 | 364.3 | 2059 | 18.0 | 1.0 | 1.0 | 49.0% | 0 |
+| large-body | file-slim | 35.2 | 77.1 | 3340.5 | 306.5 | 955 | 35.4 | - | - | - | 0 |
+| small-signature | decl | 3127.2 | 4009.6 | 16578.4 | 1009.9 | 8025 | 3121.0 | 590.0 | 590.0 | 29.6% | 0 |
+| small-signature | file-slim | 540.6 | 1500.1 | 6342.7 | 357.4 | 1831 | 753.0 | - | - | - | 0 |
+| mid-signature | decl | 1410.1 | 3600.9 | 10137.0 | 911.1 | 3690 | 1180.7 | 467.0 | 467.0 | 23.2% | 0 |
+| mid-signature | file-slim | 393.1 | 981.0 | 3877.8 | 490.6 | 1692 | 471.7 | - | - | - | 0 |
+| large-signature | decl | 863.6 | 2285.9 | 7032.1 | 670.0 | 2058 | 651.8 | 223.0 | 223.0 | 24.5% | 0 |
+| large-signature | file-slim | 319.9 | 765.9 | 3304.7 | 384.7 | 956 | 325.5 | - | - | - | 0 |
+| large-bigfile-narrow | decl | 312.5 | 648.4 | 6788.0 | 742.4 | 2058 | 220.4 | 1.0 | 1.0 | 19.7% | 0 |
+| large-bigfile-narrow | file-slim | 212.3 | 570.1 | 3191.7 | 420.6 | 950 | 168.4 | - | - | - | 0 |
+| large-bigfile-wide | decl | 322.9 | 470.0 | 7258.0 | 742.2 | 2058 | 219.7 | 1.0 | 1.0 | 20.3% | 0 |
+| large-bigfile-wide | file-slim | 216.2 | 626.8 | 3205.4 | 403.1 | 953 | 168.4 | - | - | - | 0 |
+| mid-lineinsert | decl | 73.8 | 186.4 | 10182.2 | 481.0 | 3698 | 68.9 | 27.0 | 27.0 | 25.1% | 0 |
+| mid-lineinsert | file-slim | 83.7 | 300.1 | 3980.8 | 376.1 | 1697 | 76.9 | - | - | - | 0 |
+| large-lineinsert | decl | 39.2 | 63.4 | 6938.8 | 361.7 | 2058 | 30.4 | 13.0 | 13.0 | 39.7% | 0 |
+| large-lineinsert | file-slim | 37.6 | 137.1 | 3412.8 | 303.5 | 955 | 35.8 | - | - | - | 0 |
+
+- Runs/edit equals decls/edit everywhere: no superseded flights, so decl wasted no work. The checkpoint waits for
+  each edit to settle before it sends the next, so this says nothing about typing bursts.
+- Signature edits: decl re-checks every declaration of every later file (223, 467 and 590 per edit). R16 makes
+  cross-file granularity per file: a changed signature fingerprint restarts each later file and re-checks it one
+  declaration at a time. file-slim's graph check re-checks the same dependents as whole files, in parallel. decl is
+  2.7x (large), 3.6x (mid) and 5.8x (small) slower at p50, and on small it allocates 3.1 GB per edit against 0.75 GB.
+
+### Against the FSAC core-loop baseline
+
+**Different measurement layer.** FSAC's numbers include LSP framing and the `publishDiagnostics` round trip, and FSAC
+re-checks only the open file. decl and file-slim run in-process and re-check the whole project. FSAC's cold time
+includes `fsharp/workspaceLoad` but checks only the opened file. FSAC uses FCS 43.12.402, not the fork. Treat the
+FSAC columns as context, not as a like-for-like comparison.
+
+| scenario | decl p50 / p95 | file-slim p50 / p95 | fsac-core-bg p50 / p95 | fsac-core-tc p50 / p95 |
+|---|---|---|---|---|
+| small-body | 29.1 / 35.2 | 68.1 / 162.5 | 28.0 / 53.2 | 43.7 / 119.3 |
+| mid-body | 28.0 / 61.7 | 81.9 / 308.6 | 87.5 / 291.1 | 74.9 / 261.0 |
+| large-body | 30.2 / 47.7 | 35.2 / 77.1 | 22.5 / 31.2 | 42.4 / 84.9 |
+| small-signature | 3127.2 / 4009.6 | 540.6 / 1500.1 | 29.3 / 92.7 | 47.6 / 137.8 |
+| mid-signature | 1410.1 / 3600.9 | 393.1 / 981.0 | 85.5 / 251.5 | 67.1 / 317.5 |
+| large-signature | 863.6 / 2285.9 | 319.9 / 765.9 | 21.2 / 65.8 | 36.7 / 109.6 |
+| large-bigfile-narrow | 312.5 / 648.4 | 212.3 / 570.1 | 225.4 / 292.7 | 84.5 / 129.8 |
+| large-bigfile-wide | 322.9 / 470.0 | 216.2 / 626.8 | 241.7 / 515.8 | 79.5 / 142.9 |
+
+FSAC signature numbers are low because FSAC does not re-check the later files that depend on the changed signature
+until they are opened. The FSAC baseline has no line-insert scenarios. The full `rfs-harness compare` output is
+`results/checkpoint/compare-fsac-core.md`.
+
+## Segment rows
+
+Rows checked inside segments always re-check together, in order. That is the cost these rows carry: an edit to any
+row of a segment re-checks the whole segment.
+- **Numerator:** `ProjectGraph.SegmentRows` after the cold check.
+- **Denominator:** the fork's `DeclarationChecker.Split` over every implementation file of the project.
+- **Leaders and reasons:** a throwaway program (not committed). It reads `Split`, `DeclarationChecker.Content`,
+  `ProjectGraph.Results` (for `DependsOnLaterDeclarations` and `LeavesFreeTypars`) and the `PremiseBroken`
+  observable, then rebuilds the roles the way `NameIndex.roles` does. Its per-file totals match `SegmentRows` exactly
+  for every file of all three projects.
+
+| corpus | project | rows | segment rows | fraction | D1 premise breaks at cold |
+|---|---|---|---|---|---|
+| small | FSharp.Data.Adaptive | 1412 | 444 | 31.4% | 5 |
+| mid | FsAutoComplete.Core | 1110 | 323 | 29.1% | 32 |
+| large | Fantomas.Core | 301 | 16 | 5.3% | 1 |
+
+Segment rows were the same after the last edit as after the cold check in every run.
+
+**Finding: the D1 premise breaks on real code.** The fuzz tests and the ProjectGraph tests assert 0 premise breaks on
+their fixtures. On the corpora, the cold check counts 5, 32 and 1.
+- What a break is: a declaration whose final fingerprint after FinishFile differs from the one its own check left.
+- What the graph does: it treats each such declaration as a leader to the end of its file. That keeps the checks
+  sound, which the zero oracle diffs back up, but every row after the leader then re-checks in order.
+- Where they come from:
+  - In mid, 26 of the 32 are active patterns (`(|Val|_|)`, `(|Constructor|_|)` and others): 22 in
+    `TypedAstPatterns.fs`, and 4 in `CodeGeneration.fs`, two of them rec groups led by an active pattern. The other 6:
+    - a value and a type in `Utils.fs`;
+    - two module headers in `UntypedAstUtils.fs`;
+    - a type and a rec group in `AdaptiveExtensions.fs`.
+  - In small, 4 of the 5 are `RecGroup`s of interfaces and types (`IAdaptiveValue`, `IAdaptiveHashSet`,
+    `IAdaptiveHashMap`, `HashSet`).
+- Premise breaks are where most segment rows come from: 309 of small's 444 and 227 of mid's 323. That is about 21%
+  of each project's rows.
+- The gating edits are not affected: the three edited files have no segment rows.
+- Why the fingerprints change is not investigated here. The candidates are the finish's defaults, slot completion and
+  active-pattern result types. It is the first thing to look at if segments matter.
+
+Five largest segments per corpus. "Row" is the declaration's index in its file.
+
+| corpus | rows | leader (file:line) | why |
+|---|---|---|---|
+| small | 120 | `MapExtImplementation.ofTwoOption` (Value), MapExt.fs:1805 | R12: an unsolved inference variable in what it publishes or in an inline body (not free typars in the environment) |
+| small | 100 | `HashSet` (RecGroup), HashCollections.fs:3254 | D1 premise break |
+| small | 92 | `IAdaptiveHashMap` (RecGroup), AdaptiveHashMap.fs:10 | D1 premise break |
+| small | 89 | `IAdaptiveHashSet` (RecGroup), AdaptiveHashSet.fs:9 | D1 premise break |
+| small | 28 | `IAdaptiveValue` (RecGroup), AdaptiveValue.fs:6 | D1 premise break |
+| mid | 87 | `Utils.normalizePathI` (Value), Utils.fs:149 | D1 premise break |
+| mid | 76 | `SymbolUse.(\|ActivePattern\|_\|)` (Value), TypedAstPatterns.fs:66 | D1 premise break |
+| mid | 74 | `TipFormatter.Section.addSection` (Value), TipFormatter.fs:260 | R12: an unsolved inference variable in what it publishes or in an inline body |
+| mid | 51 | `AMap.BatchRecalculateDirty` (Type), AdaptiveExtensions.fs:208 | D1 premise break; absorbs the R11 span of `type asyncaval with` (row 85) |
+| mid | 18 | `Decompiler.TextWriterWithLocationFinder` (Type), Decompiler.fs:20 | R12: leaves free typars |
+| large | 9 | `List.moreThanOne` (Value), Utils.fs:62 | D1 premise break |
+| large | 7 | `Context.Context` (Type), Context.fs:208 | R11: `type Context with` augmentation at row 23 |
+
+The remaining segments:
+- small: R11 spans for `SetOperation` (11 rows, Operations.fs) and `AdaptiveObject` (4 rows);
+- mid: a premise break in CodeGeneration.fs (11 rows) and in UntypedAstUtils.fs (2 rows);
+- mid: R11 spans for `MissingExplicitType` and `ExplicitType` (2 rows each, InlayHints.fs).
+
+R11 matches a name, not a type. A span runs from the first earlier row whose `Defines` holds the augmented name.
+
+## Big file: CodePrinter.fs
+
+`Fantomas.Core/CodePrinter.fs` has 5,324 lines and is `module internal rec`. `Split` gives it **one row**, a single
+`RecGroup`. So decl has no declaration granularity in this file. Every edit re-checks the whole file as one
+declaration, then runs its FinishFile. The file has a `.fsi`, so a body edit leaves the signature unchanged and no
+later file is re-checked by either engine.
+
+| scenario | decl p50 / p95 | file-slim p50 / p95 | fsac-core-bg p50 / p95 | fsac-core-tc p50 / p95 |
+|---|---|---|---|---|
+| large-bigfile-narrow (line 41, a string) | 312.5 / 648.4 | 212.3 / 570.1 | 225.4 / 292.7 | 84.5 / 129.8 |
+| large-bigfile-wide (line 2078, inside genExpr) | 322.9 / 470.0 | 216.2 / 626.8 | 241.7 / 515.8 | 79.5 / 142.9 |
+
+(FSAC columns: different layer; see above.)
+
+- decl is about 1.5x slower than file-slim at p50 here.
+- FinishFile is 66 ms p50 (about 20%) of decl's ~313 ms. The other ~247 ms is checking the one 5,324-line row,
+  which is still slower than file-slim's whole-file check.
+- decl's peak is 742 MB against 421 MB.
+- fsac-core-tc is about 2.5x faster than file-slim on the same one-file re-check. That is a different FCS version,
+  and probably caching in the transparent compiler; not investigated.
+- D2's goal (files of tens of thousands of lines with heavy inference) is not served by decl when the file is
+  `module rec`. The rec fallback is pure overhead today.
+
+## W1 cost: line insert
+
+Both scenarios insert a blank line near the top of the file, above most declarations, then remove it, 10 edits
+each. decl's checks are keyed by range, so every declaration below the insert re-checks (W1): 27 of the 36 rows of
+DocumentationFormatter.fs, and 13 rows of Queue.fs.
+
+| scenario | decl p50 / p95 | decl decls/edit | file-slim p50 / p95 | decl body edit in the same file (p50) |
+|---|---|---|---|---|
+| mid-lineinsert | 73.8 / 186.4 | 27.0 | 83.7 / 300.1 | 28.0 |
+| large-lineinsert | 39.2 / 63.4 | 13.0 | 37.6 / 137.1 | 30.2 |
+
+- A line insert costs decl 2.6x (mid) and 1.3x (large) its body-edit latency.
+- On mid it is still slightly faster than file-slim at p50 and much better at p95. On large it is 1.6 ms slower at
+  p50 and better at p95.
+- In a file with hundreds of rows below the cursor, W1 would cost more. Range shifting is server-phase work.
+
+## Cold start and memory
+
+| corpus | decl cold ms | file-slim cold ms | FSAC core cold ms (bg / tc, cold scenario) | decl cold alloc MB | file-slim cold alloc MB | decl peak MB (body) | file-slim peak MB (body) | FSAC core peak MB (bg / tc, body) |
+|---|---|---|---|---|---|---|---|---|
+| small | 16254 | 6325 | 7516 / 7223 | 8021 | 1831 | 416 | 286 | 453 / 463 |
+| mid | 11094 | 3751 | 8040 / 7231 | 3694 | 1701 | 454 | 416 | 763 / 812 |
+| large | 7433 | 3341 | 11750 / 11591 | 2059 | 955 | 364 | 307 | 1083 / 492 |
+
+(FSAC: different layer. Its cold time is project load plus checking one opened file, not the whole project.)
+
+- decl's cold start is 2.2x to 3.0x file-slim's, and it allocates 2.2x to 4.4x as much while doing it.
+- During the cold check, FinishFile alone takes 1.6 s (large), 2.7 s (mid) and 5.4 s (small).
+- Peak working set on body edits is 1.1x to 1.5x file-slim's. On signature edits decl peaks at 670 to 1010 MB,
+  against 357 to 491 MB for file-slim.
+- decl's body-edit peaks stay under FSAC's background-compiler peaks on all three corpora.
+
+## Finish share
+
+Finish share is the part of an edit's latency spent in FinishFile, the whole-file pass after the declaration checks.
+FinishFile does the post-inference checks, applies defaults, replays FS1182 references, builds the file signature
+and fingerprints, and renders diagnostics. It runs over the entire edited file on every edit, however small the
+change.
+
+| scenario | finish share p50 | finish ms p50 | edit p50 ms |
+|---|---|---|---|
+| small-body | 72.3% | 19.7 | 29.1 |
+| mid-body | 64.4% | 18.2 | 28.0 |
+| large-body | 49.0% | 15.8 | 30.2 |
+| large-lineinsert | 39.7% | 18.4 | 39.2 |
+| mid-lineinsert | 25.1% | 20.4 | 73.8 |
+| signatures | 23-30% | 230-956 | 864-3127 |
+| bigfile | 20% | 66 | 313-323 |
+
+On body edits, one declaration's check is the small part. About half to three quarters of the latency is the finish.
+The targets this implies, largest first:
+1. **Make FinishFile incremental.** Run post-inference checks and diagnostics rendering per changed declaration, and
+   reuse the file signature when fingerprints are unchanged. This is the largest single cost of a body edit.
+2. **Signature edits.** Restarting later files whole and re-checking them one declaration at a time (R16) costs 223
+   to 590 declaration checks plus a finish per file. Options:
+   - per-declaration cross-file dependencies, so only declarations that use the changed name re-check;
+   - or fall back to a file-level check for files that restart, which file-slim shows is 2.7x to 5.8x cheaper.
+3. **Cold start.** Per-declaration checks plus a finish per file cost about twice file-slim. Options:
+   - check the cold project file-level, then switch to declarations on first edit;
+   - or persist results.
+
+## Caveats
+
+- **Measurement layer.** decl and file-slim are in-process and re-check the whole project. FSAC adds LSP and
+  publishing and re-checks only open files. The tables that mix them say so.
+- **Ranvier fix is unmerged.** decl runs on Ranvier's `fix/late-link-dirty` branch (`aa59513a` + `b0a70d3f`) in a
+  separate worktree. The graph needs that fix: the late-link lost-wakeup bug.
+- **Different FCS.** decl, file-slim and the oracle use the fork (`9ed3e709b`). FSAC uses FCS 43.12.402.
+- **FSAC's oracle diffs were informational.** The FSAC baseline recorded diffs but did not enforce them; it had 0.
+  Here they are enforced (Strict).
+- **Cross-file granularity is per file (R16).** That is why the signature edits re-check whole later files.
+- **The oracle is sequential (R17); file-slim runs in graph mode.** Per the Task 16 ruling, graph mode is the fork's
+  best file-level configuration: its signature cutoff exists only there. No graph-vs-sequential mismatch appeared.
+- **One sample per scenario, on a busy machine**, apart from the body repeat. The large-body margin (5 ms, 14%) held
+  in the repeat (4.7 ms), but it is small.
+- **The oracle checks diagnostics only.** A wrong cached typed tree that does not change diagnostics would not show.
+- **Premise breaks are not counted by the checkpoint CLI.** They were found with the segment analysis above.
+
+## What it means for the server plan
+
+GO: the server uses the declaration graph in the same Ranvier architecture. Top risks, roughly in order of how much
+they could hurt users:
+
+1. **Signature edits.** decl is 2.7x to 5.8x slower than file-slim (0.9 s to 3.1 s p50) and allocates up to
+   3.1 GB per edit. Adding a parameter or changing a return type is common.
+   - The server must not ship R16 as is. It needs per-declaration cross-file dependencies, or a file-level fallback
+     for restarted files.
+2. **FinishFile share.** 49% to 72% of a body edit. Making the finish incremental is the main lever for latency.
+3. **Cold start and memory.**
+   - Cold start: 7 s to 16 s, against 3 s to 6 s for file-slim.
+   - Cold allocations: up to 8 GB.
+   - Peak memory on signature edits: up to 1 GB.
+4. **Rec-module fallback.** `module rec` / `namespace rec` files are one row. CodePrinter.fs is 1.5x slower than
+   file-slim, and D2's big-file goal needs either a finer split of rec groups or the file-level path for them.
+5. **D1 premise breaks on real code** (5, 32 and 1). They put about 21% of small's and mid's rows into
+   leader-to-end-of-file segments. That is sound, but edits below them lose declaration granularity. The cause
+   (active patterns, interface rec groups) should be found and fixed in the fork.
+6. **W1.** A line insert re-checks every declaration below it: 1.3x to 2.6x a body edit here, more in long files.
+   Range shifting is needed.

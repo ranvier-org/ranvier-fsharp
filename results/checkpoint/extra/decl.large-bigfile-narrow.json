@@ -1,0 +1,236 @@
+{
+  "server": "decl",
+  "scenario": "large-bigfile-narrow",
+  "coldAllocatedMb": 2057.537971496582,
+  "editAllocatedMb": 4408.148017883301,
+  "coldCounters": {
+    "checked": 310,
+    "adopted": 310,
+    "finishMs": 1549.446,
+    "segmentRows": 16
+  },
+  "finishShareP50": 0.1971924414987981,
+  "stopped": null,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #1 fwd",
+      "latencyMs": 794.2282,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 185.2937,
+      "finishShare": 0.23330032854537272,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #2 inv",
+      "latencyMs": 648.3759,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 124.5576,
+      "finishShare": 0.19210707862522342,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #3 fwd",
+      "latencyMs": 383.4659,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 85.416,
+      "finishShare": 0.22274731599341688,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #4 inv",
+      "latencyMs": 384.8345,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 90.963,
+      "finishShare": 0.23636914050065677,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #5 fwd",
+      "latencyMs": 390.2708,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 78.7893,
+      "finishShare": 0.2018836664182921,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #6 inv",
+      "latencyMs": 328.8685,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 80.9701,
+      "finishShare": 0.24620813486241463,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #7 fwd",
+      "latencyMs": 306.2349,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 64.1592,
+      "finishShare": 0.20950975868524457,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #8 inv",
+      "latencyMs": 290.4933,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 56.8865,
+      "finishShare": 0.19582723594657778,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #9 fwd",
+      "latencyMs": 507.7792,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 67.3638,
+      "finishShare": 0.13266356715674843,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #10 inv",
+      "latencyMs": 302.5656,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 58.2229,
+      "finishShare": 0.19243066627534658,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #11 fwd",
+      "latencyMs": 303.8951,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 64.3668,
+      "finishShare": 0.21180598173514478,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #12 inv",
+      "latencyMs": 309.8664,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 57.2375,
+      "finishShare": 0.18471670371489132,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #13 fwd",
+      "latencyMs": 305.2033,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 59.8539,
+      "finishShare": 0.19611157546461655,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #14 inv",
+      "latencyMs": 340.4671,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 81.6542,
+      "finishShare": 0.2398299277668826,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #15 fwd",
+      "latencyMs": 321.9528,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 72.4002,
+      "finishShare": 0.22487830514286564,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #16 inv",
+      "latencyMs": 324.2727,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 65.7475,
+      "finishShare": 0.2027537316585701,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #17 fwd",
+      "latencyMs": 284.7777,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 55.921,
+      "finishShare": 0.19636720150489312,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #18 inv",
+      "latencyMs": 290.2329,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 56.5452,
+      "finishShare": 0.19482698205475674,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #19 fwd",
+      "latencyMs": 289.7099,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 54.9295,
+      "finishShare": 0.18960173608150774,
+      "segmentRows": 16,
+      "graphCheck": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #20 inv",
+      "latencyMs": 312.5064,
+      "checked": 1,
+      "adopted": 1,
+      "finishMs": 61.6239,
+      "finishShare": 0.1971924414987981,
+      "segmentRows": 16,
+      "graphCheck": null
+    }
+  ]
+}
