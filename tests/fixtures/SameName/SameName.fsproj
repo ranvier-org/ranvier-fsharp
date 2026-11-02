@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="a/Util.fsi" />
+    <Compile Include="a/Util.fs" />
+    <Compile Include="b/Util.fs" />
+    <Compile Include="Use.fsi" />
+    <Compile Include="Use.fs" />
+  </ItemGroup>
+</Project>

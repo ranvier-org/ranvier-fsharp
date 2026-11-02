@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Ghost.fs" />
+    <Compile Include="Split1.fs" />
+    <Compile Include="Split2.fs" />
+    <Compile Include="Ext.fs" />
+    <Compile Include="Lib.fsi" />
+    <Compile Include="Lib.fs" />
+    <Compile Include="Auto.fs" />
+    <Compile Include="Use.fs" />
+  </ItemGroup>
+</Project>
