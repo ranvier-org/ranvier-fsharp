@@ -324,6 +324,9 @@ let private run (seed: int) (steps: int) =
             if not fingerprints.IsEmpty then
                 fail ("fingerprints differ from a check from scratch:\n" + String.concat Environment.NewLine fingerprints)
 
+            if s.Graph.PremiseBreaks <> 0L then
+                fail $"the D1 premise broke: a final fingerprint differed from its check's for %A{List.ofSeq premise}"
+
             if r.Diagnostics.Values |> Seq.exists (Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)) then
                 withErrors <- withErrors + 1
 
@@ -332,16 +335,14 @@ let private run (seed: int) (steps: int) =
             checks <- checks + r.Delta
             published <- published + r.Checked.Length
 
-        let broken = premise |> Seq.map (fun k -> k.Kind, k.Name) |> Seq.countBy id |> List.ofSeq
-
         printfn
-            $"seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{checks} declaration checks, %d{published} results published, D1 premise breaks %A{broken}"
+            $"seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
 
     }
 
 [<Tests>]
 let tests =
-    testSequencedGroup "Deps"
+    testSequenced
     <| testList
         "OracleFuzz"
         [ testTask "seed 1515: 200 random edits equal the oracle after each" { do! run 1515 200 }

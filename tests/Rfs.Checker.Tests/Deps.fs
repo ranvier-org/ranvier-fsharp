@@ -75,7 +75,7 @@ let start () : Task<Session> =
     }
 
 type Edit =
-    { /// How many times CheckDeclaration ran
+    { /// How many CheckDeclaration results were published (AdoptedChecks): superseded flights are not counted
       Delta: int64
       /// The newly published results, in order
       Checked: (DeclarationKey * string) list
@@ -111,13 +111,13 @@ let edit (s: Session) (file: string) (text: string) : Task<Edit> =
         let ran = ConcurrentQueue<DeclarationKey * string>()
         use _ = s.Graph.Checked |> Observable.subscribe events.Enqueue
         use _ = s.Graph.Ran |> Observable.subscribe ran.Enqueue
-        let before = s.Graph.CheckedCount
+        let before = s.Graph.AdoptedChecks
         s.Texts[file] <- text
         s.Graph.SetText(file, text)
         let! diagnostics = s.Graph.AllDiagnostics() |> settle
 
         return
-            { Delta = s.Graph.CheckedCount - before
+            { Delta = s.Graph.AdoptedChecks - before
               Checked = List.ofSeq events
               Ran = List.ofSeq ran
               Diagnostics = diagnostics }
@@ -189,11 +189,12 @@ let fingerprintDiff (s: Session) : Task<string list> =
                       $"%s{Path.GetFileName file}: %d{actual.Count} declarations <> fresh %d{expected.Count}" ]
     }
 
-/// The graph's diagnostics equal the oracle's, and its fingerprints equal a check from scratch.
+/// The graph's diagnostics equal the oracle's, its fingerprints equal a check from scratch, and the D1 premise held.
 let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]>) (what: string) =
     task {
         let! diff = oracleDiff s diagnostics
         Expect.isEmpty diff $"%s{what}: diagnostics equal a full check:\n%s{String.concat Environment.NewLine diff}"
         let! fingerprints = fingerprintDiff s
         Expect.isEmpty fingerprints $"%s{what}: fingerprints equal a check from scratch:\n%s{String.concat Environment.NewLine fingerprints}"
+        Expect.equal s.Graph.PremiseBreaks 0L $"%s{what}: no final fingerprint differed from its check's (D1)"
     }

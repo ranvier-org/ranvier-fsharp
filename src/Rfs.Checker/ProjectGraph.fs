@@ -150,17 +150,24 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, files: IFile
 
                 d :> IReadOnlyDictionary<_, _>))
 
-    /// How many declarations of the file are checked in segments (R11 and R12 spans), as the roles stand now.
+    /// How many declarations of the file are checked in segments (R11 and R12 spans), as the roles stand now. Blocks
+    /// until the graph thread answers: never call it from the graph thread.
     member _.SegmentRows(file: string) : int =
         let node = files[indexOf file]
         (host.Read(fun () -> node.SegmentRows())).GetAwaiter().GetResult()
 
-    /// How many declarations of the project are checked in segments, as the roles stand now.
+    /// How many declarations of the project are checked in segments, as the roles stand now. Blocks until the graph
+    /// thread answers: never call it from the graph thread.
     member _.SegmentRowsTotal: int =
         (host.Read(fun () -> files |> Array.sumBy _.SegmentRows())).GetAwaiter().GetResult()
 
-    /// How many times CheckDeclaration has run.
+    /// How many times CheckDeclaration has returned, including runs whose result was never published: a flight
+    /// superseded under CancelPrevious that finished before it saw its cancellation.
     member _.CheckedCount: int64 = project.CheckedCount
+
+    /// How many CheckDeclaration results were published (adopted): each once, when a finish of the current text that
+    /// holds it is published.
+    member _.AdoptedChecks: int64 = project.AdoptedCount
 
     /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
     member _.FinishTicks: int64 = project.FinishTicks

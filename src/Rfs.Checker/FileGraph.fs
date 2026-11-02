@@ -195,7 +195,7 @@ type internal FileSig =
             member _.Equals(a, b) = a.Chain = b.Chain
             member _.GetHashCode s = s.Chain.Length }
 
-/// Shared by every file of a project.
+/// Hands each value to the observers subscribed when it is sent.
 [<Sealed>]
 type internal Subject<'T>() =
     let observers = ResizeArray<IObserver<'T>>()
@@ -214,9 +214,11 @@ type internal Subject<'T>() =
                 member _.Dispose() =
                     lock observers (fun () -> observers.Remove o |> ignore) }
 
+/// Shared by every file of a project.
 [<Sealed>]
 type internal ProjectShared(ctx: ProjectContext) =
     let mutable checkedCount = 0L
+    let mutable adoptedCount = 0L
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
     let premise = Subject<DeclarationKey * string>()
@@ -239,7 +241,12 @@ type internal ProjectShared(ctx: ProjectContext) =
         premise.Next((key, file))
 
     member _.PremiseBroken = premise :> IObservable<_>
-    member _.Publish(key: DeclarationKey, file: string) = published.Next((key, file))
+    /// Reports a check result published for the first time: each result is one CheckDeclaration, adopted.
+    member _.Publish(key: DeclarationKey, file: string) =
+        Interlocked.Increment &adoptedCount |> ignore
+        published.Next((key, file))
+
+    member _.AdoptedCount = Interlocked.Read &adoptedCount
     member _.Checked = published :> IObservable<_>
     member _.Ran = ran :> IObservable<_>
 
@@ -722,8 +729,8 @@ module internal FileNodes =
         // another file is covered by this rule.
         // Of the file's own text only the prologue is keyed on: setting up reads the file's module or namespace header,
         // and every declaration is checked on its own against whichever setup is current.
-        // C2: the comparison is a plain memo that keeps its previous key when equal, and the async setup runs only when
-        // the key changed, so no async body reads a value that can be pending and then returns synchronously.
+        // The comparison is a plain memo that keeps its previous key when equal, so the async setup runs only when the
+        // key changed. This saves setups; it does not avoid the C2 lost wake-up, which only the Ranvier fix removes.
         let startKey =
             createMemo (fun previous ->
                 let key = prologue.Value, beforeOf ()
@@ -745,6 +752,9 @@ module internal FileNodes =
         shared.StartLatest <- Nodes.latestOf start
 
         // What the file is finished from, kept as the same object while every part is: pending while any part is.
+        // The graph REQUIRES the Ranvier late-link fix (fix/late-link-dirty, C2): this memo, the row checks and the
+        // segments first read sources that may have been dirtied during the same run, and without the fix such a reader
+        // is never woken again.
         let inputs =
             createMemo (fun previous ->
                 let order = shared.Order.Value
@@ -769,9 +779,9 @@ module internal FileNodes =
                     i
                 | _ -> { Parsed = p; Start = s; Checks = checks })
 
-        // C2: the async finish reads the inputs through a memo that is never pending once set, and runs FinishFile
-        // whenever it runs, so it starts only when the inputs changed. Settled and published only while it was finished
-        // from the current inputs.
+        // The async finish reads the inputs through a memo that is never pending once set, and runs FinishFile whenever
+        // it runs, so it starts only when the inputs changed. Settled and published only while it was finished from the
+        // current inputs.
         let stableInputs = Nodes.latestOfMemo inputs
 
         let finish =
@@ -858,19 +868,23 @@ module internal FileNodes =
                     for row, c in f.Checks do
                         row.TypedSignal.Value <- NameIndex.typedKeys path row.Key c.Result.TypedUses
 
-                    // D1: a declaration checked on its own is depended on through the fingerprint its check left. Where the
-                    // finish changes it, the declaration leads a segment from then on (kept while it is in the file), so a
-                    // later declaration that could have changed it re-checks it first. Seen so far: the comparison members
-                    // generated for a union get a new slot signature at the finish, and a value whose type keeps an
-                    // inference variable with a default constraint (an operator on conflicting types) is defaulted at the
-                    // finish though LeavesFreeTypars is false for it.
-                    let roles = shared.Roles.Value
+                    // D1: a declaration is depended on through the fingerprint its check left. The finish may change it
+                    // only for a result flagged DependsOnLaterDeclarations, whose R12 segment re-checks it with every later
+                    // declaration. Every other result outside the R12 segment (R11 span members included) is checked:
+                    // a difference is counted and the declaration leads a segment from then on (kept while it is in the
+                    // file), so a later declaration that could have changed it re-checks it first.
+                    let order = shared.Order.Value
                     let mutable leaders = premiseLeaders.Peek |> Set.filter live.Contains
 
-                    for row, c in f.Checks do
-                        let single = (roles |> Map.tryFind row.Key |> Option.defaultValue Role.Single) = Role.Single
+                    let r12Start =
+                        Seq.append (Option.toList dependsOnLater.Peek) leaders
+                        |> Seq.choose (fun k -> order.TryPosition k |> ValueOption.toOption)
+                        |> Seq.fold min Int32.MaxValue
 
-                        if single && premiseChecked.Add c then
+                    for i in 0 .. min r12Start f.Checks.Length - 1 do
+                        let row, c = f.Checks[i]
+
+                        if not c.Result.DependsOnLaterDeclarations && premiseChecked.Add c then
                             let provisional = c.Result.Fingerprint
                             let final = f.FileResult.Fingerprints[row.Key]
 
@@ -928,7 +942,7 @@ module internal FileNodes =
         let beforeOf () = match before with Some b -> b.Value | None -> FileSig.Empty
         let own (p: Parsed) = "signature " + p.Text
 
-        // C2: compared in a plain memo that keeps its previous key when equal; the async check runs only on a change
+        // Compared in a plain memo that keeps its previous key when equal; the async check runs only on a change
         let key =
             createMemo (fun previous ->
                 let p, b = parsedLatest.Value, beforeOf ()

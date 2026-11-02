@@ -24,8 +24,7 @@ let private withDeps (body: Session -> Task) =
 
 [<Tests>]
 let tests =
-    // One group with the fuzz: counts of checks are exact only when the machine is not also running 200-edit fuzzes
-    testSequencedGroup "Deps"
+    testSequenced
     <| testList
         "ProjectGraph"
         [ testTask "the fixture as it is equals the oracle" {
@@ -37,18 +36,17 @@ let tests =
                       })
           }
 
-          testTask "the D1 premise breaks only for Shape, whose segment then runs to the end of A.fs" {
+          testTask "the D1 premise holds on load, and only R11 and R12 make segments" {
               let! (spec: Rfs.Projects.ProjectSpec) = Rfs.Projects.ProjectSpec.load depsProject
               let host = GraphHost.Start "premise"
 
               try
                   let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
                   let! _ = graph.AllDiagnostics() |> settle
-                  // The finish rewrites the slot signatures of the comparison members generated for a union (and their
-                  // nullness), so Shape's final fingerprint differs from its check's; Shape is then a segment leader.
-                  // A.fs has no other leader: no free inference variables, no augmentation.
-                  Expect.equal graph.PremiseBreaks 1L "once, for one declaration"
-                  Expect.equal (graph.SegmentRows a) 4 "Shape, area, doubled, grouped"
+                  // Shape's generated comparison members are fingerprinted by their check-time slots, so its final
+                  // fingerprint is its check's; A.fs has no free inference variables and no augmentation, so no segment
+                  Expect.equal graph.PremiseBreaks 0L "no final fingerprint differs from its check's"
+                  Expect.equal (graph.SegmentRows a) 0 "A.fs checks every declaration on its own"
                   Expect.equal (graph.SegmentRows b) 2 "Counter and its augmentation"
                   Expect.equal (graph.SegmentRows d) 4 "r, fill, size, after"
               finally
@@ -90,14 +88,14 @@ let tests =
                               rows[f] <- Set.ofSeq results.Keys
 
                           let! r = replace s a "let scale (x: int) : int = x * 2" "let scale (x: int) : int64 = int64 (x * 2)"
-                          // doubled uses scale, and is in Shape's segment (D1 premise break), which re-checks whole
-                          Expect.equal (r.NamesIn a) [ "Shape"; "area"; "doubled"; "grouped"; "scale" ] "scale and the segment of its user"
+                          // doubled is the only declaration of A.fs that names scale; nothing in A.fs is in a segment
+                          Expect.equal (r.NamesIn a) [ "doubled"; "scale" ] "scale and its user in A.fs"
 
                           for f in later do
                               Expect.equal (r.KeysIn f) rows[f] $"every declaration of %s{IO.Path.GetFileName f} re-checks: the file begins again"
 
                           let laterCount = later |> List.sumBy (fun f -> rows[f].Count)
-                          Expect.equal r.Delta (5L + int64 laterCount) "scale, the segment, and each declaration of each later file once"
+                          Expect.equal r.Delta (2L + int64 laterCount) "scale, doubled, and each declaration of each later file once"
                           do! expectOracle s r.Diagnostics "scale returns int64"
                       })
           }
@@ -193,19 +191,16 @@ let tests =
                           let! after = s.Graph.Results a
                           Expect.equal (Set.ofSeq after.Keys) (Set.ofSeq before.Keys) "the same declarations"
 
-                          // grouped is in Shape's segment (Shape's final fingerprint breaks the D1 premise), so the
-                          // segment re-checks; the declarations before it keep their results.
-                          let segment = set [ "Shape"; "area"; "doubled"; "grouped" ]
-
+                          // No declaration names grouped, and nothing in A.fs is in a segment
                           for KeyValue(key, result) in before do
                               let kept = obj.ReferenceEquals(after[key], result)
 
-                              if segment.Contains key.Name then
-                                  Expect.isFalse kept $"%s{key.Name} re-checks with its segment"
+                              if key.Name = "grouped" then
+                                  Expect.isFalse kept "grouped re-checks"
                               else
                                   Expect.isTrue kept $"%s{key.Name} keeps its result"
 
-                          Expect.equal r.Delta 4L "grouped's segment"
+                          Expect.equal r.Delta 1L "only grouped"
                           do! expectOracle s r.Diagnostics "closing paren deleted"
                       })
           }
