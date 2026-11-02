@@ -4,6 +4,8 @@ open System
 open System.Diagnostics
 open System.Globalization
 open System.IO
+open System.Text.Json
+open System.Text.Json.Nodes
 open System.Threading
 open System.Threading.Tasks
 open Rfs.Harness
@@ -20,7 +22,12 @@ Run it from the ranvier-fsharp repo root (R9). By default each engine runs in a 
 cold time, peak working set and allocations are its alone; a child that runs past --child-timeout-min (default 60) is
 killed. --in-process runs every engine in this process instead. --engine skips the corpus check, which the parent has
 already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its reused/kept/replaced counts per edit
-to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default."""
+to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default.
+
+Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json holds what RunResult has no field for:
+cold and edit allocations, decl's counters after the cold check, and per edit the CheckDeclaration runs (superseded
+flights included), adopted checks, FinishFile time and its share of the latency, rows inside R11/R12 segments, and
+file-slim's graph-check counts when logged. It sits in a subdirectory so `rfs-harness compare` reads only results."""
 
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
@@ -30,10 +37,10 @@ to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so 
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
   cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
+  decl decls/edit counts adopted checks; extra/<server>.<scenario>.json also has every run, finish time and share,
+    and segment rows.
 Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
-LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
-TODO(Task 15): finish-file share of decl latency not recorded: ProjectGraph exposes no finish-time counter yet.
-TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no segment row count yet."""
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it."""
 
     exception private Usage of string
 
@@ -97,9 +104,66 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
 
         let lines =
             [ yield "step\tname\treused\tkept\treplaced"
-              for index, name, c in run.GraphChecks -> $"%d{index}\t%s{name}\t%d{c.Reused}\t%d{c.Kept}\t%d{c.Replaced}" ]
+              for e in run.StepExtras do
+                  match e.GraphCheck with
+                  | Some c -> yield $"%d{e.Index}\t%s{e.Name}\t%d{c.Reused}\t%d{c.Kept}\t%d{c.Replaced}"
+                  | None -> () ]
 
         File.WriteAllLines(path, lines)
+
+    /// Writes extra/<server>.<scenario>.json (see the usage text).
+    let private writeExtra (out: string) (run: EngineRun) =
+        let opt (value: 'T option) : JsonNode =
+            match value with
+            | Some v -> JsonValue.Create v
+            | None -> null
+
+        let counters (c: EngineCounters option) : JsonNode =
+            match c with
+            | None -> null
+            | Some c ->
+                let o = JsonObject()
+                o["checked"] <- JsonValue.Create c.Checked
+                o["adopted"] <- JsonValue.Create c.Adopted
+                o["finishMs"] <- JsonValue.Create(float c.FinishTicks * 1000. / float Stopwatch.Frequency)
+                o["segmentRows"] <- JsonValue.Create c.SegmentRows
+                o
+
+        let step (e: StepExtra) : JsonNode =
+            let o = JsonObject()
+            o["index"] <- JsonValue.Create e.Index
+            o["step"] <- JsonValue.Create e.Name
+            o["latencyMs"] <- JsonValue.Create e.LatencyMs
+            o["checked"] <- opt e.Checked
+            o["adopted"] <- opt e.Adopted
+            o["finishMs"] <- opt e.FinishMs
+            o["finishShare"] <- opt e.FinishShare
+            o["segmentRows"] <- opt e.SegmentRows
+
+            o["graphCheck"] <-
+                match e.GraphCheck with
+                | None -> null
+                | Some c ->
+                    let g = JsonObject()
+                    g["reused"] <- JsonValue.Create c.Reused
+                    g["kept"] <- JsonValue.Create c.Kept
+                    g["replaced"] <- JsonValue.Create c.Replaced
+                    g
+
+            o
+
+        let o = JsonObject()
+        o["server"] <- JsonValue.Create run.Result.Server
+        o["scenario"] <- JsonValue.Create run.Result.Scenario
+        o["coldAllocatedMb"] <- JsonValue.Create run.ColdAllocatedMb
+        o["editAllocatedMb"] <- JsonValue.Create run.EditAllocatedMb
+        o["coldCounters"] <- counters run.ColdCounters
+        o["finishShareP50"] <- opt (Driver.finishShareP50 run)
+        o["stopped"] <- opt run.Stopped
+        o["steps"] <- JsonArray([| for e in run.StepExtras -> step e |])
+        let dir = Path.Combine(out, "extra")
+        Directory.CreateDirectory dir |> ignore
+        File.WriteAllText(Path.Combine(dir, Report.fileName run.Result), o.ToJsonString(JsonSerializerOptions(WriteIndented = true)))
 
     /// Runs `engines` here, one after the other per scenario; true when every step of every run succeeded.
     let private runHere (settings: Settings) (engines: EngineFactory list) : Task<bool> =
@@ -128,6 +192,8 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                                 let result = run.Result
                                 File.WriteAllText(Path.Combine(settings.Out, Report.fileName result), Report.resultToJson result)
 
+                                writeExtra settings.Out run
+
                                 if logs then
                                     writeCutoffLog settings.Out run
 
@@ -144,6 +210,26 @@ TODO(Task 15): rows in R11/R12 segments not recorded: ProjectGraph exposes no se
                                     (fmt (Some run.ColdAllocatedMb))
                                     (fmt (Some run.EditAllocatedMb))
                                     (fmt (Some row.PeakMb))
+
+                                match run.ColdCounters with
+                                | None -> ()
+                                | Some cold ->
+                                    let mean (f: StepExtra -> int64 option) =
+                                        match run.StepExtras |> List.choose f with
+                                        | [] -> None
+                                        | xs -> Some(xs |> List.averageBy float)
+
+                                    let lastRows =
+                                        run.StepExtras |> List.tryLast |> Option.bind _.SegmentRows |> Option.defaultValue cold.SegmentRows
+
+                                    printfn
+                                        "  %s: adopted/edit %s, runs/edit %s, finish share p50 %s%%, segment rows %d cold, %d after the last edit"
+                                        engine.Name
+                                        (fmt (mean _.Adopted))
+                                        (fmt (mean _.Checked))
+                                        (fmt (Driver.finishShareP50 run |> Option.map ((*) 100.)))
+                                        cold.SegmentRows
+                                        lastRows
 
                                 let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
 

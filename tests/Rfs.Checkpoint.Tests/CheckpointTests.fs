@@ -104,6 +104,7 @@ let private wrongEngine: EngineFactory =
 
             Task.FromResult
                 { new IEngine with
+                    member _.Counters() = None
                     member _.Check() = result
                     member _.SetText(_, _) = result
                   interface IDisposable with
@@ -146,6 +147,30 @@ let tests =
               Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "decl counts its checks"
               Expect.isTrue (slim.Steps |> List.forall (fun s -> s.DeclsChecked.IsNone)) "file-slim has no declaration count"
               Expect.isLessThan slim.StartedAt decl.StartedAt "the baseline runs first"
+
+              let extraOf (r: RunResult) =
+                  JsonNode.Parse(File.ReadAllText(Path.Combine(out, "extra", Report.fileName r)))
+
+              let declExtra = extraOf decl
+              Expect.isNotNull (declExtra["coldCounters"]) "decl's counters after the cold check"
+              let coldAdopted = declExtra["coldCounters"].["adopted"].GetValue<int64>()
+              Expect.isGreaterThan coldAdopted 0L "the cold check adopts checks"
+              Expect.isNotNull (declExtra["finishShareP50"]) "finish share p50"
+              let declSteps = declExtra["steps"].AsArray() |> List.ofSeq
+              Expect.equal declSteps.Length 5 "one extra per edit"
+
+              for s, r in List.zip declSteps decl.Steps do
+                  let adopted = s["adopted"].GetValue<int64>()
+                  Expect.equal (Some(int adopted)) r.DeclsChecked $"%s{r.Step}: decls/edit is the adopted count"
+                  Expect.isGreaterThanOrEqual (s["checked"].GetValue<int64>()) adopted $"%s{r.Step}: runs include adopted ones"
+                  Expect.isGreaterThan (s["finishMs"].GetValue<float>()) 0. $"%s{r.Step}: finish time"
+                  let share = s["finishShare"].GetValue<float>()
+                  Expect.isTrue (share > 0. && share <= 1.) $"%s{r.Step}: finish share within the latency ({share})"
+                  Expect.isGreaterThanOrEqual (s["segmentRows"].GetValue<int>()) 0 $"%s{r.Step}: segment rows"
+
+              let slimExtra = extraOf slim
+              Expect.isNull (slimExtra["coldCounters"]) "file-slim keeps no counters"
+              Expect.equal (slimExtra["steps"].AsArray().Count) 5 "one extra per edit"
           }
 
           testTask "the oracle sees each edit's text" {
@@ -230,6 +255,7 @@ let tests =
 
                           Task.FromResult
                               { new IEngine with
+                                  member _.Counters() = None
                                   member _.Check() = ok
 
                                   member _.SetText(_, _) =

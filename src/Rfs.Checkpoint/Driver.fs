@@ -21,6 +21,26 @@ type PlannedStep =
     | Planned of PlannedEdit
     | Unrunnable of name: string * reason: string
 
+/// What one edit measured beyond its StepResult; the counter fields are None for an engine without counters.
+type StepExtra =
+    { Index: int
+      Name: string
+      LatencyMs: float
+      /// CheckDeclaration runs during the edit, superseded flights included.
+      Checked: int64 option
+      /// CheckDeclaration results the edit published.
+      Adopted: int64 option
+      /// Time inside FinishFile during the edit.
+      FinishMs: float option
+      /// Rows inside R11/R12 segments after the edit.
+      SegmentRows: int option
+      /// The fork's graph-check counts, when logged.
+      GraphCheck: GraphCheckCounts option }
+
+    /// The part of the edit's latency spent finishing files.
+    member e.FinishShare =
+        e.FinishMs |> Option.filter (fun _ -> e.LatencyMs > 0.) |> Option.map (fun f -> f / e.LatencyMs)
+
 /// What one engine's run measured, beyond its RunResult.
 type EngineRun =
     { Result: RunResult
@@ -28,8 +48,10 @@ type EngineRun =
       ColdAllocatedMb: float
       /// Allocated by the engine's edits, without the oracle comparisons between them.
       EditAllocatedMb: float
-      /// Per edit step (index, name), the fork's graph-check counts when they were logged.
-      GraphChecks: (int * string * GraphCheckCounts) list
+      /// The engine's counters after its first check.
+      ColdCounters: EngineCounters option
+      /// One per edit that returned a result.
+      StepExtras: StepExtra list
       /// Why the run stopped before its last step.
       Stopped: string option }
 
@@ -117,6 +139,10 @@ module Driver =
 
     let private mb (bytes: int64) = float bytes / 1048576.
 
+    /// The p50 of the edits' finish shares; None for an engine without counters.
+    let finishShareP50 (run: EngineRun) =
+        run.StepExtras |> List.choose _.FinishShare |> Report.percentile 50.
+
     /// Warms the oracle up, creates the engine and runs its first full check (ColdMs, excluded from the edit
     /// latencies), then replays `steps`, comparing the whole project's diagnostics with the oracle after every edit. A
     /// mismatch is a step Error. A timeout ends the run at that step: the engine (or the oracle) is still busy, so
@@ -138,7 +164,7 @@ module Driver =
             let gen2AtStart = GC.CollectionCount 2
             let startedAt = DateTime.UtcNow
             let results = List<StepResult>()
-            let graphChecks = List<int * string * GraphCheckCounts>()
+            let extras = List<StepExtra>()
             let mutable editAllocated = 0L
             let mutable stopped = None
 
@@ -159,12 +185,15 @@ module Driver =
             let! _ = engine.Check() |> within timeout
             let coldMs = coldClock.Elapsed.TotalMilliseconds
             let coldAllocated = GC.GetTotalAllocatedBytes true - coldAllocatedBefore
+            let coldCounters = engine.Counters()
+            let toMs (ticks: int64) = float ticks * 1000. / float Stopwatch.Frequency
 
             for step in steps do
                 match step, stopped with
                 | _, Some _ -> ()
                 | Unrunnable(name, reason), None -> record name 0. None None (Some reason)
                 | Planned edit, None ->
+                    let countersBefore = engine.Counters()
                     let allocatedBefore = GC.GetTotalAllocatedBytes true
                     let clock = Stopwatch.StartNew()
 
@@ -186,7 +215,24 @@ module Driver =
                         stopped <- Some $"%s{edit.Name}: engine timed out"
                     | Error e -> record edit.Name latency None None (Some e.Message)
                     | Ok r ->
-                        r.GraphCheck |> Option.iter (fun counts -> graphChecks.Add((results.Count, edit.Name, counts)))
+                        let countersAfter = engine.Counters()
+
+                        let delta (field: EngineCounters -> int64) =
+                            match countersBefore, countersAfter with
+                            | Some b, Some a -> Some(field a - field b)
+                            | _ -> None
+
+                        extras.Add(
+                            { Index = results.Count
+                              Name = edit.Name
+                              LatencyMs = latency
+                              Checked = delta _.Checked
+                              Adopted = delta _.Adopted
+                              FinishMs = delta _.FinishTicks |> Option.map toMs
+                              SegmentRows = countersAfter |> Option.map _.SegmentRows
+                              GraphCheck = r.GraphCheck }
+                            : StepExtra
+                        )
 
                         try
                             let! expected = oracle edit.Overrides |> within timeout
@@ -219,6 +265,7 @@ module Driver =
                 { Result = result
                   ColdAllocatedMb = mb coldAllocated
                   EditAllocatedMb = mb editAllocated
-                  GraphChecks = List.ofSeq graphChecks
+                  ColdCounters = coldCounters
+                  StepExtras = List.ofSeq extras
                   Stopped = stopped }
         }

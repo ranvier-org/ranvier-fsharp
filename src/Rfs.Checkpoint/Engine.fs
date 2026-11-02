@@ -18,14 +18,27 @@ type GraphCheckCounts = { Reused: int; Kept: int; Replaced: int }
 /// The whole project's diagnostics after a check.
 type EngineResult =
     { Diagnostics: Diagnostic list
-      /// Declarations checked by this call; None for an engine that does not check by declaration.
+      /// Declaration checks this call adopted (published); None for an engine that does not check by declaration.
       DeclsChecked: int option
       /// The fork's graph-check line for this call, when FICKL_FCS_GRAPH_LOG is set and the project checks in graph mode.
       GraphCheck: GraphCheckCounts option }
 
+/// ProjectGraph's running totals, read between edits.
+type EngineCounters =
+    { /// CheckDeclaration runs, superseded flights included.
+      Checked: int64
+      /// CheckDeclaration results that were published.
+      Adopted: int64
+      /// Stopwatch ticks inside FinishFile.
+      FinishTicks: int64
+      /// Rows checked inside R11/R12 segments, now.
+      SegmentRows: int }
+
 /// A checker holding one project in memory, created from the texts on disk.
 type IEngine =
     inherit IDisposable
+    /// Running totals, for an engine that keeps them; read outside the timed region.
+    abstract Counters: unit -> EngineCounters option
     /// The first full check.
     abstract Check: unit -> Task<EngineResult>
     /// Replaces a source file's text and checks again.
@@ -47,15 +60,22 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
 
             return
                 { Diagnostics = [ for KeyValue(_, ds) in all do for d in ds -> FcsDiagnostics.ofFcs d ]
-                  DeclsChecked = Some(int (graph.CheckedCount - before))
+                  DeclsChecked = Some(int (graph.AdoptedChecks - before))
                   GraphCheck = None }
         }
 
     interface IEngine with
+        member _.Counters() =
+            Some
+                { Checked = graph.CheckedCount
+                  Adopted = graph.AdoptedChecks
+                  FinishTicks = graph.FinishTicks
+                  SegmentRows = graph.SegmentRowsTotal }
+
         member _.Check() = settle 0L
 
         member _.SetText(file, text) =
-            let before = graph.CheckedCount
+            let before = graph.AdoptedChecks
             graph.SetText(file, text)
             settle before
 
@@ -144,6 +164,7 @@ type private FileSlimEngine(spec: ProjectSpec) =
         }
 
     interface IEngine with
+        member _.Counters() = None
         member _.Check() = check ()
 
         member _.SetText(file, text) =
