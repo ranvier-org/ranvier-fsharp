@@ -401,12 +401,12 @@ module internal Setup =
         let clock = System.Diagnostics.Stopwatch.StartNew()
 
         let rec attempt () =
+            // A superseded flight's check would only queue behind the current one at the file's lock
+            ct.ThrowIfCancellationRequested()
+
             try
                 run ()
-            with :? InvalidOperationException as e when
-                e.Message.Contains "replaced the line directives"
-                && not ct.IsCancellationRequested
-                && clock.Elapsed < directiveWait ->
+            with :? SupersededLineDirectivesException when not ct.IsCancellationRequested && clock.Elapsed < directiveWait ->
                 project.CountDirectiveRetry()
                 Thread.Sleep 5
                 attempt ()
@@ -494,12 +494,9 @@ module internal Setup =
                             match diagnosticsOf result with
                             | Some diagnostics when key.Scoped && hasUnresolved diagnostics -> Unresolved key
                             | _ -> Done(key, result)
-                        // Only the refusal of a snapshot that is no longer current: any other refusal of `before` means
-                        // the key and the snapshot disagree, a graph bug, and fails the node with its message.
-                        with :? ArgumentException as e when
-                            key.Scoped
-                            && e.ParamName = "before"
-                            && e.Message.Contains "FileDependencies has not been given this parse" ->
+                        // Only the refusal of a snapshot that is no longer current (StaleDependenciesException): any other
+                        // refusal of `before` means the key and the snapshot disagree, a graph bug, and fails the node.
+                        with :? StaleDependenciesException when key.Scoped ->
                             project.CountChainFallback()
                             Stale(key, current)))
 

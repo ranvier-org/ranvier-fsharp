@@ -724,4 +724,42 @@ let fileLevelTests =
               Expect.isGreaterThan texts.Count 100 "the corpus has many access paths"
               Expect.exists texts (fun (written, _) -> written.Contains "Namespace") "some path is in a namespace"
               Expect.exists texts (fun (written, _) -> written.Length > 60) "some path is long enough to go to sprintf"
+          }
+
+          // Graph mode's ArtificialImplFile: a file set up from a signature file sees it in the implementation
+          // environment, so it need not wait for the implementation file's check
+          testTask "a file depending on a signature file does not depend on its implementation" {
+              for project, user, signature, implementation in
+                  [ tinyProject, "C.fs", "B.fsi", "B.fs"; fixture "Graph", "Use.fs", "Lib.fsi", "Lib.fs" ] do
+                  let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChain project
+                  let indexOf name = p.Spec.SourceFiles |> List.findIndex (fun f -> Path.GetFileName f = name)
+                  let name = Path.GetFileName project
+                  Expect.contains dependencies[indexOf user] (indexOf signature) $"%s{name}: %s{user} depends on %s{signature}"
+
+                  Expect.isFalse
+                      (Array.contains (indexOf implementation) dependencies[indexOf user])
+                      $"%s{name}: %s{user} does not depend on %s{implementation}"
+          }
+
+          // Sequenced: it parses Deps' E.fs with a line directive, which the process keeps for the file
+          testSequenced
+          <| testTask "refusals have their own exception types" {
+              let! p = load depsProject []
+              let parses = parseAll p
+              DeclarationChecker.FileDependencies(p.Context, parses) |> ignore
+              let e = parses |> Array.findIndex (fun parse -> Path.GetFileName parse.FileName = "E.fs")
+              let d = parses |> Array.findIndex (fun parse -> Path.GetFileName parse.FileName = "D.fs")
+              let dependencies = DeclarationChecker.FileDependencies(p.Context, parses)
+              let whole = chain p parses
+              DeclarationChecker.Parse(p.Context, parses[d].FileName, p.Texts[parses[d].FileName] + "\nlet more = 1\n") |> ignore
+
+              Expect.throwsT<StaleDependenciesException>
+                  (fun () -> DeclarationChecker.CheckFile(p.Context, [ for dep in dependencies[e] -> whole[dep].Signature ], parses[e]) |> ignore)
+                  "a stale snapshot"
+
+              DeclarationChecker.Parse(p.Context, parses[e].FileName, "# 1 \"elsewhere.fsy\"\n" + p.Texts[parses[e].FileName]) |> ignore
+
+              Expect.throwsT<SupersededLineDirectivesException>
+                  (fun () -> DeclarationChecker.CheckFile(p.Context, [ for w in whole[.. e - 1] -> w.Signature ], parses[e]) |> ignore)
+                  "another parse's line directives"
           } ]
