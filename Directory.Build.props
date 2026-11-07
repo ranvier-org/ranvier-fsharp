@@ -4,8 +4,8 @@
     <NoWarn>$(NoWarn);NU1507</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <FickleFcsDir>C:\Users\shaya\RiderProjects\fickle-fsharp\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\</FickleFcsDir>
-    <!-- Ranvier fix/late-link-dirty (aa59513a + b0a70d3f), a worktree of the Ranvier repo: fixes a lost wake-up a reader hits when it first links a node dirtied during its own run. Back to ..\Ranvier once merged there. -->
-    <RanvierDir>C:\Users\shaya\RiderProjects\ranvier-fsharp-ranvier\src\Ranvier\</RanvierDir>
+    <!-- The main Ranvier checkout next to this repo: master, with the late-link lost wake-up fix (#290) merged. -->
+    <RanvierDir>$(MSBuildThisFileDirectory)..\Ranvier\src\Ranvier\</RanvierDir>
     <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
