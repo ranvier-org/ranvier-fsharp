@@ -37,6 +37,8 @@ type EngineCounters =
       PremiseBreaks: int64
       /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks).
       FinishPhaseTicks: Map<string, int64>
+      /// Bytes each phase of the file-level graph allocated, on the threads that ran it.
+      PhaseAllocated: Map<string, int64>
       /// CheckFile runs, superseded flights included.
       FileLevelChecks: int64
       /// Setups from a file's dependencies the checker refused (a stale dependency snapshot), checked from every earlier
@@ -85,6 +87,7 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
                   SegmentRows = graph.SegmentRowsTotal
                   PremiseBreaks = graph.PremiseBreaks
                   FinishPhaseTicks = graph.FinishPhaseTicks |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
+                  PhaseAllocated = graph.PhaseAllocated |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
                   FileLevelChecks = graph.FileLevelChecks
                   ChainFallbacks = graph.ChainFallbacks }
 

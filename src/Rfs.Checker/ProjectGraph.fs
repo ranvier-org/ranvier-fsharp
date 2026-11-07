@@ -90,7 +90,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             if files[j].Text.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
-        if applied then read files[i] ([], requested[i]) else ValueNone
+        if applied then read files[i] ([], Volatile.Read &requested[i]) else ValueNone
 
     /// Reads file `i` once it, and the files it was set up from, are settled on their latest texts.
     let settledOne (i: int) (read: IFileNode -> string list * int64 -> 'T voption) : 'T voption =
@@ -123,8 +123,14 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// A graph whose every file is checked in `mode`.
     static member internal CreateWithMode(host: GraphHost, spec: ProjectSpec, mode: Rfs.Checker.FileMode) : Task<ProjectGraph> =
         task {
+            let allocated = GC.GetTotalAllocatedBytes true
+            let started = Diagnostics.Stopwatch.GetTimestamp()
             let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
             let project = ProjectShared ctx
+
+            // Nothing else of the graph runs yet, so the process's allocations are the context's
+            if mode = FileLevel then
+                project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
             let texts = spec.SourceFiles |> List.map (fun f -> f, File.ReadAllText f) |> Array.ofList
 
             let! files =
@@ -135,13 +141,19 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                     let fileTexts =
                         texts
                         |> Array.map (fun (path, text) ->
-                            FileText(ctx, path, text, mode = Declarations && not (isSignature path)))
+                            FileText(
+                                ctx,
+                                path,
+                                text,
+                                mode = Declarations && not (isSignature path),
+                                Measure(if mode = FileLevel then Some project else None)
+                            ))
 
                     let nodes = ResizeArray<IFileNode>()
 
                     match mode with
                     | FileLevel ->
-                        let deps = FileDeps.create ctx fileTexts
+                        let deps = FileDeps.create project fileTexts
                         let signatureOf (j: int) = nodes[j].Signature
 
                         fileTexts
@@ -180,7 +192,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         }
 
     /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Call it when the
-    /// graph is idle.
+    /// graph is idle, and never from the graph thread: it waits for the graph thread to read the file's parse. A text
+    /// other than the one the graph holds is parsed on a second project context, created the first time and kept for
+    /// the graph's lifetime (as much memory as the project's references take).
     member _.DeclarationLines(file: string, text: string) : (int * int)[] =
         let node = files[indexOf file]
 
@@ -309,7 +323,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
     member _.FinishTicks: int64 = project.FinishTicks
 
-    /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks), summed over every call.
+    /// Bytes allocated by each phase of the file-level graph (createProject, parse, fileDependencies, checkFile,
+    /// checkSignatureFile), summed over every run, counted on the thread that ran it (createProject: the process's).
+    member _.PhaseAllocated: IReadOnlyDictionary<string, int64> = project.PhaseAllocated
+
+    /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks), summed over every call. For a file-level
+    /// graph: createProject, parse, fileDependencies, checkFile (each CheckFile call whole), CheckFile's own `tail`
+    /// (its CheckOneImplFile) and checkSignatureFile.
     member _.FinishPhaseTicks: IReadOnlyDictionary<string, int64> = project.FinishPhaseTicks
 
     /// How many published results of declarations checked on their own had a final fingerprint other than the one

@@ -18,13 +18,16 @@ let private e = fileOf "E.fs"
 
 let private name (file: string) = Path.GetFileName file
 
-/// Runs `body` on a fresh file-level graph over Deps, settled on the files as they are on disk.
-let private withDeps (body: Session -> Task) =
+/// Runs `body` on a session, then disposes it.
+let private withSession (session: Task<Session>) (body: Session -> Task) =
     task {
-        let! s = start ()
+        let! s = session
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         do! body s
     }
+
+/// Runs `body` on a fresh file-level graph over Deps, settled on the files as they are on disk.
+let private withDeps (body: Session -> Task) = withSession (start ()) body
 
 /// Each source file's dependencies as FileDependencies gives them for the session's current texts.
 let private dependencies (s: Session) : Map<string, string list> =
@@ -148,6 +151,20 @@ let tests =
                           Expect.isTrue (r.Diagnostics[b] |> Array.exists (fun x -> x.Message.Contains "'Nope'")) "Nope is what is not defined"
                           do! expectOracle s r.Diagnostics "open Deps.A.Nope"
                       })
+          }
+
+          testTask "an edit in one chain does not re-check the other" {
+              do! withSession (startOn chainsProject FileLevel) (fun s -> task {
+              let chain name = Path.Combine(Path.GetDirectoryName chainsProject, name)
+              let deps = dependencies s
+              Expect.equal deps[chain "D.fs"] [ chain "C.fs" ] "D.fs depends on C.fs only"
+              Expect.equal deps[chain "C.fs"] [] "C.fs depends on nothing"
+              Expect.equal (recheckedBy s (chain "A.fs")) [ chain "A.fs"; chain "B.fs" ] "only B.fs depends on A.fs"
+              let! r, checks = counted s (fun () -> replace s (chain "A.fs") "let scale (x: int) : int = x * 2" "let scale (x: int) : int64 = int64 (x * 2)")
+              Expect.equal checks 2L "A.fs and B.fs; C.fs and D.fs are not re-checked"
+              Expect.isNonEmpty r.Diagnostics[chain "B.fs"] "B.fs sees scale's new type"
+              do! expectOracle s r.Diagnostics "scale returns int64"
+              })
           }
 
           testTask "stale snapshot falls back to the chain" {

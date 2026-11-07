@@ -262,9 +262,17 @@ let tests =
               Expect.isGreaterThanOrEqual edited.Value 1 "the edited declaration has a line"
               Expect.isGreaterThanOrEqual largest.Value edited.Value "no declaration of the edited file is larger than the largest"
 
-              // decl checks every file whole, so no finish runs; "checkpoint on Deps checking by declaration" checks the parts
+              // decl checks every file whole, so its phases are the file-level graph's, not FinishFile's; "checkpoint on
+              // Deps checking by declaration" checks the finish's parts
+              let fileLevelPhases = set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "tail"; "checkSignatureFile" ]
+
               for s in decl["steps"].AsArray() do
-                  Expect.isEmpty (s["finishPhaseMs"].AsObject()) $"""{s["step"]}: no finish"""
+                  let ms = s["finishPhaseMs"].AsObject() |> Seq.map _.Key |> Set.ofSeq
+                  Expect.isTrue (Set.isSubset ms fileLevelPhases) $"""{s["step"]}: only file-level phases ({ms})"""
+                  Expect.contains ms "checkFile" $"""{s["step"]}: the edit's CheckFile is timed"""
+
+              let coldAllocated = decl["coldCounters"].["phaseAllocatedMb"].AsObject() |> Seq.map _.Key |> Set.ofSeq
+              Expect.equal coldAllocated (set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "checkSignatureFile" ]) "the cold check's allocations by phase"
 
               let slim = extraOf "file-slim"
 

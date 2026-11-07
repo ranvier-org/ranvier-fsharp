@@ -173,6 +173,37 @@ let private checkTinyC (text: string) =
         return expected, wholeDiagnostics, byDeclDiagnostics
     }
 
+
+/// A.fs checked by declaration: its FileStart, each declaration's environment before it and result, and the FileResult
+/// of finishing those results.
+let private finishByDeclaration (p: Project) (parse: FSharpParseFileResults) =
+    let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+    let decls = DeclarationChecker.Split parse
+
+    let checks, _ =
+        (env0, decls)
+        ||> Array.mapFold (fun env decl ->
+            let result = DeclarationChecker.CheckDeclaration(start, env, decl, Threading.CancellationToken.None)
+            (env, result), DeclarationChecker.ExtendEnv(env, result))
+
+    start, decls, checks, DeclarationChecker.FinishFile(start, Array.map snd checks, parse)
+
+/// B.fs checked whole and by declaration after the given signature of A.fs, the only file it depends on.
+let private checkBAfter (p: Project) (parseB: FSharpParseFileResults) (a: FileSignature) =
+    let whole = DeclarationChecker.CheckFile(p.Context, [ a ], parseB)
+    let start, env0 = DeclarationChecker.BeginFile(p.Context, [ a ], parseB)
+
+    let results =
+        DeclarationChecker.Split parseB
+        |> Array.mapFold
+            (fun env decl ->
+                let r = DeclarationChecker.CheckDeclaration(start, env, decl, Threading.CancellationToken.None)
+                r, DeclarationChecker.ExtendEnv(env, r))
+            env0
+        |> fst
+
+    whole, DeclarationChecker.FinishFile(start, results, parseB)
+
 [<Tests>]
 let fileLevelTests =
     testList
@@ -396,4 +427,44 @@ let fileLevelTests =
               Expect.isTrue (expected |> List.exists (fun (d: Diagnostic) -> d.Code = "FS3886")) "the oracle reports it"
               Expect.isTrue (Array.exists fs3886 whole) "CheckFile reports it"
               Expect.isTrue (Array.exists fs3886 byDecl) "FinishFile reports it"
+          }
+          // I1 (Task 3 fix round 1): does a FileSignature FinishFile returned stay valid after a later CheckDeclaration
+          // on the same FileStart runs UndoLastFinish, and after the file is finished again?
+          testTask "a finished file's signature stays valid after its file is re-checked and finished again" {
+              // A.fs gains a declaration that B.fs uses, as in the Declarations-mode fuzz failure (seed 4242, step 25)
+              let a = Path.Combine(depsDir, "A.fs")
+              let b = Path.Combine(depsDir, "B.fs")
+              let aText = File.ReadAllText(a) + "\nlet start = \"text\"\n"
+              let bText = File.ReadAllText(b) + "\nlet usesStart = start + \"!\"\n"
+              let! p = load depsProject [ a, aText; b, bText ]
+              let parses = parseAll p
+              let parseA = parses |> Array.find (fun x -> x.FileName = a)
+              let parseB = parses |> Array.find (fun x -> x.FileName = b)
+              let fresh = chain p parses |> Array.find (fun f -> f.Parse.FileName = b)
+              let freshB = fresh.Result.Value
+              let! _ = expectOracle p b freshB.Diagnostics "B.fs from a fresh chain"
+
+              let start, decls, checks, first = finishByDeclaration p parseA
+              let s1 = first.Signature
+
+              let expectB (what: string) (a: FileSignature) =
+                  let whole, byDecl = checkBAfter p parseB a
+                  let d1 = sameDiagnostics freshB.Diagnostics whole.Diagnostics
+                  Expect.isEmpty d1 $"%s{what}: CheckFile of B.fs equals the fresh chain's:\n%s{String.concat Environment.NewLine d1}"
+                  let d2 = sameDiagnostics freshB.Diagnostics byDecl.Diagnostics
+                  Expect.isEmpty d2 $"%s{what}: B.fs by declaration equals the fresh chain's:\n%s{String.concat Environment.NewLine d2}"
+                  Expect.equal whole.Signature.Fingerprint freshB.Signature.Fingerprint $"%s{what}: B.fs's signature fingerprint"
+
+              expectB "S1, just finished" s1
+
+              for k in 0 .. decls.Length - 1 do
+                  let env, _ = checks[k]
+                  // Runs UndoLastFinish on A.fs's FileStart
+                  let again = DeclarationChecker.CheckDeclaration(start, env, decls[k], Threading.CancellationToken.None)
+                  expectB $"S1 after re-checking %s{decls[k].Key.Name}, before finishing again" s1
+                  let results = checks |> Array.mapi (fun i (_, r) -> if i = k then again else r)
+                  let finished = DeclarationChecker.FinishFile(start, results, parseA)
+                  Expect.equal finished.Signature.Fingerprint s1.Fingerprint $"re-finishing after %s{decls[k].Key.Name} gives S1's fingerprint"
+                  expectB $"S1 after re-checking %s{decls[k].Key.Name} and finishing again" s1
+                  expectB $"the new signature after %s{decls[k].Key.Name}" finished.Signature
           } ]

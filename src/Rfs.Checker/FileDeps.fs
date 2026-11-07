@@ -94,6 +94,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable chainFallbacks = 0L
     let mutable scopedCheckHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
+    let phaseAllocated = Dictionary<string, int64>()
     let premise = Subject<DeclarationKey * string>()
     let published = Subject<DeclarationKey * string>()
     let ran = Subject<DeclarationKey * string>()
@@ -131,6 +132,25 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.FinishPhaseTicks: IReadOnlyDictionary<string, int64> =
         lock finishPhaseTicks (fun () -> Dictionary<string, int64>(finishPhaseTicks) :> IReadOnlyDictionary<_, _>)
 
+    /// Adds the time and the bytes the calling thread allocated in one run of a phase of the file-level graph.
+    member this.AddPhase(phase: string, ticks: int64, allocated: int64) =
+        this.AddFinishPhaseTicks(readOnlyDict [ phase, ticks ])
+
+        lock phaseAllocated (fun () ->
+            phaseAllocated[phase] <- (match phaseAllocated.TryGetValue phase with | true, b -> b | _ -> 0L) + allocated)
+
+    /// A copy of the running totals of the bytes each phase allocated (file-level graph only).
+    member _.PhaseAllocated: IReadOnlyDictionary<string, int64> =
+        lock phaseAllocated (fun () -> Dictionary<string, int64>(phaseAllocated) :> IReadOnlyDictionary<_, _>)
+
+    /// Runs `work` on this thread and adds its time and allocations to `phase`.
+    member this.Measure(phase: string, work: unit -> 'T) : 'T =
+        let allocated = GC.GetAllocatedBytesForCurrentThread()
+        let started = Diagnostics.Stopwatch.GetTimestamp()
+        let result = work ()
+        this.AddPhase(phase, Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetAllocatedBytesForCurrentThread() - allocated)
+        result
+
     member _.CountPremiseBreak(key: DeclarationKey, file: string) =
         Interlocked.Increment &premiseBreaks |> ignore
         premise.Next((key, file))
@@ -145,6 +165,12 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.Checked = published :> IObservable<_>
     member _.Ran = ran :> IObservable<_>
 
+/// Helpers for building the graph's nodes.
+///
+/// A memo with a cutoff comparer (createMemoWithComparer, or a memo that returns its previous value while equal) must
+/// never read an async memo directly: read the async memo through a plain memo (`createMemo (fun _ -> m.Value)`).
+/// Task 3 saw a reader of such a memo never woken once the async memo settled (a Ranvier lost wake-up, not reproduced
+/// in isolation: see RanvierWakeTests). FileDeps.create and the file-level signatures follow this rule.
 module internal Nodes =
 
     /// The async memo's last settled value while a new flight runs, so readers that only compare it with what they
@@ -218,6 +244,15 @@ module internal Nodes =
 
         memos |> Array.map _.Value
 
+/// Runs a phase's work, recording its time and allocations (the file-level graph) or not (Declarations mode, whose
+/// finish phases are FinishFile's own).
+[<Sealed>]
+type internal Measure(project: ProjectShared option) =
+    member _.Run(phase: string, work: unit -> 'T) : 'T =
+        match project with
+        | Some p -> p.Measure(phase, work)
+        | None -> work ()
+
 /// Lets only the newest of a node's flights run its work. A ticket is taken on the graph thread when a flight starts,
 /// so a later ticket is a later input; a flight whose ticket is no longer the newest when its turn comes is cancelled.
 /// The work runs under the gate's lock, so its writes to shared state (the context's latest parse and dependency
@@ -238,7 +273,7 @@ type internal Gate() =
 
 /// A source file's text and its parse.
 [<Sealed>]
-type internal FileText(ctx: ProjectContext, path: string, initial: string, split: bool) =
+type internal FileText(ctx: ProjectContext, path: string, initial: string, split: bool, measure: Measure) =
     let text = createSignal { Text = initial; Version = 0L }
     let gate = Gate()
 
@@ -251,7 +286,7 @@ type internal FileText(ctx: ProjectContext, path: string, initial: string, split
                 gate.Run(
                     ticket,
                     fun () ->
-                        let parse = DeclarationChecker.Parse(ctx, path, t.Text)
+                        let parse = measure.Run("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
                         let declarations = if split then DeclarationChecker.Split parse else [||]
 
                         { Version = t.Version
@@ -303,7 +338,8 @@ module internal FileDeps =
     /// The dependencies of every file, from every file's current parse: re-run whenever any parse changes, so the
     /// checker's dependency snapshot is of the parses the value holds. Superseded flights do not run, so a late one
     /// never replaces a newer snapshot.
-    let create (ctx: ProjectContext) (files: FileText[]) : Memo<FileDepsValue> =
+    let create (project: ProjectShared) (files: FileText[]) : Memo<FileDepsValue> =
+        let ctx = project.Context
         let gate = Gate()
 
         let deps =
@@ -316,7 +352,8 @@ module internal FileDeps =
                         ticket,
                         fun () ->
                             { Parsed = parsed
-                              Dependencies = DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse)
+                              Dependencies =
+                                project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
                               SameName = sameNames parsed }
                     )))
 
@@ -430,7 +467,12 @@ module internal Setup =
                             match diagnosticsOf result with
                             | Some diagnostics when key.Scoped && hasUnresolved diagnostics -> Unresolved key
                             | _ -> Done(key, result)
-                        with :? ArgumentException as e when key.Scoped && e.ParamName = "before" ->
+                        // Only the refusal of a snapshot that is no longer current: any other refusal of `before` means
+                        // the key and the snapshot disagree, a graph bug, and fails the node with its message.
+                        with :? ArgumentException as e when
+                            key.Scoped
+                            && e.ParamName = "before"
+                            && e.Message.Contains "FileDependencies has not been given this parse" ->
                             project.CountChainFallback()
                             Stale(key, current)))
 

@@ -142,6 +142,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                 o["segmentRows"] <- JsonValue.Create c.SegmentRows
                 o["premiseBreaks"] <- JsonValue.Create c.PremiseBreaks
                 o["finishPhaseMs"] <- phasesMs (c.FinishPhaseTicks |> Map.map (fun _ t -> float t * 1000. / float Stopwatch.Frequency))
+                o["phaseAllocatedMb"] <- phasesMs (c.PhaseAllocated |> Map.map (fun _ b -> float b / 1048576.))
                 o["fileLevelChecks"] <- JsonValue.Create c.FileLevelChecks
                 o["chainFallbacks"] <- JsonValue.Create c.ChainFallbacks
                 o

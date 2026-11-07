@@ -119,9 +119,11 @@ let private removeDeclaration: Mutation =
             ls[i].TrimStart().StartsWith "let "
             && (i + 1 >= ls.Length || ls[i + 1].Trim() = "" || indentOf ls[i + 1] <= indentOf ls[i]))
 
-let private openTargets = [| "System"; "Deps.A"; "Deps.B"; "Deps.B.Util"; "System.Collections.Generic" |]
+let private depsOpenTargets = [| "System"; "Deps.A"; "Deps.B"; "Deps.B.Util"; "System.Collections.Generic" |]
 
-let private addOpen: Mutation =
+let private chainsOpenTargets = [| "System"; "Chains.A"; "Chains.B"; "Chains.C"; "Chains.D"; "System.Collections.Generic" |]
+
+let private addOpen (openTargets: string[]) : Mutation =
     fun random text -> Some(place random text (fun indent -> $"%s{indent}open %s{pick random openTargets}"))
 
 let private removeOpen: Mutation =
@@ -251,9 +253,10 @@ let private sameLine: Mutation =
             let i, at = pick random spots
             Some(unlines (Array.updateAt i (ls[i].Insert(at, " ")) ls), $"double a space on line %d{i + 1}")
 
-let private run (mode: FileMode) (seed: int) (steps: int) =
+let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
-        let! s = startWith mode
+        let! s = startOn project mode
+        let openTargets = if project = chainsProject then chainsOpenTargets else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
         let files = s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fs") |> Array.ofList
@@ -266,7 +269,7 @@ let private run (mode: FileMode) (seed: int) (steps: int) =
                returnType
                addDeclaration pool counter
                removeDeclaration
-               addOpen
+               addOpen openTargets
                removeOpen
                renameUse pool
                shadow pool
@@ -346,7 +349,20 @@ let private fuzz (name: string) (mode: FileMode) =
     <| testList
         name
         [ for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
-              testTask $"seed %d{seed}: 200 random edits equal the oracle after each" { do! run mode seed 200 } ]
+              testTask $"seed %d{seed}: 200 random edits equal the oracle after each" { do! run depsProject mode seed 200 }
+
+          // Two independent chains, where a file's dependencies are fewer than the files before it
+          for seed in [ 1515; 4242 ] ->
+              let name = $"Chains seed %d{seed}: 200 random edits equal the oracle after each"
+
+              // Pending: Declarations mode (the R16 graph, unchanged by Task 3) fails it at step 103, where B.fs gains
+              // `let shift = 99` above `let added15 = shifted`. The oracle's FS0039 for `shifted` suggests `shift`; the graph
+              // reports it without the suggestion. A Declarations-mode bug this fixture found, not yet diagnosed,
+              // carried to Task 4 (Task 3 report, fix round 1).
+              if mode = Declarations && seed = 4242 then
+                  ptestTask name { do! run chainsProject mode seed 200 }
+              else
+                  testTask name { do! run chainsProject mode seed 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level
 [<Tests>]

@@ -491,7 +491,8 @@ type internal IFileNode =
     /// The file's diagnostics once its results are for text version `version` and were built on `before`, the
     /// signature fingerprints of the earlier files as they are now (Declarations mode). A file checked file-level
     /// ignores `before`: its result is settled once it is for that version and was set up from the current signatures
-    /// of the files it read.
+    /// of the files it read. Its setup reads FileDeps, which reads every file's parse, so it also waits for the parse
+    /// of every file whose write has been applied, not only its dependencies'.
     abstract Settled: before: string list * version: int64 -> FSharpDiagnostic[] voption
     /// Each declaration's current result, when settled
     abstract Results: before: string list * version: int64 -> IReadOnlyDictionary<DeclarationKey, DeclarationResult> voption

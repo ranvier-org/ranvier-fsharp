@@ -64,11 +64,13 @@ module internal WholeFile =
                 deps
                 signatureOf
                 (fun key ->
-                    let r = DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse)
+                    let r = project.Measure("checkFile", fun () -> DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse))
+                    project.AddFinishPhaseTicks r.PhaseTicks
                     project.CountFileLevelCheck()
                     r)
                 (fun r -> Some r.Diagnostics)
 
+        // Cut off by fingerprint, reading the plain result memo, never the async check directly (see Nodes)
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ -> FileSig.Of (snd result.Value).Signature)
 
@@ -91,9 +93,11 @@ module internal WholeFile =
                 index
                 deps
                 signatureOf
-                (fun key -> DeclarationChecker.CheckSignatureFile(ctx, key.Before, key.Parsed.Parse))
+                (fun key ->
+                    project.Measure("checkSignatureFile", fun () -> DeclarationChecker.CheckSignatureFile(ctx, key.Before, key.Parsed.Parse)))
                 (fun _ -> None)
 
+        // Cut off by fingerprint, reading the plain result memo, never the async check directly (see Nodes)
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ -> FileSig.Of(snd result.Value))
 

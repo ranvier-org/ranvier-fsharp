@@ -24,6 +24,9 @@ let depsDir =
 
 let depsProject = Path.Combine(depsDir, "Deps.fsproj")
 
+/// Two independent chains: A.fs ← B.fs and C.fs ← D.fs
+let chainsProject = Path.Combine(Path.GetDirectoryName depsDir, "Chains", "Chains.fsproj")
+
 let fileOf (name: string) = Path.Combine(depsDir, name)
 
 type Session =
@@ -54,10 +57,10 @@ let settle (t: Task<'T>) : Task<'T> =
         return! t
     }
 
-/// A graph over Deps checking every file in `mode`, settled on the files as they are on disk.
-let startWith (mode: FileMode) : Task<Session> =
+/// A graph over `project` checking every file in `mode`, settled on the files as they are on disk.
+let startOn (project: string) (mode: FileMode) : Task<Session> =
     task {
-        let! spec = ProjectSpec.load depsProject
+        let! spec = ProjectSpec.load project
         let host = GraphHost.Start "deps"
         let! graph = ProjectGraph.CreateWithMode(host, spec, mode)
         let! _ = graph.AllDiagnostics() |> settle
@@ -77,6 +80,9 @@ let startWith (mode: FileMode) : Task<Session> =
               Fresh = fresh
               Texts = texts }
     }
+
+/// A graph over Deps checking every file in `mode`.
+let startWith (mode: FileMode) = startOn depsProject mode
 
 /// A graph over Deps as ProjectGraph.Create makes it: every file file-level.
 let start () = startWith FileLevel
@@ -141,7 +147,7 @@ let replace (s: Session) (file: string) (oldText: string) (newText: string) =
 /// The lines by which the graph's diagnostics differ from a full check of the current texts.
 let oracleDiff (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]>) : Task<string list> =
     task {
-        let! expected = s.Oracle.Check depsProject (s.Texts |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
+        let! expected = s.Oracle.Check s.Spec.ProjectFile (s.Texts |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
         let actual = [ for kv in diagnostics do yield! kv.Value |> Seq.map FcsDiagnostics.ofFcs ]
         return Diagnostics.compare expected actual
     }
