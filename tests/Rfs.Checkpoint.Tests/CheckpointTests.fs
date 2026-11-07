@@ -106,7 +106,7 @@ let private wrongEngine: EngineFactory =
                 { new IEngine with
                     member _.Counters() = None
                     member _.DeclarationLines(_, _) = None
-                    member _.Promote _ = Task.FromResult false
+                    member _.Promote _ = Task.FromResult None
                     member _.Check() = result
                     member _.SetText(_, _) = result
                   interface IDisposable with
@@ -161,6 +161,7 @@ let tests =
               Expect.equal (cold["adopted"].GetValue<int64>()) 0L "it adopts no declaration checks"
               Expect.isNotNull (declExtra["finishShareP50"]) "finish share p50"
               Expect.isGreaterThan (declExtra["promoteMs"].GetValue<float>()) 0. "decl times the promotion of A.fs"
+              Expect.equal (declExtra["notPromoted"].AsArray().Count) 0 "A.fs is checked by declaration"
               let declSteps = declExtra["steps"].AsArray() |> List.ofSeq
               Expect.equal declSteps.Length 5 "one extra per edit"
 
@@ -181,6 +182,7 @@ let tests =
               let slimExtra = extraOf slim
               Expect.isNull (slimExtra["coldCounters"]) "file-slim keeps no counters"
               Expect.isNull (slimExtra["promoteMs"]) "file-slim promotes nothing"
+              Expect.isNull (slimExtra["notPromoted"]) "file-slim promotes nothing"
               Expect.equal (slimExtra["steps"].AsArray().Count) 5 "one extra per edit"
           }
 
@@ -348,7 +350,7 @@ let tests =
                               { new IEngine with
                                   member _.Counters() = None
                                   member _.DeclarationLines(_, _) = None
-                                  member _.Promote _ = Task.FromResult false
+                                  member _.Promote _ = Task.FromResult None
                                   member _.Check() = ok
 
                                   member _.SetText(_, _) =

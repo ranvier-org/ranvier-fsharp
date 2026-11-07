@@ -124,9 +124,14 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                                 WholeFile.impl project i file deps signatureOf
                         ))
 
-                    // One build at a time: the first file, in file order, that is wanted and not built for its setup
+                    // One build at a time: the file building stays the builder while it may still be building (its state
+                    // pending included), so neither an edit nor an earlier file starts a second build beside it; then the
+                    // first file, in file order, that may build
                     project.Builder <-
-                        createMemo (fun _ -> nodes |> Seq.tryFindIndex _.Building |> ValueOption.ofOption)
+                        createMemo (fun previous ->
+                            match previous with
+                            | ValueSome(ValueSome b) when nodes[b].MayBuild -> ValueSome b
+                            | _ -> nodes |> Seq.tryFindIndex _.MayBuild |> ValueOption.ofOption)
 
                     // The dependencies read every file's parse, so effects start once every file's nodes exist
                     for node in nodes do
@@ -213,7 +218,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         host.WhenSettled(fun () -> settledFile i (fun f version -> f.Results version))
 
-    /// How the file is checked now.
+    /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
+    /// or a demoted file's kept one.
     member _.Mode(file: string) : Task<Rfs.Checker.FileMode> =
         let node = files[indexOf file]
         host.Read(fun () -> node.Mode)
@@ -232,12 +238,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         let node = files[indexOf file]
         host.Post(fun () -> node.Demote())
 
-    /// Completes once the file is checked by declaration for its latest text, or can not be for that text and setup:
-    /// its text splits into one declaration, or the setup from its dependencies reports an unresolved name (it is then
-    /// checked whole, from every earlier file). Completes at once for a file that is not wanted.
-    member _.WhenPromoted(file: string, ct: CancellationToken) : Task<unit> =
+    /// Completes, with the mode it settled in, once promoting the file has settled for its latest text: Declarations
+    /// once it is checked by declaration for that text; FileLevel when it can not be for that text and setup (its text
+    /// splits into one declaration, its build failed, or the setup from its dependencies reports an unresolved name,
+    /// and it is then checked whole), and at once for a file that is not wanted.
+    member _.WhenPromoted(file: string, ct: CancellationToken) : Task<Rfs.Checker.FileMode> =
         let i = indexOf file
-        host.WhenSettled((fun () -> settledFile i (fun f version -> if f.Promoted version then ValueSome() else ValueNone)), ct)
+        host.WhenSettled((fun () -> settledFile i (fun f version -> f.Promoted version)), ct)
 
     /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
     /// is checked whole) once all files are settled on their latest texts.
@@ -277,6 +284,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// How many times a file-level check was tried again because its file's #line directives were a newer parse's.
     member internal _.DirectiveRetries: int64 = project.DirectiveRetries
+
+    /// How many times a file's declaration nodes were created (one per promotion of a file that splits into more than
+    /// one declaration). For tests.
+    member internal _.DeclarationRoots: int64 = project.DeclarationRoots
 
     /// How many times CheckDeclaration has returned, including runs whose result was never published: a flight
     /// superseded under CancelPrevious that finished before it saw its cancellation.
@@ -321,3 +332,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Runs `hook` off the graph thread, with the file's path, just before a promotion build sets the file up. For
     /// tests.
     member internal _.OnBeginFile(hook: string -> unit) : unit = project.BeginFileHook <- hook
+
+    /// Weak references to a declaration result of the file, the environment it was checked in, and the FileStart of
+    /// its published declaration results; empty while none are published. For tests.
+    member internal _.DeclarationObjects(file: string) : Task<WeakReference list> =
+        let node = files[indexOf file]
+        host.Read(fun () -> node.DeclarationObjects())

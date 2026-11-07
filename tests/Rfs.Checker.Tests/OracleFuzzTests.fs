@@ -128,6 +128,9 @@ let private sigShadowProject = Path.Combine(Path.GetDirectoryName depsDir, "SigS
 let private sigQualNameProject = Path.Combine(Path.GetDirectoryName depsDir, "SigQualName", "SigQualName.fsproj")
 let private sigShadowOpenTargets = [| "System"; "A"; "B" |]
 let private sigQualNameOpenTargets = [| "System"; "A"; "Y" |]
+/// An implementation file whose qualified name differs from its signature file's (T4-C3)
+let private sigUnmatchedProject = Path.Combine(Path.GetDirectoryName depsDir, "SigUnmatched", "SigUnmatched.fsproj")
+let private sigUnmatchedOpenTargets = [| "System"; "A"; "Ab"; "W" |]
 
 let private addOpen (openTargets: string[]) : Mutation =
     fun random text -> Some(place random text (fun indent -> $"%s{indent}open %s{pick random openTargets}"))
@@ -204,6 +207,19 @@ let private moduleHeader: Mutation =
 
             Some(unlines (Array.updateAt i edited ls), $"header `%s{line.Trim()}` -> `%s{edited.Trim()}`")
 
+/// Renames the file's top-level module between its name and the name with "b" added (SigUnmatched's X.fs: `module A`,
+/// which X.fsi matches, and `module Ab`, which it does not), keeping every line in place.
+let private topHeader: Mutation =
+    fun _ text ->
+        let ls = linesOf text
+
+        match ls |> Array.tryFindIndex (fun l -> Regex.IsMatch(l, @"^module \w+\s*$")) with
+        | Some i ->
+            let line = ls[i].TrimEnd()
+            let edited = if line.EndsWith "b" then line.TrimEnd('b') else line + "b"
+            Some(unlines (Array.updateAt i edited ls), $"top-level header `%s{line}` -> `%s{edited}`")
+        | None -> None
+
 /// Toggles [<AutoOpen>] on a module, on the line above its header, keeping every other line in place.
 let private autoOpen: Mutation =
     fun random text ->
@@ -266,6 +282,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             if project = chainsProject then chainsOpenTargets
             elif project = sigShadowProject then sigShadowOpenTargets
             elif project = sigQualNameProject then sigQualNameOpenTargets
+            elif project = sigUnmatchedProject then sigUnmatchedOpenTargets
             else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
@@ -287,7 +304,8 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                moduleHeader
                autoOpen
                augmentationMember counter
-               sameLine |]
+               sameLine
+               if project = sigUnmatchedProject then topHeader |]
 
         let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
         use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun (k, _) -> premise.Enqueue k)
@@ -393,7 +411,7 @@ let private fuzz (name: string) (mode: FileMode) =
               testTask $"Chains seed %d{seed}: 200 random edits equal the oracle after each" { do! run chainsProject mode seed 200 }
 
           // Signature files standing in for their implementation files: AutoOpen order and qualified-name pairing
-          for project, label in [ sigShadowProject, "SigShadow"; sigQualNameProject, "SigQualName" ] ->
+          for project, label in [ sigShadowProject, "SigShadow"; sigQualNameProject, "SigQualName"; sigUnmatchedProject, "SigUnmatched" ] ->
               testTask $"%s{label} seed 1515: 200 random edits equal the oracle after each" { do! run project mode 1515 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level

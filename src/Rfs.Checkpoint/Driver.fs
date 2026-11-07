@@ -58,9 +58,12 @@ type EngineRun =
       EditAllocatedMb: float
       /// The engine's counters after its first check.
       ColdCounters: EngineCounters option
-      /// The time from the end of the first check to every edited file being promoted (checked by declaration); None
-      /// for an engine that does not promote.
+      /// The time from the end of the first check to every edited file's promotion having settled; None for an engine
+      /// that does not promote, and when no edited file was checked by declaration.
       PromoteMs: float option
+      /// The edited files the engine could not promote (checked whole: one declaration, a failed build, or an
+      /// unresolved name in the setup from their dependencies); None for an engine that does not promote.
+      NotPromoted: string list option
       /// D1 premise breaks published by the first check.
       PremiseBreaksAtCold: int64 option
       /// Rows inside R11/R12 segments after the first check.
@@ -234,8 +237,11 @@ module Driver =
 
             // As an editor opens the files it edits: outside the timed edits, and after the cold counters
             let promoteClock = Stopwatch.StartNew()
-            let! promoted = engine.Promote(edits |> List.map _.File |> List.distinct) |> within timeout
-            let promoteMs = if promoted then Some promoteClock.Elapsed.TotalMilliseconds else None
+            let! promotion = engine.Promote(edits |> List.map _.File |> List.distinct) |> within timeout
+            let promotedMs = promoteClock.Elapsed.TotalMilliseconds
+
+            let promoteMs =
+                promotion |> Option.filter (fun p -> not p.Promoted.IsEmpty) |> Option.map (fun _ -> promotedMs)
 
             for step in steps do
                 match step, stopped with
@@ -326,6 +332,7 @@ module Driver =
                   EditAllocatedMb = mb editAllocated
                   ColdCounters = coldCounters
                   PromoteMs = promoteMs
+                  NotPromoted = promotion |> Option.map _.NotPromoted
                   PremiseBreaksAtCold = coldCounters |> Option.map _.PremiseBreaks
                   SegmentRowsAtCold = coldCounters |> Option.map _.SegmentRows
                   LargestRowLines = largestRowLines

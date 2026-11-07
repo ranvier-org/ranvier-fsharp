@@ -56,15 +56,56 @@ let private afterType = "let after = 42", "let after : int64 = 42L"
 
 let private c = fileOf "C.fs"
 
-/// Promotes the files and waits until each is checked by declaration for its latest text.
-let private promote (s: Session) (files: string list) =
+/// Promotes the files and waits until promoting each has settled: the mode each settled in.
+let private promoteAs (s: Session) (files: string list) =
     task {
         for f in files do
             s.Graph.Promote f
 
+        let modes = ResizeArray()
+
         for f in files do
-            do! s.Graph.WhenPromoted(f, CancellationToken.None) |> settle
+            let! mode = s.Graph.WhenPromoted(f, CancellationToken.None) |> settle
+            modes.Add mode
+
+        return List.ofSeq modes
     }
+
+/// Promotes the files and waits until each is checked by declaration for its latest text.
+let private promote (s: Session) (files: string list) =
+    task {
+        let! modes = promoteAs s files
+        Expect.equal modes (files |> List.map (fun _ -> Declarations)) $"promoted: %A{List.map name files}"
+    }
+
+/// Whether each weakly held object is collected after full collections.
+let private collected (refs: WeakReference list) =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+
+    refs |> List.map (fun r -> not r.IsAlive)
+
+/// Drops the graph's event log, which a Debug build of Ranvier (RANVIER_TRACE) keeps with every value its nodes
+/// published: it would keep everything the graph ever computed alive. A no-op for an untraced Ranvier.
+let private dropTrace (s: Session) : Task =
+    s.Host.Read(fun () ->
+        let graph = s.Host.Graph
+        let traceModule =
+            [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+            |> List.tryPick (fun name ->
+                match typeof<Ranvier.Graph>.Assembly.GetType name with
+                | null -> None
+                | t -> Option.ofObj (t.GetMethod "lastSeq") |> Option.map (fun m -> t, m))
+
+        match traceModule with
+        | Some(t, lastSeq) ->
+            let last = lastSeq.Invoke(null, [| box graph |])
+            t.GetMethod("checkpoint").Invoke(null, [| box graph; last; box "dropped" |]) |> ignore
+        | None -> ())
+
+let private sigUnmatchedProject = Path.Combine(Path.GetDirectoryName depsDir, "SigUnmatched", "SigUnmatched.fsproj")
 
 let private expectMode (s: Session) (file: string) (expected: FileMode) (what: string) =
     task {
@@ -328,7 +369,8 @@ let tests =
                           do! expectOracle s r.Diagnostics "C.fs checked whole"
                           Volatile.Write(&armed, 0)
                           release.Set()
-                          do! s.Graph.WhenPromoted(c, CancellationToken.None) |> settle
+                          let! mode = s.Graph.WhenPromoted(c, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "C.fs settles by declaration"
                           do! expectMode s c Declarations "built again for the new setup"
                           let! all = s.Graph.AllDiagnostics() |> settle
                           do! expectOracle s all "C.fs promoted again"
@@ -340,8 +382,10 @@ let tests =
                   withSession (startOn recProject FileLevel) (fun s ->
                       task {
                           let r = s.Spec.SourceFiles |> List.find (fun f -> name f = "R.fs")
-                          do! promote s [ r ]
+                          let! modes = promoteAs s [ r ]
+                          Expect.equal modes [ FileLevel ] "promoting it settles file-level (M1)"
                           do! expectMode s r FileLevel "a module rec file splits into one declaration"
+                          Expect.equal s.Graph.DeclarationRoots 0L "no declaration nodes are created for it (M7)"
                           let! e, checks = counted s (fun () -> replace s r "let start = 10" "let start = 11")
                           Expect.equal e.Delta 0L "no declaration is checked"
                           Expect.isGreaterThan checks 0L "checked whole"
@@ -349,6 +393,7 @@ let tests =
                           do! expectOracle s e.Diagnostics "start = 11"
                           let! e = replace s r "let start = 11" "let start : string = 11"
                           do! expectOracle s e.Diagnostics "start is a string"
+                          Expect.equal s.Graph.DeclarationRoots 0L "still none after its edits"
                       })
           }
 
@@ -382,7 +427,8 @@ let tests =
                           let! all = s.Graph.AllDiagnostics() |> settle
                           Expect.equal (Array.map string diagnostics) (Array.map string all[a]) "the last text's diagnostics"
                           do! expectOracle s all "the last text"
-                          do! s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "A.fs settles by declaration"
                           do! expectMode s a Declarations "promoted for the last text"
                           let! all = s.Graph.AllDiagnostics() |> settle
                           do! expectOracle s all "the last text, by declaration"
@@ -394,12 +440,20 @@ let tests =
                   withDeps (fun s ->
                       task {
                           do! promote s [ a ]
-                          let! results = s.Graph.Results a |> settle
-                          Expect.isNonEmpty results "declaration results while promoted"
+                          // Counted in a task of its own, so the test keeps no declaration result alive
+                          let! count = task { let! results = s.Graph.Results a |> settle in return results.Count }
+                          Expect.isGreaterThan count 0 "declaration results while promoted"
+                          let! held = s.Graph.DeclarationObjects a
+                          Expect.equal held.Length 3 "a declaration result, its environment and its FileStart"
                           s.Graph.Demote a
                           let! all = s.Graph.AllDiagnostics() |> settle
                           do! expectOracle s all "the kept result after demotion"
                           do! expectMode s a FileLevel "demoted"
+                          // I1: only the last FileResult is kept. A Debug Ranvier (RANVIER_TRACE) logs every value its
+                          // nodes publish, so its log is dropped first.
+                          do! dropTrace s
+                          let gone = collected held
+                          Expect.equal gone [ true; true; true ] $"the declaration result, its environment and its FileStart are collected: %A{gone}"
 
                           let! (failure: exn option) =
                               task {
@@ -416,4 +470,140 @@ let tests =
                           Expect.equal r.Delta 0L "and no declaration"
                           do! expectOracle s r.Diagnostics "body edit after demotion"
                       })
+          }
+
+          // M5: a build that fails leaves the builder's place to the files after it
+          testTask "a failed build does not hold up later files" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let mutable failing = 1
+
+                          s.Graph.OnBeginFile(fun path ->
+                              if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) && Volatile.Read &failing = 1 then
+                                  failwith "BeginFile failed (test)")
+
+                          let! modes = promoteAs s [ a; c ]
+                          Expect.equal modes [ FileLevel; Declarations ] "A.fs's build failed, C.fs, after it, is built"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "A.fs checked whole"
+                          // A new text of A.fs builds it again
+                          Volatile.Write(&failing, 0)
+                          let! r = replace s a "x * 2" "x * 3"
+                          do! expectMode s a Declarations "built for its new text"
+                          do! expectOracle s r.Diagnostics "A.fs promoted after its text changed"
+                      })
+          }
+
+          // M4: one build at a time, across edits that leave an earlier file's state pending
+          testTask "builds never overlap" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          // The files whose BeginFile is running, with how many flights of each: a file's superseded
+                          // flight may still be running beside its new one, another file's never may
+                          let running = Collections.Generic.Dictionary<string, int>()
+                          let mutable most = 0
+                          let log = Collections.Concurrent.ConcurrentQueue<string>()
+
+                          s.Graph.OnBeginFile(fun path ->
+                              lock running (fun () ->
+                                  running[path] <- (match running.TryGetValue path with | true, n -> n | _ -> 0) + 1
+                                  most <- max most running.Count)
+
+                              log.Enqueue $"+%s{name path}"
+                              Thread.Sleep 50
+                              log.Enqueue $"-%s{name path}"
+
+                              lock running (fun () ->
+                                  if running[path] = 1 then running.Remove path |> ignore else running[path] <- running[path] - 1))
+
+                          let files = implementationFiles s
+
+                          for f in files do
+                              s.Graph.Promote f
+
+                          // Edits to the earlier files while the later ones are being built
+                          for i in 1..4 do
+                              let! _ = editWith false s a (s.Texts[a].Replace($"let baseValue = %d{9 + i}", $"let baseValue = %d{10 + i}"))
+                              ()
+
+                          do! whenPromoted s.Graph s.Spec
+                          Expect.equal most 1 $"one file's BeginFile at a time: %A{List.ofSeq log}"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "every file promoted"
+                      })
+          }
+
+          // M6: a declaration whose name is undefined where it is used, though defined later in the file, re-checks when
+          // an earlier declaration brings a nearer name into scope under the same key
+          testTask "suggestions follow an earlier declaration that keeps its key" {
+              do!
+                  withSession (startOn chainsProject Declarations) (fun s ->
+                      task {
+                          let bFile = Path.Combine(Path.GetDirectoryName chainsProject, "B.fs")
+
+                          // Defined later in the file, as the review's scenario has it, and defined nowhere
+                          for later, what in [ "\nlet shifted = 1\n", "defined later"; "", "defined nowhere" ] do
+                              let text = "module Chains.B\n\ntype Marker =\n    | First\n\nlet added = shifted\n" + later
+                              let! r = edit s bFile text
+                              do! expectOracle s r.Diagnostics $"%s{what}: shifted is not defined where it is used"
+                              let! r = edit s bFile (text.Replace("| First", "| Shifted"))
+                              Expect.exists r.Diagnostics[bFile] (fun d -> d.ErrorNumber = 39 && d.Message.Contains "Shifted") $"%s{what}: the suggestion names the new case"
+                              do! expectOracle s r.Diagnostics $"%s{what}: Marker gains a case like the undefined name"
+                              let! r = edit s bFile text
+                              do! expectOracle s r.Diagnostics $"%s{what}: and loses it again"
+
+                          // A pattern that keeps its first name, and so its key, and binds a nearer one
+                          let text = "module Chains.B\n\nlet first, other = 1, 2\n\nlet added = shifted\n"
+                          let! r = edit s bFile text
+                          do! expectOracle s r.Diagnostics "a tuple binding before the undefined name"
+                          let! r = edit s bFile (text.Replace("first, other", "first, shiftedd"))
+                          Expect.exists r.Diagnostics[bFile] (fun d -> d.ErrorNumber = 39 && d.Message.Contains "shiftedd") "the suggestion names the new value"
+                          do! expectOracle s r.Diagnostics "the binding gains a name like the undefined one"
+                      })
+          }
+
+          // M3: the Declarations fuzz's Chains seed 1515 step 19, at small size. The texts its first 18 steps left, then
+          // B.fs's literal: without the activation effect observing every file's signature, the graph never settled
+          // here (a Ranvier lost wake-up)
+          testTask "a literal edit after a run of restarts settles" {
+              do!
+                  withSession (startOn chainsProject Declarations) (fun s ->
+                      task {
+                          let file name = Path.Combine(Path.GetDirectoryName chainsProject, name)
+
+                          let texts =
+                              [ "A.fs", "module Chains.A\nlet added2 = \"text\"\nlet baseValue = 10\nlet added1 = counted\n\n\nlet doubled = shift baseValue\n"
+                                "B.fs", "module Chains.B\n\nopen Chains.A\n\n\nlet counted = twice baseValue + 1\n"
+                                "C.fs", "module Chains.C\n\n\nlet baseValue = 76\nlet shift (x: int) : int = x + offset\n\n"
+                                "D.fs", "module Chains.D\n\nopen Chains.C\n\nlet shiftTwice (x: int) : int = shift (shift x)\n\nlet total = shiftTwice offset + 1\n" ]
+
+                          for name, text in texts do
+                              let! r = edit s (file name) text
+                              do! expectOracle s r.Diagnostics $"%s{name} as step 18 left it"
+
+                          let b = file "B.fs"
+                          let! r = edit s b (s.Texts[b].Replace("+ 1", "+ 66"))
+                          do! expectOracle s r.Diagnostics "B.fs's literal"
+                      })
+          }
+
+          // M9: the T4-C3 header transition through the graph, in both modes
+          testTask "an implementation file becoming unmatched by its signature file, through the graph" {
+              for mode in [ FileLevel; Declarations ] do
+                  do!
+                      withSession (startOn sigUnmatchedProject mode) (fun s ->
+                          task {
+                              let x = s.Spec.SourceFiles |> List.find (fun f -> name f = "X.fs")
+                              let! all = s.Graph.AllDiagnostics() |> settle
+                              do! expectOracle s all $"%A{mode} cold (unmatched)"
+
+                              for header, text in
+                                  [ "module A", "module A\n\nlet x = 1\nlet f = \"s\"\n"
+                                    "AutoOpen Ab", "[<AutoOpen>]\nmodule Ab\n\nlet f = \"s\"\n"
+                                    "module A again", "module A\n\nlet x = 1\nlet f = \"s\"\n" ] do
+                                  let! r = edit s x text
+                                  do! expectOracle s r.Diagnostics $"%A{mode}: X.fs is %s{header}"
+                          })
           } ]

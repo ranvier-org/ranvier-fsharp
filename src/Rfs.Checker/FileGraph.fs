@@ -125,7 +125,7 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
     member _.Identity = identity
 
     /// Whether the check reported a name it could not resolve: such a diagnostic suggests the names in scope that
-    /// look like it, so the result depends on the names of every earlier declaration (T4-C1).
+    /// look like it, so the result depends on every earlier declaration, its key and its fingerprint (T4-C1).
     member val Suggests =
         result.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 39 || d.ErrorNumber = 1129)
 
@@ -271,8 +271,11 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             let typed = if isNull previous then [||] else this.TypedOf previous
             let typedGone = typed |> Array.exists (file.Has >> not)
 
+            // A result that suggests names in scope depends on every earlier declaration's fingerprint (T4-C1, M6)
+            let suggested = if not (isNull previous) && previous.Suggests then file.KeysBefore key else [||]
+
             let tokenKeys =
-                Array.concat [ deps.Named; deps.Typed; typed |> Array.filter (fun k -> file.IsBefore(k, key)) ]
+                Array.concat [ deps.Named; deps.Typed; typed |> Array.filter (fun k -> file.IsBefore(k, key)); suggested ]
                 |> Array.distinct
 
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
@@ -351,7 +354,11 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
                             match previousOf r with
                             | null -> ()
-                            | c -> yield! this.TypedOf c |> Array.filter (fun k -> file.IsBefore(k, key))
+                            | c ->
+                                yield! this.TypedOf c |> Array.filter (fun k -> file.IsBefore(k, key))
+
+                                if c.Suggests then
+                                    yield! file.KeysBefore r.Key
                     }
                 )
 
@@ -527,11 +534,16 @@ type internal IFileNode =
     abstract Promote: unit -> unit
     /// Clears wanted and drops the file's declaration nodes.
     abstract Demote: unit -> unit
-    /// Whether promoting the file has settled for text version `version`: it is not wanted, it is checked by
-    /// declaration for that text, or it cannot be (a single declaration, or an unresolved name in its setup).
-    abstract Promoted: version: int64 -> bool
-    /// Whether the file is wanted and not yet built by declaration for its current setup: a tracked read
-    abstract Building: bool
+    /// The mode promoting the file has settled in for text version `version`, if it has: Declarations once it is
+    /// checked by declaration for that text; FileLevel when it is not wanted or cannot be (a single declaration, a
+    /// failed build, or an unresolved name in its setup).
+    abstract Promoted: version: int64 -> FileMode voption
+    /// Whether the file may be building by declaration: wanted, and not built, failed or a single declaration for its
+    /// current state, or not yet known to be. A tracked read.
+    abstract MayBuild: bool
+    /// For tests: a declaration result, the environment it was checked in and the FileStart of the published
+    /// declaration results, as weak references; empty while none are published.
+    abstract DeclarationObjects: unit -> WeakReference list
     /// Creates the effects that keep the file checked. Called once every file's nodes exist.
     abstract Activate: unit -> unit
 
@@ -699,6 +711,8 @@ module internal FileNodes =
                     let hook = project.BeginFileHook
 
                     Task.Run<StartInfo>(fun () ->
+                        // A flight superseded before it began does not set the file up
+                        ct.ThrowIfCancellationRequested()
                         hook path
                         let fileStart, env0 = whileStale ct (fun () -> DeclarationChecker.BeginFile(ctx, key.Before, key.Parsed.Parse))
                         StartInfo(fileStart, env0, s)))

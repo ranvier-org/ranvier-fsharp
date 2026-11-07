@@ -45,6 +45,11 @@ type EngineCounters =
       /// file instead.
       ChainFallbacks: int64 }
 
+/// Which files a promotion left checked by declaration, and which it could not promote (checked whole).
+type Promotion =
+    { Promoted: string list
+      NotPromoted: string list }
+
 /// A checker holding one project in memory, created from the texts on disk.
 type IEngine =
     inherit IDisposable
@@ -57,9 +62,9 @@ type IEngine =
     /// The first and last line (1-based) of each declaration of `text` as the file's text, for an engine that checks
     /// by declaration; read outside the timed region.
     abstract DeclarationLines: file: string * text: string -> (int * int)[] option
-    /// Promotes the files (as an editor's didOpen would) and waits until each is checked by declaration; false for
-    /// an engine that does not promote.
-    abstract Promote: files: string list -> Task<bool>
+    /// Promotes the files (as an editor's didOpen would) and waits until promoting each has settled; None for an
+    /// engine that does not promote.
+    abstract Promote: files: string list -> Task<Promotion option>
 
 type EngineFactory =
     { Name: string
@@ -69,10 +74,16 @@ type EngineFactory =
 /// are checked by declaration again.
 [<Sealed>]
 type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec, everyFile: bool) =
+    /// Each file with the mode its promotion settled in.
     let whenPromoted (files: string list) =
         task {
+            let modes = ResizeArray()
+
             for f in files do
-                do! graph.WhenPromoted(f, Threading.CancellationToken.None)
+                let! mode = graph.WhenPromoted(f, Threading.CancellationToken.None)
+                modes.Add((f, mode))
+
+            return List.ofSeq modes
         }
 
     let settle (before: int64) =
@@ -80,7 +91,8 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec,
             let! _ = graph.AllDiagnostics()
 
             if everyFile then
-                do! whenPromoted spec.SourceFiles
+                let! _ = whenPromoted spec.SourceFiles
+                ()
 
             let! all = graph.AllDiagnostics()
             let failures = Array.append (host.TakePostErrors()) (host.TakePumpErrors())
@@ -114,8 +126,9 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec,
                 for f in files do
                     graph.Promote f
 
-                do! whenPromoted files
-                return true
+                let! modes = whenPromoted files
+                let promoted, notPromoted = modes |> List.partition (fun (_, mode) -> mode = Rfs.Checker.FileMode.Declarations)
+                return Some { Promoted = List.map fst promoted; NotPromoted = List.map fst notPromoted }
             }
 
         member _.Check() = settle 0L
@@ -212,7 +225,7 @@ type private FileSlimEngine(spec: ProjectSpec) =
     interface IEngine with
         member _.Counters() = None
         member _.DeclarationLines(_, _) = None
-        member _.Promote _ = Task.FromResult false
+        member _.Promote _ = Task.FromResult None
         member _.Check() = check ()
 
         member _.SetText(file, text) =

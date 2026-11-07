@@ -839,6 +839,66 @@ let fileLevelTests =
                   Expect.exists y (fun d -> d.Code = "FS0039") $"%s{header}: the oracle reports A as not defined in Y.fs"
           }
 
+          // M7 of the Task 4 review: a one-declaration file is recognised without splitting it
+          testTask "counting declarations gives Split's count" {
+              let corpus = Path.GetFullPath(Path.Combine(tinyDir, "..", "..", "..", "..", "ranvier-fsharp-corpus"))
+
+              let projects =
+                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix"; "Rec"; "SigUnmatched" ] do
+                        yield fixture f
+                    yield Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
+
+              let mutable single = 0
+
+              for project in projects do
+                  let! p = load project []
+
+                  for parse in parseAll p do
+                      if parse.FileName.EndsWith ".fs" then
+                          let count = DeclarationChecker.CountDeclarations parse
+                          Expect.equal count (DeclarationChecker.Split parse).Length $"%s{Path.GetFileName parse.FileName}"
+
+                          if count = 1 then
+                              single <- single + 1
+
+              Expect.isGreaterThan single 0 "some file is one declaration (module rec)"
+          }
+
+          // M2 of the Task 4 review: does re-checking one declaration move the compiler-generated names its finish gives?
+          testTask "re-checking a declaration keeps the finish's compiler-generated names" {
+              let holders =
+                  [ for i in 1..20 ->
+                        $"type Holder%d{i}() as this =\n    let value = %d{i}\n    member _.V = value\n    member _.Self = this\n\n" ]
+                  |> String.concat ""
+
+              let text = "module Deps.A\n\n" + holders
+              let edited = text.Replace("let value = 7\n", "let value = 70\n")
+              let! p = load depsProject [ "A.fs", text ]
+              let a = p.FileNamed "A.fs"
+              let parse = DeclarationChecker.Parse(p.Context, a, text)
+              let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+              let decls = DeclarationChecker.Split parse
+
+              let checks, _ =
+                  (env0, decls)
+                  ||> Array.mapFold (fun env decl ->
+                      let result = DeclarationChecker.CheckDeclaration(start, env, decl, Threading.CancellationToken.None)
+                      (env, result), DeclarationChecker.ExtendEnv(env, result))
+
+              let before = (DeclarationChecker.FinishFile(start, Array.map snd checks, parse)).Signature.Fingerprint
+              Expect.stringContains before "@" "the signature holds compiler-generated names"
+              // Holder7 is edited and checked again in the environment it had, on the same FileStart, as a promoted file
+              let editedParse = DeclarationChecker.Parse(p.Context, a, edited)
+              let editedDecls = DeclarationChecker.Split editedParse
+              let k = editedDecls |> Array.findIndex (fun d -> d.Key.Name = "Holder7")
+              let env, _ = checks[k]
+              let recheck = DeclarationChecker.CheckDeclaration(start, env, editedDecls[k], Threading.CancellationToken.None)
+              let results = checks |> Array.mapi (fun i (_, r) -> if i = k then recheck else r)
+              let after = (DeclarationChecker.FinishFile(start, results, editedParse)).Signature.Fingerprint
+              let fresh = (byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, edited))).Signature.Fingerprint
+              Expect.equal after fresh "the finish after the re-check gives a fresh build's fingerprint"
+          }
+
           // T4-C3: an implementation file whose signature file has another qualified name is read by the files after it
           // as a file without a signature, so its root AutoOpen contents shadow what earlier files give
           testTask "an implementation file unmatched by its signature file is visible to the files after it" {

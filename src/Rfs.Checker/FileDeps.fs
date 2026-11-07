@@ -74,6 +74,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable fileLevelChecks = 0L
     let mutable chainFallbacks = 0L
     let mutable directiveRetries = 0L
+    let mutable declarationRoots = 0L
     let mutable scopedCheckHook: string -> unit = ignore
     let mutable beginFileHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
@@ -98,6 +99,8 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.CountFileLevelCheck() = Interlocked.Increment &fileLevelChecks |> ignore
     member _.CountChainFallback() = Interlocked.Increment &chainFallbacks |> ignore
     member _.CountDirectiveRetry() = Interlocked.Increment &directiveRetries |> ignore
+    member _.DeclarationRoots = Interlocked.Read &declarationRoots
+    member _.CountDeclarationRoot() = Interlocked.Increment &declarationRoots |> ignore
 
     /// Runs off the graph thread, with the file's path, just before a setup from its dependencies is given to the
     /// checker. For tests.

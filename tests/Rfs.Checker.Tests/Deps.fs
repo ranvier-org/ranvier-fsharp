@@ -61,7 +61,8 @@ let settle (t: Task<'T>) : Task<'T> =
 let whenPromoted (graph: ProjectGraph) (spec: ProjectSpec) : Task =
     task {
         for f in spec.SourceFiles do
-            do! graph.WhenPromoted(f, CancellationToken.None) |> settle
+            let! _ = graph.WhenPromoted(f, CancellationToken.None) |> settle
+            ()
     }
 
 /// A graph over `project` checking every file in `mode`, settled on the files as they are on disk; in Declarations

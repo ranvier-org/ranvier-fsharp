@@ -25,7 +25,8 @@ already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its 
 to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default.
 
 Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json holds what RunResult has no field for:
-cold and edit allocations, the time from the end of the cold check to every edited file being promoted (promoteMs),
+cold and edit allocations, the time from the end of the cold check to every edited file's promotion having settled (promoteMs, when one was
+promoted) and the edited files that could not be (notPromoted),
 decl's counters after the cold check (with its D1 premise breaks and segment rows), the
 largest declaration of the edited files and the one the first edit falls in (in lines), and per edit the
 CheckDeclaration runs (superseded flights included), adopted checks, FinishFile time, its share of the latency and its
@@ -181,6 +182,11 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
         o["coldAllocatedMb"] <- JsonValue.Create run.ColdAllocatedMb
         o["editAllocatedMb"] <- JsonValue.Create run.EditAllocatedMb
         o["promoteMs"] <- opt run.PromoteMs
+
+        o["notPromoted"] <-
+            match run.NotPromoted with
+            | Some files -> JsonArray([| for f in files -> JsonValue.Create f :> JsonNode |]) :> JsonNode
+            | None -> null
         o["coldCounters"] <- counters run.ColdCounters
         o["premiseBreaksAtCold"] <- opt run.PremiseBreaksAtCold
         o["segmentRowsAtCold"] <- opt run.SegmentRowsAtCold
@@ -267,7 +273,11 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                                         cold.ChainFallbacks
                                         (fmt (mean _.ChainFallbacks))
 
-                                    printfn "  %s: promoted the edited files in %s ms" engine.Name (fmt run.PromoteMs)
+                                    printfn
+                                        "  %s: promoted the edited files in %s ms; not promoted: %s"
+                                        engine.Name
+                                        (fmt run.PromoteMs)
+                                        (run.NotPromoted |> Option.map (List.map Path.GetFileName >> String.concat ", ") |> Option.defaultValue "-")
 
                                 let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
 
