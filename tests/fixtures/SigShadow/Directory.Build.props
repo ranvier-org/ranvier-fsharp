@@ -1,0 +1,3 @@
+<Project>
+  <!-- Corpus-like fixture: stand-alone, uses the regular FSharp.Core package, not the fork. -->
+</Project>

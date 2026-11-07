@@ -123,6 +123,12 @@ let private depsOpenTargets = [| "System"; "Deps.A"; "Deps.B"; "Deps.B.Util"; "S
 
 let private chainsOpenTargets = [| "System"; "Chains.A"; "Chains.B"; "Chains.C"; "Chains.D"; "System.Collections.Generic" |]
 
+/// Signature files whose implementation a later file's setup can leave out (Task 3b fix round 3)
+let private sigShadowProject = Path.Combine(Path.GetDirectoryName depsDir, "SigShadow", "SigShadow.fsproj")
+let private sigQualNameProject = Path.Combine(Path.GetDirectoryName depsDir, "SigQualName", "SigQualName.fsproj")
+let private sigShadowOpenTargets = [| "System"; "A"; "B" |]
+let private sigQualNameOpenTargets = [| "System"; "A"; "Y" |]
+
 let private addOpen (openTargets: string[]) : Mutation =
     fun random text -> Some(place random text (fun indent -> $"%s{indent}open %s{pick random openTargets}"))
 
@@ -256,7 +262,11 @@ let private sameLine: Mutation =
 let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let! s = startOn project mode
-        let openTargets = if project = chainsProject then chainsOpenTargets else depsOpenTargets
+        let openTargets =
+            if project = chainsProject then chainsOpenTargets
+            elif project = sigShadowProject then sigShadowOpenTargets
+            elif project = sigQualNameProject then sigQualNameOpenTargets
+            else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
         let files = s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fs") |> Array.ofList
@@ -362,7 +372,11 @@ let private fuzz (name: string) (mode: FileMode) =
               if mode = Declarations && seed = 4242 then
                   ptestTask name { do! run chainsProject mode seed 200 }
               else
-                  testTask name { do! run chainsProject mode seed 200 } ]
+                  testTask name { do! run chainsProject mode seed 200 }
+
+          // Signature files standing in for their implementation files: AutoOpen order and qualified-name pairing
+          for project, label in [ sigShadowProject, "SigShadow"; sigQualNameProject, "SigQualName" ] ->
+              testTask $"%s{label} seed 1515: 200 random edits equal the oracle after each" { do! run project mode 1515 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level
 [<Tests>]

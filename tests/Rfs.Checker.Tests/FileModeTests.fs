@@ -213,4 +213,33 @@ let tests =
                           Expect.isGreaterThan s.Graph.DirectiveRetries 0L "the check was refused and tried again"
                           do! expectOracle s r.Diagnostics "after the other context's parse"
                       })
+          }
+
+          // C1 and C2 of the Task 3b re-review: setups from a signature file without its implementation file
+          testTask "signature-only setups equal the oracle, cold and after a header edit" {
+              let fixture name = Path.Combine(Path.GetDirectoryName depsDir, name, name + ".fsproj")
+
+              for name in [ "SigShadow"; "SigShadowNs"; "SigShadowExt" ] do
+                  do!
+                      withSession (startOn (fixture name) FileLevel) (fun s ->
+                          task {
+                              let! all = s.Graph.AllDiagnostics() |> settle
+                              do! expectOracle s all $"%s{name} cold"
+                          })
+
+              do!
+                  withSession (startOn (fixture "SigQualName") FileLevel) (fun s ->
+                      task {
+                          let x = s.Spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "X.fs")
+                          let y = s.Spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "Y.fs")
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "SigQualName cold"
+
+                          for header, text in [ "module Ab", "module Ab\n\nlet x = 1\n"; "no header", "let x = 1\n"; "back", "module A\n\nlet x = 1\n" ] do
+                              let! r = edit s x text
+                              do! expectOracle s r.Diagnostics $"X.fs: %s{header}"
+
+                              if header <> "back" then
+                                  Expect.exists r.Diagnostics[y] (fun d -> d.ErrorNumber = 39) $"%s{header}: Y.fs reports A as not defined"
+                      })
           } ]

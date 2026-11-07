@@ -116,9 +116,9 @@ let private sameDiagnostics (expected: FSharpDiagnostic[]) (actual: FSharpDiagno
 
 /// The project checked through the scoped pipeline: every implementation file's diagnostics equal the chain's and
 /// the oracle's, and every file's signature fingerprint equals the chain's.
-let private expectScopedEqualsChain (project: string) =
+let private expectScopedEqualsChainWith (project: string) (overrides: (string * string) list) =
     task {
-        let! p = load project []
+        let! p = load project overrides
         let parses = parseAll p
         let dependencies = DeclarationChecker.FileDependencies(p.Context, parses)
         let whole = chain p parses
@@ -144,6 +144,8 @@ let private expectScopedEqualsChain (project: string) =
 
         return p, dependencies
     }
+
+let private expectScopedEqualsChain (project: string) = expectScopedEqualsChainWith project []
 
 /// BeginFile, a fold of CheckDeclaration and FinishFile over these parses, after `before`.
 let private byDeclarations (p: Project) (before: FileSignature list) (parse: FSharpParseFileResults) =
@@ -762,4 +764,34 @@ let fileLevelTests =
               Expect.throwsT<SupersededLineDirectivesException>
                   (fun () -> DeclarationChecker.CheckFile(p.Context, [ for w in whole[.. e - 1] -> w.Signature ], parses[e]) |> ignore)
                   "another parse's line directives"
+          }
+
+          // C1: a signature file's contents reach the implementation environment at its implementation file's place,
+          // so a later file's AutoOpen module or extension member still shadows them
+          yield!
+              [ for name in [ "SigShadow"; "SigShadowNs"; "SigShadowExt" ] ->
+                    testTask $"a signature-only setup keeps the file order of what it opens (%s{name})" {
+                        let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChain (fixture name)
+                        let indexOf file = p.Spec.SourceFiles |> List.findIndex (fun f -> Path.GetFileName f = file)
+
+                        Expect.isFalse
+                            (Array.contains (indexOf "A.fs") dependencies[indexOf "C.fs"])
+                            $"%s{name}: C.fs is set up from A.fsi, without A.fs"
+
+                        let! c = oracleFor p (p.FileNamed "C.fs")
+                        Expect.isEmpty c $"%s{name}: the oracle reports nothing for C.fs (B's member shadows A's)"
+                    } ]
+
+          // C2: a signature file stands for its implementation file only while their qualified names match
+          testTask "a signature-only setup needs the implementation's qualified name to match" {
+              let project = fixture "SigQualName"
+              let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChain project
+              let indexOf file = p.Spec.SourceFiles |> List.findIndex (fun f -> Path.GetFileName f = file)
+              Expect.isFalse (Array.contains (indexOf "X.fs") dependencies[indexOf "Y.fs"]) "matching names: Y.fs needs only X.fsi"
+
+              for header, text in [ "module Ab", "module Ab\n\nlet x = 1\n"; "no header", "let x = 1\n" ] do
+                  let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChainWith project [ "X.fs", text ]
+                  Expect.contains dependencies[indexOf "Y.fs"] (indexOf "X.fs") $"%s{header}: Y.fs depends on X.fs"
+                  let! y = oracleFor p (p.FileNamed "Y.fs")
+                  Expect.exists y (fun d -> d.Code = "FS0039") $"%s{header}: the oracle reports A as not defined in Y.fs"
           } ]
