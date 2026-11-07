@@ -83,7 +83,7 @@ module internal WholeFile =
         : IFileNode =
         let ctx = project.Context
         let path = file.Path
-        let scopedKey = Setup.key index deps signatureOf false
+        let scopedKey = Setup.key project index deps signatureOf false
         // The scope the declaration nodes' roots attach to: the graph's, not an effect's
         let graphOwner = getOwner ()
 
@@ -447,7 +447,7 @@ module internal WholeFile =
                 index
                 deps
                 signatureOf
-                (Setup.key index deps signatureOf false)
+                (Setup.key project index deps signatureOf false)
                 (fun key ->
                     project.Measure("checkSignatureFile", fun () -> DeclarationChecker.CheckSignatureFile(ctx, key.Before, key.Parsed.Parse)))
                 (fun _ -> None)

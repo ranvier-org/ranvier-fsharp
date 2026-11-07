@@ -134,6 +134,21 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                             | ValueSome(ValueSome b) when nodes[b].MayBuild -> ValueSome b
                             | _ -> nodes |> Seq.tryFindIndex _.MayBuild |> ValueOption.ofOption)
 
+                    let failed =
+                        nodes
+                        // The last settled answer while the file is being checked again, so the files set up from its signature
+                        // file do not wait for it: when the answer changes they are checked again before they settle
+                        |> Seq.map (fun node ->
+                            createMemoWithComparer HashIdentity.Structural (fun previous ->
+                                match node.Signature.TryValue, previous with
+                                | Ready s, _ -> s.Signature.Failed
+                                | Pending, ValueSome known -> known
+                                | Pending, ValueNone -> false
+                                | _ -> node.Signature.Value.Signature.Failed))
+                        |> Array.ofSeq
+
+                    project.FailedOf <- fun i -> failed[i]
+
                     // The dependencies read every file's parse, so effects start once every file's nodes exist
                     for node in nodes do
                         node.Activate()

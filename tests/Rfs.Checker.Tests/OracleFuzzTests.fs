@@ -337,12 +337,6 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
 
-        // A failing default makes the file's whole check fail, so it adds nothing to the files after it. The files set
-        // up from its signature file alone still see the signature's contents in their implementation environment, as
-        // graph mode's ArtificialImplFile node gives them, where a check of every earlier file does not: a gap of the
-        // signature-only setups, not of the finish (task-5-report, fix round 1). Such files are not given the edit.
-        let hasSignatureFile (file: string) = s.Spec.SourceFiles |> List.contains (file + "i")
-        let withoutFailingDefault = Array.append before after
 
         let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
         use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun (k, _) -> premise.Enqueue k)
@@ -374,7 +368,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                 elif random.Next 6 = 0 then
                     originals[file], "revert to the original"
                 else
-                    mutate random (if hasSignatureFile file then withoutFailingDefault else mutations) s.Texts[file]
+                    mutate random mutations s.Texts[file]
 
             let fail (problem: string) =
                 let texts =

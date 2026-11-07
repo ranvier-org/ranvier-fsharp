@@ -116,6 +116,10 @@ let private expectMode (s: Session) (file: string) (expected: FileMode) (what: s
 /// The edit's CheckDeclaration runs, by file name
 let private ranFiles (r: Edit) = r.Ran |> List.map (snd >> name) |> List.distinct |> List.sort
 
+/// A body whose default fails, which makes the file's whole check fail, before a generic lambda (C1 of the Task 5 review)
+let private failingDefault =
+    "\n\nlet scaleDefaults (x: int) : int = x * 2\n\nlet areaDefaults (r: int) : int = 3 * scaleDefaults * r\n\nlet gDefaults () =\n    (fun x -> x + 1.0)\n    1\n"
+
 let private recProject = Path.Combine(Path.GetDirectoryName depsDir, "Rec", "Rec.fsproj")
 
 [<Tests>]
@@ -697,6 +701,73 @@ let tests =
                           Expect.exists r.Diagnostics[y] (fun d -> d.ErrorNumber = 30) "its value restriction is reported"
                           do! expectOracle s r.Diagnostics "the use removed"
                       })
+          }
+          // Fix round 2: an implementation file whose check fails adds nothing to the files after it, its signature
+          // file's contents included (ParseAndCheckInputs.CheckOneInput's PartialResultOnError). A file set up from the
+          // signature file alone sees it through the implementation file then, as the unmatched pairs of Task 3b.
+          yield!
+              [ for fixtureName, implementation, user, usage in
+                    [ "SigShadow", "A.fs", "C.fs", "let z = A.f\n"; "SigQualName", "X.fs", "Y.fs", "" ] do
+                    for mode in [ FileLevel; Declarations ] ->
+                        testTask $"a failed implementation file's signature gives the files after it nothing (%s{fixtureName}, %A{mode})" {
+                            let fixture = Path.Combine(Path.GetDirectoryName depsDir, fixtureName, fixtureName + ".fsproj")
+
+                            do!
+                                withSession (startOn fixture mode) (fun s ->
+                                    task {
+                                        let impl = s.Spec.SourceFiles |> List.find (fun f -> name f = implementation)
+                                        let userFile = s.Spec.SourceFiles |> List.find (fun f -> name f = user)
+
+                                        if usage <> "" then
+                                            let! r = edit s userFile (s.Texts[userFile] + usage)
+                                            do! expectOracle s r.Diagnostics $"%s{user} uses the signature's value"
+
+                                        let! r = edit s impl (s.Texts[impl].TrimEnd('\n') + failingDefault)
+                                        Expect.exists r.Diagnostics[userFile] (fun d -> d.ErrorNumber = 39) $"%s{user} sees nothing of %s{implementation}"
+                                        do! expectOracle s r.Diagnostics $"%s{implementation} fails"
+                                        let! r = replace s impl "3 * scaleDefaults * r" "3 * scaleDefaults r"
+                                        do! expectOracle s r.Diagnostics $"%s{implementation} fixed"
+                                    })
+                        } ]
+
+          // Fix round 2: the dependents of the signature file re-check when the implementation file starts or stops
+          // failing, not on its other edits
+          testTask "the dependents of a signature file re-check only when its implementation file starts or stops failing" {
+              let fixture = Path.Combine(Path.GetDirectoryName depsDir, "SigQualName", "SigQualName.fsproj")
+
+              for mode in [ FileLevel; Declarations ] do
+                  do!
+                      withSession (startOn fixture mode) (fun s ->
+                          task {
+                              let x = s.Spec.SourceFiles |> List.find (fun f -> name f = "X.fs")
+                              let y = s.Spec.SourceFiles |> List.find (fun f -> name f = "Y.fs")
+                              let mutable checksOfY = 0
+
+                              s.Graph.OnScopedCheck(fun path ->
+                                  if String.Equals(path, y, StringComparison.OrdinalIgnoreCase) then
+                                      Interlocked.Increment &checksOfY |> ignore)
+
+                              let step (what: string) (text: string) (rechecks: bool) =
+                                  task {
+                                      let before = Volatile.Read &checksOfY
+                                      let! r = edit s x text
+                                      do! expectOracle s r.Diagnostics $"%A{mode}: %s{what}"
+                                      let ran = Volatile.Read &checksOfY - before
+
+                                      if rechecks then
+                                          Expect.isGreaterThan ran 0 $"%A{mode}: %s{what}: Y.fs is checked again"
+                                      else
+                                          Expect.equal ran 0 $"%A{mode}: %s{what}: Y.fs is not checked again"
+                                  }
+
+                              let ok = s.Texts[x]
+                              let broken = ok.TrimEnd('\n') + failingDefault
+                              do! step "a body edit" (ok.Replace("let x = 1", "let x = 2")) false
+                              do! step "X.fs fails" broken true
+                              do! step "a body edit while it fails" (broken.Replace("x + 1.0", "x + 2.0")) false
+                              do! step "X.fs fixed" (broken.Replace("3 * scaleDefaults * r", "3 * scaleDefaults r")) true
+                              do! step "X.fs fails again" broken true
+                          })
           }
           // M5 of the Task 5 review: only a failing setup is contained; a broken invariant of the graph is not
           testTask "a broken invariant in a declaration setup is not contained" {

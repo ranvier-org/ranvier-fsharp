@@ -141,6 +141,10 @@ type internal ProjectShared(ctx: ProjectContext) =
         with get () = Volatile.Read &setupHook
         and set (hook: string -> unit) = Volatile.Write(&setupHook, hook)
 
+    /// Whether implementation file i's check failed, as a cut-off memo over its signature. Set once every file's nodes
+    /// exist; read only for implementation files that have a signature file.
+    member val FailedOf: int -> Memo<bool> = (fun _ -> invalidOp "the files' nodes are not made yet") with get, set
+
     /// Runs work on the graph thread after the current run, as GraphHost.Post. Set once the host is known.
     member val Post: (unit -> unit) -> unit = ignore with get, set
 
@@ -339,7 +343,9 @@ type internal FileDepsValue =
       /// them, whether or not it depends on them.
       SameName: int[][]
       /// For each file, whether a later file depends on it
-      HasDependents: bool[] }
+      HasDependents: bool[]
+      /// For each signature file, its implementation file's index (the same path without the trailing i), or -1
+      ImplementationOf: int[] }
 
 module internal FileDeps =
 
@@ -358,6 +364,22 @@ module internal FileDeps =
             | _ ->
                 seen[name] <- ResizeArray [ i ]
                 [||])
+
+    let private implementationsOf (parsed: Parsed[]) =
+        let byPath = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+
+        parsed |> Array.iteri (fun i p -> byPath[p.Parse.FileName] <- i)
+
+        parsed
+        |> Array.map (fun p ->
+            let path = p.Parse.FileName
+
+            if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                match byPath.TryGetValue(path.Substring(0, path.Length - 1)) with
+                | true, i -> i
+                | _ -> -1
+            else
+                -1)
 
     let private hasDependents (dependencies: int[][]) =
         let has = Array.zeroCreate dependencies.Length
@@ -390,7 +412,8 @@ module internal FileDeps =
                             { Parsed = parsed
                               Dependencies = dependencies
                               SameName = sameNames parsed
-                              HasDependents = hasDependents dependencies }
+                              HasDependents = hasDependents dependencies
+                              ImplementationOf = implementationsOf parsed }
                     )))
 
         // Read through a plain memo: the setup keys cut off on what they read, and a memo with a cutoff reading an async
@@ -466,10 +489,31 @@ module internal Setup =
     /// The setup of file `index` from its dependencies, or from every earlier file when `chain`. Every signature it
     /// holds is the current one: it reads them pending, before any check starts. Kept as the same object while `same`
     /// holds.
-    let key (index: int) (deps: Memo<FileDepsValue>) (signatureOf: int -> Memo<FileSig>) (chain: bool) : Memo<SetupKey> =
+    ///
+    /// A file set up from a signature file without its implementation file (graph mode's ArtificialImplFile) is set up
+    /// with the implementation file too while that file's check fails: a failed check adds nothing to the files after
+    /// it, the signature file's contents included (CheckOneInput's PartialResultOnError), so the signature does not
+    /// stand for it. Whether it fails is a cut-off memo of its own (`project.FailedOf`), so its other edits change
+    /// nothing here.
+    let key (project: ProjectShared) (index: int) (deps: Memo<FileDepsValue>) (signatureOf: int -> Memo<FileSig>) (chain: bool) : Memo<SetupKey> =
         createMemo (fun previous ->
             let d = deps.Value
-            let files = if chain then Array.init index id else d.Dependencies[index]
+
+            let files =
+                if chain then
+                    Array.init index id
+                else
+                    let listed = d.Dependencies[index]
+                    let present = HashSet<int>(listed)
+
+                    let failed =
+                        [| for j in listed do
+                               let i = d.ImplementationOf[j]
+
+                               if i >= 0 && i < index && not (present.Contains i) && (project.FailedOf i).Value then
+                                   yield i |]
+
+                    if failed.Length = 0 then listed else Array.append listed failed |> Array.sort
             let signatures = Nodes.valuesOf (files |> Array.map signatureOf)
 
             let key =
@@ -503,7 +547,7 @@ module internal Setup =
         (run: SetupKey -> 'R)
         (diagnosticsOf: 'R -> FSharpDiagnostic[] option)
         : Memo<SetupKey * 'R> =
-        let chainKey = key index deps signatureOf true
+        let chainKey = key project index deps signatureOf true
         let scoped = ref Unchecked.defaultof<AsyncMemo<Attempt<'R>>>
         let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
 
