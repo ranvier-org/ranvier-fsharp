@@ -186,6 +186,23 @@ let private freeTypars (counter: int ref) : Mutation =
 
             Some(join (Array.insertAt (at + 1) added[1] (Array.insertAt at added[0] parts)), $"add %s{name} = ref [] with a user")
 
+/// C1 of the Task 5 review: a body whose type error makes a file-end default fail, before a generic lambda left
+/// unchanged, whose default then is or is not applied. Adds the pair, or toggles the error and its fix.
+let private failingDefault: Mutation =
+    fun random text ->
+        if text.TrimStart().StartsWith "namespace" then
+            None
+        elif text.Contains "3 * scaleDefaults * r" then
+            Some(text.Replace("3 * scaleDefaults * r", "3 * scaleDefaults r"), "fix areaDefaults")
+        elif text.Contains "3 * scaleDefaults r" then
+            Some(text.Replace("3 * scaleDefaults r", "3 * scaleDefaults * r"), "break areaDefaults")
+        else
+            let lambda = if random.Next 2 = 0 then "x + x" else "x + 1.0"
+
+            let added =
+                $"\n\nlet scaleDefaults (x: int) : int = x * 2\n\nlet areaDefaults (r: int) : int = 3 * scaleDefaults * r\n\nlet gDefaults () =\n    (fun x -> %s{lambda})\n    1\n"
+
+            Some(text.TrimEnd('\n') + added, $"add a failing default before `fun x -> %s{lambda}`")
 /// Renames a nested module's header (Util <-> Util2) or toggles `internal` on it, keeping every line in place.
 let private moduleHeader: Mutation =
     fun random text ->
@@ -302,7 +319,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
         let originals = Collections.Generic.Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let counter = ref 0
 
-        let mutations =
+        let before =
             [| literal
                returnType
                addDeclaration pool counter
@@ -315,8 +332,17 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                moduleHeader
                autoOpen
                augmentationMember counter
-               sameLine
-               if project = sigUnmatchedProject then topHeader |]
+               sameLine |]
+
+        let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
+        let mutations = Array.concat [ before; [| failingDefault |]; after ]
+
+        // A failing default makes the file's whole check fail, so it adds nothing to the files after it. The files set
+        // up from its signature file alone still see the signature's contents in their implementation environment, as
+        // graph mode's ArtificialImplFile node gives them, where a check of every earlier file does not: a gap of the
+        // signature-only setups, not of the finish (task-5-report, fix round 1). Such files are not given the edit.
+        let hasSignatureFile (file: string) = s.Spec.SourceFiles |> List.contains (file + "i")
+        let withoutFailingDefault = Array.append before after
 
         let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
         use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun (k, _) -> premise.Enqueue k)
@@ -348,7 +374,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                 elif random.Next 6 = 0 then
                     originals[file], "revert to the original"
                 else
-                    mutate random mutations s.Texts[file]
+                    mutate random (if hasSignatureFile file then withoutFailingDefault else mutations) s.Texts[file]
 
             let fail (problem: string) =
                 let texts =

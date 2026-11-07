@@ -44,6 +44,8 @@ type StepExtra =
       FileLevelChecks: int64 option
       /// Setups from dependencies refused during the edit (a stale snapshot), checked from every earlier file instead.
       ChainFallbacks: int64 option
+      /// Results the edit's finishes reused from the previous finish of their file.
+      FinishReused: int64 option
       /// The fork's graph-check counts, when logged.
       GraphCheck: GraphCheckCounts option }
 
@@ -305,6 +307,7 @@ module Driver =
                                 | _ -> None
                               FileLevelChecks = delta _.FileLevelChecks
                               ChainFallbacks = delta _.ChainFallbacks
+                              FinishReused = delta _.FinishReused
                               GraphCheck = r.GraphCheck }
                             : StepExtra
                         )

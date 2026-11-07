@@ -43,7 +43,9 @@ type EngineCounters =
       FileLevelChecks: int64
       /// Setups from a file's dependencies the checker refused (a stale dependency snapshot), checked from every earlier
       /// file instead.
-      ChainFallbacks: int64 }
+      ChainFallbacks: int64
+      /// Results FinishFile reused from a file's previous finish.
+      FinishReused: int64 }
 
 /// Which files a promotion left checked by declaration, and which it could not promote (checked whole).
 type Promotion =
@@ -117,7 +119,8 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec,
                   FinishPhaseTicks = graph.FinishPhaseTicks |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
                   PhaseAllocated = graph.PhaseAllocated |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
                   FileLevelChecks = graph.FileLevelChecks
-                  ChainFallbacks = graph.ChainFallbacks }
+                  ChainFallbacks = graph.ChainFallbacks
+                  FinishReused = graph.FinishReused }
 
         member _.DeclarationLines(file, text) = Some(graph.DeclarationLines(file, text))
 

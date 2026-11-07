@@ -50,7 +50,12 @@ type internal FileSig =
                     && b.Signature.HasFingerprint
                     && String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal))
 
-            member _.GetHashCode s = StringComparer.Ordinal.GetHashCode s.Fingerprint }
+            // Never takes a fingerprint: equal values have taken theirs, or are the same signature
+            member _.GetHashCode s =
+                if s.Signature.HasFingerprint then
+                    StringComparer.Ordinal.GetHashCode s.Fingerprint
+                else
+                    0 }
 
 /// Hands each value to the observers subscribed when it is sent.
 [<Sealed>]
@@ -80,6 +85,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
     let mutable chainFallbacks = 0L
+    let mutable finishReused = 0L
     let mutable directiveRetries = 0L
     let mutable declarationRoots = 0L
     let mutable scopedCheckHook: string -> unit = ignore
@@ -97,6 +103,9 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.PremiseBreaks = Interlocked.Read &premiseBreaks
     member _.FileLevelChecks = Interlocked.Read &fileLevelChecks
     member _.ChainFallbacks = Interlocked.Read &chainFallbacks
+    /// The results FinishFile reused from a file's previous finish (FileResult.Reused), summed over every finish.
+    member _.FinishReused = Interlocked.Read &finishReused
+    member _.AddFinishReused(n: int) = Interlocked.Add(&finishReused, int64 n) |> ignore
     member _.DirectiveRetries = Interlocked.Read &directiveRetries
 
     /// Counts a CheckDeclaration that returned, and reports it (on the thread that ran it).

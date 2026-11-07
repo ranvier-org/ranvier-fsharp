@@ -680,6 +680,49 @@ let tests =
                       })
           }
 
+          // R12, found by the fuzz in fix round 1: a declaration whose inference variables a later one solved in place
+          // is checked again when that later one goes, also when it is then the file's last declaration
+          testTask "the last declaration is re-checked when the later use that solved it goes" {
+              let fixture = Path.Combine(Path.GetDirectoryName depsDir, "SigQualName", "SigQualName.fsproj")
+
+              do!
+                  withSession (startOn fixture FileLevel) (fun s ->
+                      task {
+                          let y = s.Spec.SourceFiles |> List.find (fun f -> name f = "Y.fs")
+                          let withUse = "module Y\n\nlet y  = A.x\n\nlet fresh30 = ref []\n\nlet usefresh30 () = fresh30.Value <- [ 95 ]\n"
+                          let! _ = edit s y withUse
+                          do! promote s [ y ]
+                          let! r = edit s y (withUse.Replace("let usefresh30 () = fresh30.Value <- [ 95 ]\n", ""))
+                          Expect.equal (r.NamesIn y) [ "fresh30" ] "fresh30 is checked again"
+                          Expect.exists r.Diagnostics[y] (fun d -> d.ErrorNumber = 30) "its value restriction is reported"
+                          do! expectOracle s r.Diagnostics "the use removed"
+                      })
+          }
+          // M5 of the Task 5 review: only a failing setup is contained; a broken invariant of the graph is not
+          testTask "a broken invariant in a declaration setup is not contained" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          s.Graph.OnSetup(fun path ->
+                              if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
+                                  invalidOp "an invariant of the setup broke (test)")
+
+                          s.Graph.Promote a
+
+                          let! (failure: exn option) =
+                              task {
+                                  try
+                                      let! _ = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                                      return None
+                                  with e ->
+                                      return Some e
+                              }
+
+                          Expect.isTrue
+                              (failure |> Option.exists (fun e -> string e |> fun t -> t.Contains "an invariant of the setup broke (test)"))
+                              $"promoting A.fs fails with the broken invariant: %A{failure}"
+                      })
+          }
           // N2: a wanted file whose text becomes one declaration keeps none of its declaration state
           testTask "a wanted file that becomes one declaration drops its declaration nodes" {
               do!

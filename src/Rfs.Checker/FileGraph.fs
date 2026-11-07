@@ -112,7 +112,8 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
         result: DeclarationResult,
         envBefore: EnvNode,
         named: DeclarationKey[],
-        identity: DeclarationKey[]
+        identity: DeclarationKey[],
+        later: DeclarationKey[]
     ) =
     let seen = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
 
@@ -123,6 +124,9 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
     member _.EnvBefore = envBefore
     member _.Named = named
     member _.Identity = identity
+    /// The keys of the declarations after it when it was checked. A result that DependsOnLaterDeclarations is current
+    /// only while they are the same (R12), also once it is the last declaration and no segment re-checks it.
+    member _.Later = later
 
     /// Whether the check reported a name it could not resolve: such a diagnostic suggests the names in scope that
     /// look like it, so the result depends on every earlier declaration, its key and its fingerprint (T4-C1).
@@ -271,6 +275,13 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             let typed = if isNull previous then [||] else this.TypedOf previous
             let typedGone = typed |> Array.exists (file.Has >> not)
 
+            // Tracked only for a result that depends on later declarations, whose current check reads them
+            let later =
+                if not (isNull previous) && previous.Result.DependsOnLaterDeclarations then
+                    file.KeysAfter key
+                else
+                    untrack (fun () -> file.KeysAfter key)
+
             // A result that suggests names in scope depends on every earlier declaration's fingerprint (T4-C1, M6)
             let suggested = if not (isNull previous) && previous.Suggests then file.KeysBefore key else [||]
 
@@ -295,6 +306,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                        | seen -> seen.Result.Fingerprint = t)
                 && identities |> Array.forall (fun (k, c) -> Nodes.same (previous.Saw k) c)
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
+                && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
 
             if current then
                 Task.FromResult previous
@@ -314,7 +326,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                             let env = file.Walk(start, earlier, ct)
                             let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
                             file.Project.CountCheck(key, file.Path)
-                            return RowCheck(key, decl, start, result, env, deps.Named, deps.Identity)
+                            return RowCheck(key, decl, start, result, env, deps.Named, deps.Identity, later)
                         }),
                     ct
                 )
@@ -393,6 +405,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
                 let earlier = file.Earlier(key, start)
+                let laterOf = dict [ for r, _, _ in members -> r.Key, untrack (fun () -> file.KeysAfter r.Key) ]
 
                 Task.Run<SegmentCheck>(
                     (fun () ->
@@ -406,7 +419,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                                 ct.ThrowIfCancellationRequested()
                                 let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
                                 file.Project.CountCheck(r.Key, file.Path)
-                                let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity)
+                                let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterOf[r.Key])
                                 results[r.Key] <- c
                                 let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
                                 r.EnvCache <- next
@@ -442,6 +455,14 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
         | _ -> false
 
     /// The keys of the declarations before `key`, in file order: a tracked read of the order.
+    /// The keys of the declarations after key, in file order: a tracked read of the order.
+    member this.KeysAfter(key: DeclarationKey) : DeclarationKey[] =
+        let order = this.Order.Value
+
+        match order.TryPosition key with
+        | ValueSome position -> Array.sub order.Keys (position + 1) (order.Keys.Length - position - 1)
+        | ValueNone -> [||]
+
     member this.KeysBefore(key: DeclarationKey) : DeclarationKey[] =
         let order = this.Order.Value
 
@@ -776,6 +797,7 @@ module internal FileNodes =
                             DeclarationChecker.FinishFile(i.Start.Start, i.Checks |> Array.map (fun (_, c) -> c.Result), i.Parsed.Parse)
 
                         project.AddFinishTicks watch.ElapsedTicks
+                        project.AddFinishReused fileResult.Reused
                         project.AddFinishPhaseTicks fileResult.PhaseTicks
                         project.AddPartsAllocated("finish.", fileResult.PhaseAllocated)
 

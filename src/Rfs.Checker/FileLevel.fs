@@ -128,6 +128,8 @@ module internal WholeFile =
                 ValueSome g.Setup.Value
             with
             | NotReadyException _ -> reraise ()
+            // An invariant of the graph broken: a bug, never degraded to a whole check
+            | :? InvalidOperationException -> reraise ()
             | e ->
                 Diagnostics.Trace.WriteLine $"Rfs.Checker: setting %s{path} up by declaration failed: %O{e}"
                 ValueNone

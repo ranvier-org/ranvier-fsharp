@@ -8,6 +8,7 @@ open Expecto
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.Symbols
 open Rfs.Harness
 open Rfs.Lsp
 open Rfs.Projects
@@ -69,7 +70,9 @@ let private expectFresh (p: Project) (text: string) (actual: FileResult) (what: 
     task {
         let expected = fresh p text
         Expect.equal (printsOf actual) (printsOf expected) $"%s{what}: the final fingerprints are a fresh check's"
-        Expect.equal actual.Signature.Fingerprint expected.Signature.Fingerprint $"%s{what}: the file's fingerprint is a fresh check's"
+        // A fingerprint that is not describable (`?`) is unequal to every other, a fresh check's included
+        if not (actual.Signature.Fingerprint.StartsWith "?" && expected.Signature.Fingerprint.StartsWith "?") then
+            Expect.equal actual.Signature.Fingerprint expected.Signature.Fingerprint $"%s{what}: the file's fingerprint is a fresh check's"
         let diff = Diagnostics.compare (toLsp expected.Diagnostics) (toLsp actual.Diagnostics)
         Expect.isEmpty diff $"%s{what}: the diagnostics are a fresh check's:\n%s{String.concat Environment.NewLine diff}"
         let! oracle = oracleClient.Value
@@ -115,6 +118,21 @@ let private interactive (p: Project) (text: string) =
         let! _, checkResults, _ = checker.ParseAndCheckFileInProject(p.Spec.ProjectFile, Array.ofList p.Spec.SourceFiles, sourceReader, a)
         return checkResults
     }
+
+/// C1 of the Task 5 review: the file-end defaults stop at the first default that fails, so whether a later body's
+/// inference variable gets its default, and how its messages show it, depends on another declaration.
+let private failingDefault (lambda: string) =
+    $"module Deps.A\n\nlet scale (x: int) : int = x * 2\n\nlet area (r: int) : int = 3 * scale * r\n\nlet g () =\n    (fun x -> %s{lambda})\n    1\n"
+
+/// Each compiled name the implementation file's values have, in order.
+let private compiledNames (results: FSharpCheckFileResults) =
+    let rec walk (decl: FSharpImplementationFileDeclaration) =
+        [ match decl with
+          | FSharpImplementationFileDeclaration.Entity(_, subDecls) -> yield! List.collect walk subDecls
+          | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(v, _, _) -> yield v.CompiledName
+          | FSharpImplementationFileDeclaration.InitAction _ -> () ]
+
+    results.ImplementationFile.Value.Declarations |> List.collect walk
 
 [<Tests>]
 let tests =
@@ -188,4 +206,70 @@ let tests =
               let! expected = interactive p edited
               expectLikeReference 5 edited expected second.CheckResults "A.fs after its second finish"
               Expect.equal second.CheckResults.Diagnostics second.Diagnostics "the results carry the finish's diagnostics"
+          }
+
+          yield!
+              [ for name, lambda in [ "x + x", "x + x"; "x + 1.0", "x + 1.0" ] do
+                    for broken in [ true; false ] do
+                        let what = if broken then "fixed" else "broken"
+
+                        testTask $"a body whose default another declaration stops is rendered again (%s{name}, area %s{what})" {
+                            let broken' = failingDefault lambda
+                            let fixedText = broken'.Replace("3 * scale * r", "3 * scale r")
+                            let text, edited = if broken then broken', fixedText else fixedText, broken'
+                            let! p = load [ a, text ]
+                            let _, second, kept, results = finishTwice p text edited (fun decls i -> decls[i].Key.Name = "area")
+                            Expect.equal kept 2 "scale and g are given to the second finish again"
+                            Expect.isFalse (results |> Array.exists _.DependsOnLaterDeclarations) "no result depends on later declarations"
+                            do! expectFresh p edited second $"area %s{what}"
+                            Expect.equal second.Reused 1 "only scale is reused: g's lambda is left to the defaults"
+                        } ]
+
+          // M2: a finish's lazy check results are built from the state that finish gave, never during a later undo of it
+          testTask "a superseded finish's check results are built from its own finish" {
+              let! p = load [ a, withDiagnostics ]
+              let parse = DeclarationChecker.Parse(p.Context, a, withDiagnostics)
+              let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+              let decls = DeclarationChecker.Split parse
+              let results = checkAll start env0 decls (fun _ -> None)
+              let first = DeclarationChecker.FinishFile(start, results, parse)
+              let second = DeclarationChecker.FinishFile(start, results, parse)
+              let! expected = interactive p withDiagnostics
+              let uses (r: FSharpCheckFileResults) = r.GetAllUsesOfAllSymbolsInFile() |> Seq.map (fun u -> u.Symbol.FullName, string u.Range) |> Seq.sort |> List.ofSeq
+              // The first finish's, read after the second undid it, while declaration checks of the FileStart undo the
+              // second: the builds take the FileStart's lock, so each runs between two of them
+              let rechecks =
+                  Task.Run(fun () ->
+                      for _ in 1..20 do
+                          DeclarationChecker.CheckDeclaration(start, env0, decls[0], CancellationToken.None) |> ignore)
+
+              let firstResults = first.CheckResults
+              let secondResults = second.CheckResults
+              do! rechecks
+              Expect.equal (uses firstResults) (uses expected) "the first finish's symbol uses are the full check's"
+              Expect.equal (uses secondResults) (uses expected) "and the second's"
+              Expect.equal (compiledNames firstResults) (compiledNames expected) "as are its compiled names"
+              Expect.equal firstResults.Diagnostics first.Diagnostics "the results carry their own finish's diagnostics"
+          }
+          // M3: the compiled names the implementation file hands out are given under the file's lock, at the build
+          testTask "compiled names in the implementation file are given at the build" {
+              let text = "module Deps.A\n\nlet first, second = 1, 2\n\nlet third, fourth = 3, 4\n\nlet adder = fun (x: int) -> x + 1\n"
+              let! p = load [ a, text ]
+              let reference = compiledNames (fresh p text).CheckResults
+              Expect.exists reference (fun n -> n.Contains "@") "a generated compiled name"
+
+              for round in 1..5 do
+                  let finished = fresh p text
+                  let results = finished.CheckResults
+                  // Checks of the file reset its counters; a name first read after them would be numbered from there
+                  for _ in 1..3 do
+                      DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)) |> ignore
+
+                  let reads = [ for _ in 1..4 -> Task.Run(fun () -> compiledNames results) ]
+                  let check = Task.Run(fun () -> DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)) |> ignore)
+                  let! names = Task.WhenAll reads
+                  do! check
+
+                  for n in names do
+                      Expect.equal n reference $"round %d{round}: the compiled names a sequential build gives"
           } ]

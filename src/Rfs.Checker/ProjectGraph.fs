@@ -283,6 +283,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// current, each then checked from every earlier file.
     member _.ChainFallbacks: int64 = project.ChainFallbacks
 
+    /// The results FinishFile reused from a file's previous finish (FileResult.Reused), summed over every finish.
+    member _.FinishReused: int64 = project.FinishReused
+
     /// How many times a file-level check was tried again because its file's #line directives were a newer parse's.
     member internal _.DirectiveRetries: int64 = project.DirectiveRetries
 
