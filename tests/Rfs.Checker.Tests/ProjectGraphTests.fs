@@ -36,6 +36,22 @@ let tests =
                       })
           }
 
+          testTask "settle waits kick each file at most once per pump, however many of them there are" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let spec = s.Spec
+                          let n = int64 spec.SourceFiles.Length
+                          let kicks, pumps = s.Graph.Kicks, s.Graph.Pumps
+                          s.Graph.SetText(a, s.Texts[a] + "\nlet kicked = 0\n") |> ignore
+                          // One wait per file, as an LSP layer would park one per open file
+                          let! _ = Task.WhenAll [ for f in spec.SourceFiles -> s.Graph.Diagnostics f ] |> settle
+                          let kicks, pumps = s.Graph.Kicks - kicks, s.Graph.Pumps - pumps
+                          Expect.isGreaterThan kicks 0L "the waits kicked"
+                          Expect.isLessThanOrEqual kicks (pumps * n) $"at most %d{n} kicks per pump: %d{kicks} kicks in %d{pumps} pumps"
+                      })
+          }
+
           testTask "the D1 premise holds on load, and only R11 and R12 make segments" {
               let! (spec: Rfs.Projects.ProjectSpec) = Rfs.Projects.ProjectSpec.load depsProject
               let host = GraphHost.Start "premise"
