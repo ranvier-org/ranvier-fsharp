@@ -1,0 +1,11 @@
+{
+  "server": "file-slim",
+  "scenario": "small-cold",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-07T06:54:13.0902074Z",
+  "coldMs": 5247.1931,
+  "steps": [],
+  "peakWorkingSetMb": 223.18359375,
+  "allocatedMb": 1830.9930801391602,
+  "gen2": 4
+}

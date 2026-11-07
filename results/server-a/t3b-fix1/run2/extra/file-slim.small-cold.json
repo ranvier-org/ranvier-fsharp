@@ -1,0 +1,14 @@
+{
+  "server": "file-slim",
+  "scenario": "small-cold",
+  "coldAllocatedMb": 1830.6605987548828,
+  "editAllocatedMb": 0,
+  "coldCounters": null,
+  "premiseBreaksAtCold": null,
+  "segmentRowsAtCold": null,
+  "largestRowLines": null,
+  "editedRowLines": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": []
+}

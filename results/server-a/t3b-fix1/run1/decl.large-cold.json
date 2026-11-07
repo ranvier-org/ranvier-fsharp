@@ -1,0 +1,11 @@
+{
+  "server": "decl",
+  "scenario": "large-cold",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-07T06:52:37.2248408Z",
+  "coldMs": 3307.295,
+  "steps": [],
+  "peakWorkingSetMb": 295.296875,
+  "allocatedMb": 1074.4368057250977,
+  "gen2": 3
+}
