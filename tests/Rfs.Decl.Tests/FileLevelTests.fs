@@ -7,6 +7,10 @@ open Expecto
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
+open FSharp.Compiler.EditorServices
+open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.Text
+open FSharp.Compiler.Tokenization
 open Rfs.Harness
 open Rfs.Lsp
 open Rfs.Projects
@@ -203,6 +207,87 @@ let private checkBAfter (p: Project) (parseB: FSharpParseFileResults) (a: FileSi
         |> fst
 
     whole, DeclarationChecker.FinishFile(start, results, parseB)
+
+/// The fork's InteractiveChecker over the project's texts: the per-file check results a server builds today.
+let private interactive (p: Project) =
+    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions p.Spec)
+    let sourceReader f = let t = p.Texts[f] in hash t, lazy t
+
+    fun (file: string) ->
+        async {
+            let! _, checkResults, _ = checker.ParseAndCheckFileInProject(p.Spec.ProjectFile, Array.ofList p.Spec.SourceFiles, sourceReader, file)
+            return checkResults
+        }
+
+let private tagged (text: RichText) = text.Text
+
+let private tooltipText (ToolTipText elements) =
+    [ for element in elements do
+          match element with
+          | ToolTipElement.Group items ->
+              for item in items do
+                  yield tagged item.MainDescription
+                  yield! item.TypeMapping |> List.map tagged
+                  yield! item.Remarks |> Option.map tagged |> Option.toList
+          | ToolTipElement.CompositionError error -> yield "error: " + error
+          | ToolTipElement.None -> yield "none" ]
+    |> String.concat "\n"
+
+let private useText (u: FSharpSymbolUse) =
+    $"%A{u.Range} %s{u.Symbol.FullName} definition=%b{u.IsFromDefinition}"
+
+/// Up to five symbol uses spread over the file, at least `atLeast`, as a query at the end of each one's names gives
+/// them: line, column, line text and names.
+let private positions (atLeast: int) (text: string) (uses: FSharpSymbolUse seq) =
+    let lines = text.Split '\n' |> Array.map (fun line -> line.TrimEnd '\r')
+
+    let candidates =
+        uses
+        |> Seq.choose (fun u ->
+            let r = u.Range
+
+            if r.StartLine <> r.EndLine then
+                None
+            else
+                let line = lines[r.StartLine - 1]
+                let names = line.Substring(r.StartColumn, r.EndColumn - r.StartColumn)
+
+                if names.Length > 0 && names |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_' || c = '.') then
+                    Some(r.StartLine, r.EndColumn, line, List.ofArray (names.Split '.'))
+                else
+                    None)
+        |> Seq.distinct
+        |> Array.ofSeq
+
+    Expect.isGreaterThanOrEqual candidates.Length atLeast $"the file has %d{atLeast} symbol uses to ask about"
+    let count = min 5 candidates.Length
+    Array.init count (fun i -> candidates[if count = 1 then 0 else i * (candidates.Length - 1) / (count - 1)])
+
+/// The file's lazily built check results give the reference's symbol uses, and its tooltips and symbol uses at up to
+/// five positions.
+let private expectLikeReference (atLeast: int) (text: string) (expected: FSharpCheckFileResults) (actual: FSharpCheckFileResults) (what: string) =
+    let usesOf (results: FSharpCheckFileResults) =
+        results.GetAllUsesOfAllSymbolsInFile() |> Seq.map useText |> Seq.sort |> List.ofSeq
+
+    Expect.isNonEmpty (usesOf expected) $"%s{what}: the reference has symbol uses"
+    Expect.sequenceEqual (usesOf actual) (usesOf expected) $"%s{what}: every symbol use"
+    Expect.isSome actual.ImplementationFile $"%s{what}: the typed implementation file"
+
+    for line, column, lineText, names in positions atLeast text (expected.GetAllUsesOfAllSymbolsInFile()) do
+        let at = $"%s{what} at %d{line}:%d{column} %A{names}"
+        let tip (results: FSharpCheckFileResults) = tooltipText (results.GetToolTip(line, column, lineText, names, FSharpTokenTag.Identifier))
+        Expect.equal (tip actual) (tip expected) $"%s{at}: the tooltip"
+        let useAt (results: FSharpCheckFileResults) = results.GetSymbolUseAtLocation(line, column, lineText, names) |> Option.map useText
+        Expect.isSome (useAt expected) $"%s{at}: the reference resolves it"
+        Expect.equal (useAt actual) (useAt expected) $"%s{at}: the symbol use"
+
+/// The message of the InvalidOperationException reading the results raises, if any.
+let private refusedResults (result: FileResult) =
+    try
+        result.CheckResults |> ignore
+        None
+    with :? InvalidOperationException as e ->
+        Some e.Message
 
 [<Tests>]
 let fileLevelTests =
@@ -467,4 +552,103 @@ let fileLevelTests =
                   Expect.equal finished.Signature.Fingerprint s1.Fingerprint $"re-finishing after %s{decls[k].Key.Name} gives S1's fingerprint"
                   expectB $"S1 after re-checking %s{decls[k].Key.Name} and finishing again" s1
                   expectB $"the new signature after %s{decls[k].Key.Name}" finished.Signature
+          }
+
+          testTask "cold check builds no check results until asked" {
+              let! p = load depsProject []
+              let parses = parseAll p
+              let scoped = scopedPipeline p parses (DeclarationChecker.FileDependencies(p.Context, parses))
+              Expect.equal p.Context.CheckResultsBuilt 0 "CheckFile builds no sink and no check results"
+              let results = scoped |> Array.choose (fun f -> f.Result)
+              let first = results[0]
+              let! (built: FSharpCheckFileResults[]) =
+                  Array.init 8 (fun _ -> Task.Run<FSharpCheckFileResults>(fun () -> first.CheckResults)) |> Task.WhenAll
+
+              Expect.equal p.Context.CheckResultsBuilt 1 "the first file's results are built once, though asked from 8 threads at once"
+              Expect.all built (fun r -> obj.ReferenceEquals(r, built[0])) "every thread gets the same results"
+              first.CheckResults |> ignore
+              Expect.equal p.Context.CheckResultsBuilt 1 "a later read reuses them"
+              Expect.equal first.CheckResults.Diagnostics first.Diagnostics "the results carry the check's diagnostics"
+          }
+
+          testTask "lazy check results equal eager ones" {
+              let! p = load depsProject []
+              let parses = parseAll p
+              let scoped = scopedPipeline p parses (DeclarationChecker.FileDependencies(p.Context, parses))
+              let reference = interactive p
+
+              for f in scoped do
+                  match f.Result with
+                  | Some result ->
+                      let file = f.Parse.FileName
+                      let! expected = reference file
+                      expectLikeReference 5 p.Texts[file] expected result.CheckResults (Path.GetFileName file)
+                  | None -> ()
+          }
+
+          // Sequenced: the file's line directives are the latest parse's in the process, as for the R18 test
+          testSequenced
+          <| testTask "lazy results after a newer parse are correct or refused" {
+              let! p = load tinyProject [ "C.fs", lineDirective ]
+              let parses = parseAll p
+              let file = p.FileNamed "C.fs"
+              let idx = parses |> Array.findIndex (fun parse -> parse.FileName = file)
+              let before = chain p parses |> Array.take idx |> Array.map (fun f -> f.Signature) |> List.ofArray
+              let first = DeclarationChecker.CheckFile(p.Context, before, parses[idx])
+              let second = DeclarationChecker.CheckFile(p.Context, before, parses[idx])
+
+              // A newer text without the directive replaces the file's line directives
+              DeclarationChecker.Parse(p.Context, file, noLineDirective) |> ignore
+              let refused = refusedResults first
+              Expect.isSome refused "built after a newer parse with other line directives, the results are refused"
+              Expect.stringContains refused.Value "line directives" "the refusal says why"
+              Expect.equal (refusedResults first) refused "and stay refused"
+              Expect.equal p.Context.CheckResultsBuilt 0 "a refused build checks nothing"
+
+              // The same text again gives the file the directives it had: the other result builds, and is right
+              DeclarationChecker.Parse(p.Context, file, lineDirective) |> ignore
+              let! expected = interactive p file
+              expectLikeReference 1 lineDirective expected second.CheckResults "C.fs with a line directive"
+              Expect.equal p.Context.CheckResultsBuilt 1 "it is built"
+
+              // A text without directives builds after a newer parse that has none either
+              let! p = load tinyProject [ "C.fs", noLineDirective ]
+              let parses = parseAll p
+              let whole = chain p parses
+              let result = whole[idx].Result.Value
+              DeclarationChecker.Parse(p.Context, file, "module Tiny.C\n\nlet other = Tiny.B.two\n") |> ignore
+              let! expected = interactive p file
+              expectLikeReference 1 noLineDirective expected result.CheckResults "C.fs without a line directive"
+          }
+
+          testTask "sinkless diagnostics equal the oracle" {
+              let chains = fixture "Chains"
+              let chainsDir = Path.GetDirectoryName chains
+              // FS0039 with a suggestion, and FS1182, which the fixtures turn on
+              let suggestion = File.ReadAllText(Path.Combine(chainsDir, "B.fs")) + "\nlet shift = 99\n\nlet added15 = shifted\n"
+              let unused = File.ReadAllText(Path.Combine(chainsDir, "D.fs")) + "\nlet useless () =\n    let unused = 5\n    1\n"
+
+              for project, overrides in [ tinyProject, []; depsProject, []; chains, []; chains, [ "B.fs", suggestion; "D.fs", unused ] ] do
+                  let! p = load project overrides
+                  let parses = parseAll p
+                  let whole = chain p parses
+                  let scoped = scopedPipeline p parses (DeclarationChecker.FileDependencies(p.Context, parses))
+
+                  for f in Array.append whole scoped do
+                      match f.Result with
+                      | Some result -> do! expectOracle p f.Parse.FileName result.Diagnostics "sinkless CheckFile" :> Task
+                      | None -> ()
+
+                  Expect.equal p.Context.CheckResultsBuilt 0 $"%s{Path.GetFileName project}: no file was checked with a sink"
+
+                  if not overrides.IsEmpty then
+                      let! b = oracleFor p (p.FileNamed "B.fs")
+                      let! d = oracleFor p (p.FileNamed "D.fs")
+
+                      Expect.exists
+                          b
+                          (fun d -> d.Code = "FS0039" && d.Message.Contains "Maybe you want one of the following")
+                          "B.fs has an FS0039 with suggestions"
+
+                      Expect.exists d (fun d -> d.Code = "FS1182") "D.fs has an FS1182"
           } ]

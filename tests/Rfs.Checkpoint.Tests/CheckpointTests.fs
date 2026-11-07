@@ -264,7 +264,8 @@ let tests =
 
               // decl checks every file whole, so its phases are the file-level graph's, not FinishFile's; "checkpoint on
               // Deps checking by declaration" checks the finish's parts
-              let fileLevelPhases = set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "tail"; "checkSignatureFile" ]
+              let fileLevelPhases =
+                  set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "setup"; "tail"; "definitions"; "fingerprint"; "render"; "checkSignatureFile" ]
 
               for s in decl["steps"].AsArray() do
                   let ms = s["finishPhaseMs"].AsObject() |> Seq.map _.Key |> Set.ofSeq

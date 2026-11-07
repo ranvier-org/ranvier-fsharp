@@ -76,6 +76,7 @@ let tests =
                   Expect.equal graph.FileLevelChecks (int64 implementations.Length) "one CheckFile per implementation file"
                   Expect.equal graph.CheckedCount 0L "no declaration is checked on its own"
                   Expect.equal graph.ChainFallbacks 0L "every setup is the scoped one"
+                  Expect.equal graph.Context.CheckResultsBuilt 0 "the cold check builds no sink and no check results"
                   let! expected = oracle.Check depsProject Map.empty
                   let actual = [ for kv in all do yield! kv.Value |> Seq.map FcsDiagnostics.ofFcs ]
                   Expect.isEmpty (Rfs.Lsp.Diagnostics.compare expected actual) "diagnostics equal a full check"
