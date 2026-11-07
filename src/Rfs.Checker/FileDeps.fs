@@ -145,6 +145,9 @@ type internal ProjectShared(ctx: ProjectContext) =
     /// exist; read only for implementation files that have a signature file.
     member val FailedOf: int -> Memo<bool> = (fun _ -> invalidOp "the files' nodes are not made yet") with get, set
 
+    /// File i's IFileNode.Current. Set once every file's nodes exist.
+    member val CurrentOf: int -> Memo<bool> = (fun _ -> invalidOp "the files' nodes are not made yet") with get, set
+
     /// Runs work on the graph thread after the current run, as GraphHost.Post. Set once the host is known.
     member val Post: (unit -> unit) -> unit = ignore with get, set
 
@@ -435,8 +438,8 @@ type internal SetupKey =
       /// signature's fingerprint. Not part of the key's identity.
       HasDependents: bool
       /// The implementation files whose failed status (`ProjectShared.FailedOf`) the key read: an answer given while
-      /// such a file is checked again is its last one, so a result of this key is settled only once each of them is.
-      /// Not part of the key's identity.
+      /// such a file is checked again is its last one, so a result of this key is settled only once each of them is
+      /// current, as each of Files must be. Not part of the key's identity.
       Consulted: int[]
       /// Whether Files are the file's dependencies and fewer than every earlier file: the checker then accepts the
       /// setup only while its dependency snapshot is current
@@ -542,7 +545,8 @@ module internal Setup =
     /// A file's result, checked off the graph thread from the setup its dependencies give (`scopedKey`, as `key`
     /// makes it), and from every earlier file when the checker refuses that setup (its dependency snapshot went stale)
     /// or the check reports an unresolved name. Each async memo reads its key before its check starts and returns its
-    /// last value while the key is the same, so a wake that changed nothing runs no check.
+    /// last value while the key is the same, so a wake that changed nothing runs no check. Also gives what the node's
+    /// effect must call to keep the check running.
     let build
         (project: ProjectShared)
         (path: string)
@@ -552,7 +556,7 @@ module internal Setup =
         (scopedKey: Memo<SetupKey>)
         (run: SetupKey -> 'R)
         (diagnosticsOf: 'R -> FSharpDiagnostic[] option)
-        : Memo<SetupKey * 'R> =
+        : struct (Memo<SetupKey * 'R> * (unit -> unit)) =
         let chainKey = key project index deps signatureOf true
         let scoped = ref Unchecked.defaultof<AsyncMemo<Attempt<'R>>>
         let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
@@ -601,10 +605,27 @@ module internal Setup =
                 else
                     Task.Run<SetupKey * 'R>(fun () -> key, runWhileDirectivesCurrent project ct (fun () -> run key)))
 
-        createMemo (fun _ ->
-            match scoped.Value.Value with
-            | Done(key, result) -> key, result
-            | _ -> chained.Value.Value)
+        let result =
+            createMemo (fun _ ->
+                match scoped.Value.Value with
+                | Done(key, result) -> key, result
+                | _ -> chained.Value.Value)
+
+        // Reads the keys and the checks that give the result, as `result` does. SigChain2's fuzz (at R 96d957c too) left a
+        // key Pending and Dirty on a source that had settled, with none of its readers (the checks, the declaration
+        // setup, the node's effect) run again: a Ranvier lost wake-up. Any read of the key itself runs it again. The
+        // node's effect calls this, and so does every settle wait, after each pump, so a wait never hangs on it.
+        let observe () =
+            scopedKey.TryValue |> ignore
+
+            match scoped.Value.TryValue with
+            | Ready(Done _) -> ()
+            | Ready _ ->
+                chainKey.TryValue |> ignore
+                chained.Value.TryValue |> ignore
+            | _ -> ()
+
+        struct (result, observe)
 
 /// What a file checked by declaration is set up from (BeginFile): its setup from its dependencies, and its header.
 /// Kept as the same object while both are unchanged, whatever its parse, so the file is set up again only then.

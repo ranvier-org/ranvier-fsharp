@@ -131,6 +131,9 @@ let private sigQualNameOpenTargets = [| "System"; "A"; "Y" |]
 /// An implementation file whose qualified name differs from its signature file's (T4-C3)
 let private sigUnmatchedProject = Path.Combine(Path.GetDirectoryName depsDir, "SigUnmatched", "SigUnmatched.fsproj")
 let private sigUnmatchedOpenTargets = [| "System"; "A"; "Ab"; "W" |]
+/// Two signature pairs, where whether X.fs fails depends on whether W.fs does (S1-R2)
+let private sigChain2Project = Path.Combine(Path.GetDirectoryName depsDir, "SigChain2", "SigChain2.fsproj")
+let private sigChain2OpenTargets = [| "System"; "V"; "W"; "A"; "Y" |]
 
 let private addOpen (openTargets: string[]) : Mutation =
     fun random text -> Some(place random text (fun indent -> $"%s{indent}open %s{pick random openTargets}"))
@@ -312,6 +315,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             elif project = sigShadowProject then sigShadowOpenTargets
             elif project = sigQualNameProject then sigQualNameOpenTargets
             elif project = sigUnmatchedProject then sigUnmatchedOpenTargets
+            elif project = sigChain2Project then sigChain2OpenTargets
             else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
@@ -445,7 +449,11 @@ let private fuzz (name: string) (mode: FileMode) =
 
           // Signature files standing in for their implementation files: AutoOpen order and qualified-name pairing
           for project, label in [ sigShadowProject, "SigShadow"; sigQualNameProject, "SigQualName"; sigUnmatchedProject, "SigUnmatched" ] ->
-              testTask $"%s{label} seed 1515: 200 random edits equal the oracle after each" { do! run project mode 1515 200 } ]
+              testTask $"%s{label} seed 1515: 200 random edits equal the oracle after each" { do! run project mode 1515 200 }
+
+          // A failed status two signature pairs away, which only a transitive settle gate waits for
+          for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
+              testTask $"SigChain2 seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigChain2Project mode seed 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level
 [<Tests>]

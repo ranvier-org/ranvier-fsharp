@@ -62,8 +62,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         lazy (DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.RunSynchronously)
 
     /// Reads file `i` once it is settled on its latest text, with every write posted to it and to the files before it
-    /// applied. Its result being settled means the files it was set up from are settled too.
-    let settledFile (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+    /// applied. Its result being settled means the files it was set up from are current too, transitively
+    /// (IFileNode.Current).
+    let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
         let mutable applied = true
 
         for j in 0..i do
@@ -72,14 +73,25 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         if applied then read files[i] (Volatile.Read &requested[i]) else ValueNone
 
+    /// readSettled, after kicking the files up to `i` (IFileNode.Kick): each settle wait reads after every pump, so a
+    /// lost wake-up never stalls it.
+    let settledFile (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+        for j in 0..i do
+            files[j].Kick()
+
+        readSettled i read
+
     /// Reads every file once each is settled on its latest text.
     let settledAll (read: IFileNode -> int64 -> 'T voption) : 'T[] voption =
         let results = Array.zeroCreate files.Length
         let mutable ok = true
         let mutable i = 0
 
+        for f in files do
+            f.Kick()
+
         while ok && i < files.Length do
-            match settledFile i read with
+            match readSettled i read with
             | ValueSome r -> results[i] <- r
             | ValueNone -> ok <- false
 
@@ -148,6 +160,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                         |> Array.ofSeq
 
                     project.FailedOf <- fun i -> failed[i]
+                    project.CurrentOf <- fun i -> nodes[i].Current
 
                     // The dependencies read every file's parse, so effects start once every file's nodes exist
                     for node in nodes do

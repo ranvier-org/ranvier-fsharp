@@ -540,6 +540,9 @@ type internal IFileNode =
     abstract Text: FileText
     /// What later files are checked against
     abstract Signature: Memo<FileSig>
+    /// Whether the signature is settled and every file its published result's setup read (SetupKey's Files and
+    /// Consulted) is current too (S1-R2). Never pending.
+    abstract Current: Memo<bool>
     /// The file's diagnostics once its result is for text version `version` and was set up from the current
     /// signatures of the files it read. Its setup reads FileDeps, which reads every file's parse, so it also waits for
     /// the parse of every file whose write has been applied, not only its dependencies'.
@@ -567,6 +570,9 @@ type internal IFileNode =
     abstract DeclarationObjects: unit -> WeakReference list
     /// Creates the effects that keep the file checked. Called once every file's nodes exist.
     abstract Activate: unit -> unit
+    /// Reads the file's setup keys and checks, so a key a lost wake-up left Dirty runs again (Setup.build). Graph
+    /// thread, outside any run.
+    abstract Kick: unit -> unit
 
 /// The nodes that check an implementation file one declaration at a time: created when the file is promoted, and
 /// disposed with their owner when it is demoted.

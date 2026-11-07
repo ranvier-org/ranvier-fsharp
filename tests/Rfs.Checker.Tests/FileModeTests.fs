@@ -797,6 +797,73 @@ let tests =
                                       Expect.equal (codes diagnosticsY) (codes all[y]) $"%A{mode} round %d{round}: X.fs %s{what}: Diagnostics(Y.fs)"
                           })
           }
+          // S1-R2: a status two pairs away. W.fs failing stops X.fs failing, so Y.fs, set up from X.fsi alone, sees
+          // A.x : int (FS0001). X.fs's signature is Ready all through W.fs's check, computed from W.fs's last status.
+          testTask "a file does not settle on a signature computed from a stale failed status two pairs away" {
+              let fixture = Path.Combine(Path.GetDirectoryName depsDir, "SigChain2", "SigChain2.fsproj")
+
+              for mode in [ FileLevel; Declarations ] do
+                  do!
+                      withSession (startOn fixture mode) (fun s ->
+                          task {
+                              let w = s.Spec.SourceFiles |> List.find (fun f -> name f = "W.fs")
+                              let y = s.Spec.SourceFiles |> List.find (fun f -> name f = "Y.fs")
+                              let ok = s.Texts[w]
+                              let codes (ds: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = ds |> Array.map _.ErrorNumber |> Array.sort
+
+                              for round in 1..3 do
+                                  for what, text in [ "fails", ok.TrimEnd('\n') + failingDefault; "fixed", ok ] do
+                                      s.Texts[w] <- text
+                                      s.Graph.SetText(w, text) |> ignore
+
+                                      let asked =
+                                          [ for f in s.Spec.SourceFiles -> f, s.Graph.SettledDiagnostics f, s.Graph.Diagnostics f ]
+
+                                      let! all = s.Graph.AllDiagnostics() |> settle
+                                      do! expectOracle s all $"%A{mode} round %d{round}: W.fs %s{what}"
+
+                                      if what = "fails" then
+                                          Expect.contains (codes all[y]) 1 $"%A{mode} round %d{round}: Y.fs sees A.x"
+
+                                      for f, settled, diagnostics in asked do
+                                          let! struct (_, settledF) = settled |> settle
+                                          let! diagnosticsF = diagnostics |> settle
+                                          Expect.equal (codes settledF) (codes all[f]) $"%A{mode} round %d{round}: W.fs %s{what}: SettledDiagnostics(%s{name f})"
+                                          Expect.equal (codes diagnosticsF) (codes all[f]) $"%A{mode} round %d{round}: W.fs %s{what}: Diagnostics(%s{name f})"
+                          })
+          }
+          // m4 of re-review 2: WhenPromoted does not answer Declarations for a finish whose setup read a stale status,
+          // which a status flip then sets up again
+          testTask "a promoted file does not report Declarations on a stale failed status" {
+              let fixture = Path.Combine(Path.GetDirectoryName depsDir, "SigChain2", "SigChain2.fsproj")
+
+              do!
+                  withSession (startOn fixture Declarations) (fun s ->
+                      task {
+                          let w = s.Spec.SourceFiles |> List.find (fun f -> name f = "W.fs")
+                          let y = s.Spec.SourceFiles |> List.find (fun f -> name f = "Y.fs")
+                          // Two declarations, so Y.fs is built by declaration
+                          let! _ = edit s y (s.Texts[y] + "\nlet z = 2\n")
+                          let ok = s.Texts[w]
+                          let mutable setups = 0
+
+                          s.Graph.OnBeginFile(fun path ->
+                              if String.Equals(path, y, StringComparison.OrdinalIgnoreCase) then
+                                  Interlocked.Increment &setups |> ignore)
+
+                          for round in 1..3 do
+                              for what, text in [ "fails", ok.TrimEnd('\n') + failingDefault; "fixed", ok ] do
+                                  s.Texts[w] <- text
+                                  s.Graph.SetText(w, text) |> ignore
+                                  let! mode = s.Graph.WhenPromoted(y, CancellationToken.None) |> settle
+                                  let at = Volatile.Read &setups
+                                  let! all = s.Graph.AllDiagnostics() |> settle
+                                  do! whenPromoted s.Graph s.Spec
+                                  do! expectOracle s all $"round %d{round}: W.fs %s{what}"
+                                  Expect.equal mode Declarations $"round %d{round}: W.fs %s{what}: Y.fs is promoted"
+                                  Expect.equal (Volatile.Read &setups) at $"round %d{round}: W.fs %s{what}: Y.fs is not set up again after WhenPromoted answered"
+                      })
+          }
           // M5 of the Task 5 review: only a failing setup is contained; a broken invariant of the graph is not
           testTask "a broken invariant in a declaration setup is not contained" {
               do!

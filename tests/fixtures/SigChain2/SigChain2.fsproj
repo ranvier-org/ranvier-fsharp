@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="V.fs" />
+    <Compile Include="W.fsi" />
+    <Compile Include="W.fs" />
+    <Compile Include="X.fsi" />
+    <Compile Include="X.fs" />
+    <Compile Include="Y.fs" />
+  </ItemGroup>
+</Project>

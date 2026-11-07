@@ -42,25 +42,38 @@ type internal Published =
 /// declaration at a time.
 module internal WholeFile =
 
-    /// The file's result while it is for text version `version`, and was set up from the current signatures of the
-    /// files it read: a memo that is ready is consistent with every node it read, and the setup read those signatures
-    /// pending.
-    /// Whether every implementation file whose failed status the key read (SetupKey.Consulted) has settled its signature:
-    /// while one is checked again its status is the last one, which its check may still change (S1-R). A tracked read,
-    /// so a waiter wakes when the signature settles.
-    let statusSettled (signatureOf: int -> Memo<FileSig>) (key: SetupKey) =
-        key.Consulted
-        |> Array.forall (fun i ->
-            match (signatureOf i).TryValue with
-            | Pending -> false
-            | _ -> true)
+    /// Whether every file the key read is current (IFileNode.Current): the files whose signatures it holds, and the
+    /// implementation files whose failed status it read (SetupKey.Consulted). While a file is checked again its status
+    /// is its last answer (S1-R), and a ready signature may have been computed from such an answer further up, so being
+    /// ready is not enough (S1-R2). Tracked reads, so a waiter wakes when one becomes current.
+    let readsCurrent (project: ProjectShared) (key: SetupKey) =
+        let current i =
+            match (project.CurrentOf i).TryValue with
+            | Ready c -> c
+            | _ -> false
 
-    let private settledAt (signatureOf: int -> Memo<FileSig>) (file: FileText) (result: Memo<SetupKey * 'R>) (version: int64) : (SetupKey * 'R) voption =
+        Array.forall current key.Files && Array.forall current key.Consulted
+
+    /// A file's Current: its signature is settled, and so is everything the setup of the result it is from read. Cut
+    /// off on the answer, reading plain memos and the signature memo only, never an async memo (see Nodes). A failed
+    /// check counts as current: it is raised where its result is read, so nothing waits on it.
+    let currentOf (project: ProjectShared) (signature: Memo<FileSig>) (key: Memo<SetupKey>) : Memo<bool> =
+        createMemoWithComparer HashIdentity.Structural (fun _ ->
+            match signature.TryValue, key.TryValue with
+            | Ready _, Ready k -> readsCurrent project k
+            | Failed _, _
+            | _, Failed _ -> true
+            | _ -> false)
+
+    /// The file's result while it is for text version `version`, and was set up from the current signatures of the
+    /// files it read: a memo that is ready is consistent with every node it read, the setup read those signatures
+    /// pending, and they are current.
+    let private settledAt (project: ProjectShared) (file: FileText) (result: Memo<SetupKey * 'R>) (version: int64) : (SetupKey * 'R) voption =
         if file.Version <> version then
             ValueNone
         else
             match result.TryValue with
-            | Ready((key, _) as r) when key.Parsed.Version = version && statusSettled signatureOf key -> ValueSome r
+            | Ready((key, _) as r) when key.Parsed.Version = version && readsCurrent project key -> ValueSome r
             | Failed e -> raise (InvalidOperationException($"%s{file.Path} failed to check", e))
             | _ -> ValueNone
 
@@ -97,7 +110,7 @@ module internal WholeFile =
         // The scope the declaration nodes' roots attach to: the graph's, not an effect's
         let graphOwner = getOwner ()
 
-        let whole =
+        let struct (whole, observeWhole) =
             Setup.build
                 project
                 path
@@ -229,6 +242,16 @@ module internal WholeFile =
                 | Kept k -> FileSig.Of k.Result.Signature
                 | Whole -> FileSig.Of (snd whole.Value).Signature)
 
+        // The setup of the published result
+        let publishedKey =
+            createMemo (fun _ ->
+                match published.Value with
+                | ByDeclaration(_, f) -> f.Start.Setup.Key
+                | Kept k -> k.Key
+                | Whole -> fst whole.Value)
+
+        let isCurrent = currentOf project signature publishedKey
+
         let current (version: int64) =
             if file.Version <> version then
                 ValueNone
@@ -239,10 +262,10 @@ module internal WholeFile =
                 | _ -> ValueNone
 
         let finishedAt (version: int64) (f: Finished) =
-            if f.Version = version && statusSettled signatureOf f.Start.Setup.Key then ValueSome f else ValueNone
+            if f.Version = version && readsCurrent project f.Start.Setup.Key then ValueSome f else ValueNone
 
         let keptAt (version: int64) (k: KeptResult) =
-            if k.Version = version && statusSettled signatureOf k.Key then ValueSome k.Result else ValueNone
+            if k.Version = version && readsCurrent project k.Key then ValueSome k.Result else ValueNone
 
         /// Disposes the owner of dropped declaration nodes, once their readers have moved off them. A memo keeps its
         /// sources until it runs again, and a disposed node its last value, so the memos that read the nodes run again
@@ -271,6 +294,7 @@ module internal WholeFile =
                 match published.Value with
                 | Whole ->
                     whole.TryValue |> ignore
+                    observeWhole ()
 
                     if untrack (fun () -> not wanted.Value && kept.Value.IsSome) then
                         untrack (fun () -> kept.Value <- ValueNone)
@@ -278,6 +302,9 @@ module internal WholeFile =
                     if f.Version = file.Text.Value.Version then
                         untrack (fun () -> g.Publish f)
                 | Kept _ -> ())
+
+            // Keeps Current observed, as the signature is above, so waiters never read one a lost wake-up left behind
+            createEffect (fun () -> isCurrent.TryValue |> ignore)
 
             // Makes the declaration nodes once a wanted file is known to have more than one declaration
             createEffect (fun () ->
@@ -342,12 +369,13 @@ module internal WholeFile =
 
             member _.Text = file
             member _.Signature = signature
+            member _.Current = isCurrent
 
             member _.Settled version =
                 match current version with
                 | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map _.FileResult.Diagnostics
                 | ValueSome(Kept k) -> keptAt version k |> ValueOption.map _.Diagnostics
-                | ValueSome Whole -> settledAt signatureOf file whole version |> ValueOption.map (fun (_, r) -> r.Diagnostics)
+                | ValueSome Whole -> settledAt project file whole version |> ValueOption.map (fun (_, r) -> r.Diagnostics)
                 | ValueNone -> ValueNone
 
             member _.Results version =
@@ -360,7 +388,7 @@ module internal WholeFile =
                 match current version with
                 | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map _.FileResult
                 | ValueSome(Kept k) -> keptAt version k
-                | ValueSome Whole -> settledAt signatureOf file whole version |> ValueOption.map snd
+                | ValueSome Whole -> settledAt project file whole version |> ValueOption.map snd
                 | ValueNone -> ValueNone
 
             member _.SegmentRows() =
@@ -405,19 +433,25 @@ module internal WholeFile =
                 elif not wanted.Peek then
                     ValueSome FileLevel
                 else
+                    // Each answer that depends on the setup waits until what the setup read is current (m4): a status
+                    // that flips then sets the file up again
                     match stateNow (), decl.Peek with
                     | ValueSome(Single v), _ -> if v = version then ValueSome FileLevel else ValueNone
-                    | ValueSome BuildFailed, _ -> ValueSome FileLevel
+                    | ValueSome BuildFailed, _ ->
+                        match failed.Peek with
+                        | ValueSome(struct (at, _)) when not (readsCurrent project at.Key) -> ValueNone
+                        | _ -> ValueSome FileLevel
                     | ValueSome Built, ValueSome g when (try blockedOf g with NotReadyException _ -> true) ->
                         // Read before the finish, which is not checked while blocked (or while that is not known)
                         match (try ValueSome(blockedOf g) with NotReadyException _ -> ValueNone), whole.TryValue with
-                        | ValueSome true, Ready(key, _) when key.Parsed.Version = version -> ValueSome FileLevel
+                        | ValueSome true, Ready(key, _) when key.Parsed.Version = version && readsCurrent project key -> ValueSome FileLevel
                         | _, Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
                         | _ -> ValueNone
                     | ValueSome Built, ValueSome g ->
                         match g.Current.TryValue, published.TryValue with
-                        | Ready f, Ready(ByDeclaration(_, p)) when f.Version = version && Nodes.same p f -> ValueSome Declarations
-                        | Ready f, Ready Whole when f.Version = version -> ValueSome FileLevel
+                        | Ready f, Ready(ByDeclaration(_, p)) when f.Version = version && Nodes.same p f && readsCurrent project f.Start.Setup.Key ->
+                            ValueSome Declarations
+                        | Ready f, Ready Whole when f.Version = version && readsCurrent project f.Start.Setup.Key -> ValueSome FileLevel
                         | Failed e, _
                         | _, Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
                         | _ -> ValueNone
@@ -438,7 +472,15 @@ module internal WholeFile =
                     [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start ]
                 | _ -> []
 
-            member _.Activate() = activate () }
+            member _.Activate() = activate ()
+
+            // The whole check only while it is the published one: reading it starts it
+            member _.Kick() =
+                scopedKey.TryValue |> ignore
+
+                match published.TryValue with
+                | Ready Whole -> observeWhole ()
+                | _ -> () }
 
     /// A signature file, file `index` of the project. Its diagnostics are its parse's: CheckSignatureFile reports none.
     let signature
@@ -450,7 +492,7 @@ module internal WholeFile =
         : IFileNode =
         let ctx = project.Context
 
-        let result =
+        let struct (result, observe) =
             Setup.build
                 project
                 file.Path
@@ -466,12 +508,15 @@ module internal WholeFile =
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ -> FileSig.Of(snd result.Value))
 
+        let isCurrent = currentOf project signature (createMemo (fun _ -> fst result.Value))
+
         { new IFileNode with
             member _.Path = file.Path
             member _.Mode = FileLevel
             member _.Text = file
             member _.Signature = signature
-            member _.Settled version = settledAt signatureOf file result version |> ValueOption.map (fun (key, _) -> key.Parsed.Parse.Diagnostics)
+            member _.Current = isCurrent
+            member _.Settled version = settledAt project file result version |> ValueOption.map (fun (key, _) -> key.Parsed.Parse.Diagnostics)
             member _.Results _ = raise (wholeOnly file.Path)
             member _.FileResult _ = ValueNone
             member _.SegmentRows() = 0
@@ -480,4 +525,10 @@ module internal WholeFile =
             member _.Promoted version = if file.Version = version then ValueSome FileLevel else ValueNone
             member _.MayBuild = false
             member _.DeclarationObjects() = []
-            member _.Activate() = createEffect (fun () -> result.TryValue |> ignore) }
+            member _.Activate() =
+                createEffect (fun () ->
+                    result.TryValue |> ignore
+                    observe ())
+                createEffect (fun () -> isCurrent.TryValue |> ignore)
+
+            member _.Kick() = observe () }
