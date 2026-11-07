@@ -319,7 +319,7 @@ let tests =
               let elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - started
 
               let phases =
-                  [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
+                  [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "render"; "fingerprints"; "signature"; "sinks" ]
 
               Expect.equal (List.ofSeq finished.PhaseTicks.Keys) phases "the eleven parts of the finish, in source order"
 

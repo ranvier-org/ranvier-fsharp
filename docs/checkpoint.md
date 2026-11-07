@@ -301,8 +301,9 @@ they could hurt users:
 4. **Rec-module fallback.** `module rec` / `namespace rec` files are one row. CodePrinter.fs is 1.5x slower than
    file-slim, and D2's big-file goal needs either a finer split of rec groups or the file-level path for them.
 5. **D1 premise breaks on real code** (5, 32 and 1). They put about 21% of small's and mid's rows into
-   leader-to-end-of-file segments. That is sound, but edits below them lose declaration granularity. The cause
-   (active patterns, interface rec groups) should be found and fixed in the fork.
+   leader-to-end-of-file segments. That is sound, but edits below them lose declaration granularity. Resolved in
+   Task 6: see "Premise breaks after Task 6" below for the causes (signature conformance, a default, unit-of-measure
+   normalization), the fix and the counts after it.
 6. **W1.** A line insert re-checks every declaration below it: 1.3x to 2.6x a body edit here, more in long files.
    Range shifting is needed.
 
@@ -316,12 +317,14 @@ those from after it in `results/premise/`.
 
 | corpus | breaks before | breaks after | segment rows before | segment rows after | segment rows at the checkpoint |
 |---|---|---|---|---|---|
-| small | 5 | 0 | 534 | 293 | 444 |
+| small | 5 | 0 | 534 | 225 to 293 | 444 |
 | mid | 32 | 0 | 323 | 139 | 323 |
 | large | 1 | 0 | 16 | 7 | 16 |
 
-Small's segment rows grew from 444 to 534 between the checkpoint and Task 6's base. The segment rows that remain are
-R11 spans and R12 segments, and none of them is a premise break.
+- Small's segment rows grew from 444 to 534 between the checkpoint and Task 6's base.
+- After the fix they vary between runs. Four runs gave 293, 272, 246 and 225 (the last on the final build), all
+  with 0 breaks. Why the count varies was not investigated.
+- The segment rows that remain are R11 spans and R12 segments, and none of them is a premise break.
 
 The checkpoint suspected active patterns and interface rec groups. In fact every break had one of three causes. Each
 is something FinishFile does to a declaration that no other declaration takes part in:
@@ -347,23 +350,56 @@ is something FinishFile does to a declaration that no other declaration takes pa
    `LocalPath^1 * 1`. The check took the fingerprint before it collected them (for `LeavesUnsolved`), and the
    finish's defaults collect them again.
 
-The fix captures each of these at check time, so the fingerprint taken there already describes what the finish
-leaves. It drops nothing from the fingerprint.
-- The check collects the unsolved variables before it takes the fingerprint.
-- It then takes the fingerprint while the declaration holds what the finish would add:
-  - for a file with a signature file, the result of conformance-checking the declaration's items against the
-    corresponding items of the signature;
-  - for a declaration that leaves variables unsolved but depends on no later declaration, the defaults applied to
-    its own contents.
-- Then it undoes both, so later declarations are still checked as a full check checks them: before conformance and
-  before the defaults.
-  - To make this possible, `SignatureConformance` records in the fork's mutation log how to undo what it writes into
-    the implementation's items.
-  - It records only while `UndoableConformance.Recording` is set, which only this check-time step does.
-- The finish can still change less than the check captured: when the whole file does not conform, or when an earlier
-  default fails.
-  - The premise then breaks, and the graph treats the declaration as a leader, as before.
-  - Both happen only in a file with errors.
+The rule the fix follows: every value used as a cutoff is computed from exactly the state its readers read.
+- Within a file, the declarations after a declaration are checked against its items as the check left them, before
+  conformance and the defaults. So the in-file cutoff must describe those items.
+- Conformance does not only add to the items, it overwrites: an argument the implementation leaves unnamed (`_`)
+  takes the signature's name, an arity is cut to the signature's, attribute lists are merged. A fingerprint of the
+  conformed items alone therefore cannot tell `member _.M(_: int)` from `member _.M(t: int)`, while a later
+  `T().M(t = 1)` checks differently against them (FS0495 or not). Task 6's first version used that fingerprint as
+  the cutoff and missed such edits (review C1).
 
-D1 tests pin each shape (`D1.signature conformance`, `D1.whole-file passes`). No break remains, so there is no
-inherent break to pin.
+Task 6 (after review round 1) follows that rule:
+- **Conformance is never in a declaration's fingerprint.** No declaration of the file is checked against conformed
+  items, in a full check or here. Across files, dependents read the signature file, whose fingerprint is unchanged.
+- **FinishFile undoes its own conformance.** The fork's conformance check records, in a log of its own, how to undo
+  what it writes into the implementation's items (`UndoableConformance.Log` and `Isolate`). The log covers argument
+  names and attributes, arity, attributes, xml docs, other ranges, and type parameters.
+  - FinishFile renders the diagnostics while the conformance is in effect, because a full check renders them so.
+  - It then undoes the conformance, and only after that takes the final fingerprints and the signature.
+  - So the final fingerprint describes what any later check of the file sees, and a declaration re-checked after a
+    finish sees the earlier items unconformed, as a full check does (review C2).
+  - Before review round 1 the conformance persisted. Re-checking `let use1 = T().M(t = 1)` alone then hid the FS0495
+    that a full check reports.
+- **The lazy check results apply it again.** Tooltips, go-to-declaration and symbol uses need the conformed items,
+  so the lazy results apply the whole file's conformance again under the FileStart's and the file's locks when they
+  are built. The next check of the file undoes it with the rest of the latest finish.
+- **Defaults.** The default captured at check time is still in the fingerprint: small's `HashSet` attribute, for a
+  declaration that leaves variables unsolved but depends on no later declaration.
+  - Later declarations see the variable unsolved, so the check fingerprints the declaration both before and after
+    applying the default, and joins the two (`DeclarationResult.AtCheck` keeps the first).
+  - FinishFile builds the final fingerprint the same way, from that first fingerprint and its own.
+  - Covering both states can only over-approximate.
+- **Measure normalization.** The check collects the unsolved variables before it takes the fingerprint. The
+  normalization this does is permanent, so later declarations see it too.
+- **No check-time conformance step, so no extra cost.** The first version conformed each declaration at its check,
+  quadratically in a flat module (review I1). That step is gone.
+  - `D1.checking a flat module with a signature file costs about what it does without one` pins it on 2000 values. A
+    cold check by declaration must stay within 1.5x of the same module without a signature, and a re-check within 2x.
+  - Measured: 424 ms against 357 ms cold, and 0.124 ms against 0.123 ms for a re-check.
+
+The finish can still change less than the check captured, when an earlier default of the file fails. The premise
+then breaks, and the graph treats the declaration as a leader, as before. That happens only in a file with errors.
+
+Tests:
+- D1 tests pin each shape (`D1.signature conformance`, `D1.whole-file passes`). Each shape with a signature has a
+  partner that edits what conformance overwrites, checks the edited declaration again after the finish, and expects
+  the cutoff to change and the re-check to equal a fresh check.
+- `D1.signature conformance` also checks that a finish's check results, read after a later check, give the
+  conformed tooltip and declaration location that InteractiveChecker gives.
+- `SignatureConformance` in Rfs.Checker.Tests drives the graph through such edits in both modes.
+- OracleFuzz's `conformedShape` edit toggles them on the SigConform fixture, for every seed.
+
+No break remains, so there is no inherent break to pin. Type parameter names are not part of the fingerprint at
+all. What later declarations report shows type parameters by position (`'a`), so a rename the signature imposes
+changes nothing they see.

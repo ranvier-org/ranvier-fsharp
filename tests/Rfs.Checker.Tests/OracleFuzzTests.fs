@@ -131,6 +131,9 @@ let private sigQualNameOpenTargets = [| "System"; "A"; "Y" |]
 /// An implementation file whose qualified name differs from its signature file's (T4-C3)
 let private sigUnmatchedProject = Path.Combine(Path.GetDirectoryName depsDir, "SigUnmatched", "SigUnmatched.fsproj")
 let private sigUnmatchedOpenTargets = [| "System"; "A"; "Ab"; "W" |]
+/// A signature file whose conformance check overwrites what A.fs's later declarations use (Task 6 fix round 1)
+let private sigConformProject = Path.Combine(Path.GetDirectoryName depsDir, "SigConform", "SigConform.fsproj")
+let private sigConformOpenTargets = [| "System"; "SigConform.A" |]
 /// Two signature pairs, where whether X.fs fails depends on whether W.fs does (S1-R2)
 let private sigChain2Project = Path.Combine(Path.GetDirectoryName depsDir, "SigChain2", "SigChain2.fsproj")
 let private sigChain2OpenTargets = [| "System"; "V"; "W"; "A"; "Y" |]
@@ -296,6 +299,23 @@ let private sameLine: Mutation =
             let i, at = pick random spots
             Some(unlines (Array.updateAt i (ls[i].Insert(at, " ")) ls), $"double a space on line %d{i + 1}")
 
+/// Toggles what checking a file against its signature file overwrites in an item a later declaration uses by name:
+/// T.M's argument name, f's arity or g's type parameter name (SigConform's A.fs, Task 6 fix round 1).
+let private conformedShape: Mutation =
+    fun random text ->
+        let toggles =
+            [| "member _.M(t: int) = t", "member _.M(_: int) = 1"
+               "let f (x: int) y = x + y", "let f (x: int) = fun y -> x + y"
+               "let g (x: 'a) = x", "let g (x: 'b) = x" |]
+            |> Array.collect (fun (a, b) -> [| a, b; b, a |])
+            |> Array.filter (fun (from, _) -> text.Contains from)
+
+        if toggles.Length = 0 then
+            None
+        else
+            let from, into = pick random toggles
+            Some(text.Replace(from, into), $"`%s{from}` -> `%s{into}`")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -316,6 +336,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             elif project = sigQualNameProject then sigQualNameOpenTargets
             elif project = sigUnmatchedProject then sigUnmatchedOpenTargets
             elif project = sigChain2Project then sigChain2OpenTargets
+            elif project = sigConformProject then sigConformOpenTargets
             else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
@@ -337,7 +358,8 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                moduleHeader
                autoOpen
                augmentationMember counter
-               sameLine |]
+               sameLine
+               conformedShape |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
@@ -453,7 +475,11 @@ let private fuzz (name: string) (mode: FileMode) =
 
           // A failed status two signature pairs away, which only a transitive settle gate waits for
           for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
-              testTask $"SigChain2 seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigChain2Project mode seed 200 } ]
+              testTask $"SigChain2 seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigChain2Project mode seed 200 }
+
+          // Argument names, arities and type parameter names the signature file overwrites, used by later declarations
+          for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
+              testTask $"SigConform seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigConformProject mode seed 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level
 [<Tests>]

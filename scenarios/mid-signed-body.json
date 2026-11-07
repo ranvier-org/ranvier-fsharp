@@ -1,0 +1,29 @@
+{
+  "name": "mid-signed-body",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/TypedAstPatterns.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/TypedAstPatterns.fs",
+        "range": {
+          "start": {
+            "line": 301,
+            "character": 68
+          },
+          "end": {
+            "line": 301,
+            "character": 69
+          }
+        },
+        "text": "3",
+        "repeat": 20,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

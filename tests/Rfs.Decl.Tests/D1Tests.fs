@@ -157,13 +157,130 @@ let private expectFinalIsProvisional (c: Checked) (file: string) =
 let private withSignature (fsi: string) (fs: string) =
     check tinyProject [ "B.fsi", "module Tiny.B\n\nval two: int\n" + fsi; "B.fs", "module Tiny.B\n\nlet two = Tiny.A.one + 1\n" + fs ]
 
-/// What checking B.fs against B.fsi changes in a declaration is in its fingerprint from its check on.
-let private conforms (name: string) (fsi: string) (fs: string) =
-    testAsync name {
-        let! c = withSignature fsi fs
-        do! expectOracle c
-        expectFinalIsProvisional c "B.fs"
-        expectPremise c
+/// An edit after the finish, as the graph makes one: the declarations of `edited` whose text differs from `c`'s are
+/// checked again on c's FileStart, in the environment c's results leave before them. Each re-check equals a fresh
+/// check of the edited text. With `seen` (the edit changes what the declarations after it see, as the conformance
+/// check overwrites an argument name, an arity or an attribute) its fingerprint differs from the one before the edit,
+/// so they are checked again; without, it is the same. The last declaration, checked again unedited, keeps its
+/// fingerprint.
+let private expectEditRechecksWith (seen: bool) (c: Checked) (edited: Checked) (file: string) =
+    let before, after = c.File file, edited.File file
+    let parse = DeclarationChecker.Parse(c.Context, before.File, edited.Texts[before.File])
+    let decls = DeclarationChecker.Split parse
+    Expect.equal decls.Length before.Declarations.Length "the edit keeps the declarations"
+    let envBefore i = if i = 0 then before.Env0 else before.Results[i - 1].EnvAfter
+    let mutable changed = 0
+
+    for i in 0 .. decls.Length - 1 do
+        if decls[i].Text <> before.Declarations[i].Text then
+            changed <- changed + 1
+            let again = DeclarationChecker.CheckDeclaration(before.Start, envBefore i, decls[i], Threading.CancellationToken.None)
+            let name = decls[i].Key.Name
+            if seen then
+                Expect.notEqual again.Fingerprint before.Results[i].Fingerprint $"%s{name}: the edit changes the cutoff for what follows"
+            else
+                Expect.equal again.Fingerprint before.Results[i].Fingerprint $"%s{name}: the edit keeps the cutoff for what follows"
+
+            Expect.equal again.Fingerprint after.Results[i].Fingerprint $"%s{name}: checked again after the finish = checked fresh"
+            let diff = Diagnostics.compare (toLsp after.Results[i].Diagnostics) (toLsp again.Diagnostics)
+            Expect.isEmpty diff $"%s{name}: the same diagnostics:\n%s{String.concat Environment.NewLine diff}"
+
+    Expect.isGreaterThan changed 0 "the edit changes a declaration"
+    let last = decls.Length - 1
+    let again = DeclarationChecker.CheckDeclaration(before.Start, envBefore last, before.Declarations[last], Threading.CancellationToken.None)
+    Expect.equal again.Fingerprint before.Results[last].Fingerprint "the last declaration checked again keeps its fingerprint"
+
+let private expectEditRechecks = expectEditRechecksWith true
+
+/// What checking B.fs against B.fsi changes in a declaration is in its fingerprint from its check on; and `edited`,
+/// which changes only what the conformance check overwrites, is checked again as expectEditRechecksWith `seen` says.
+let private conformsWith (seen: bool) (name: string) (fsi: string) (fs: string) (edited: string) =
+    testList
+        name
+        [ testAsync "checked cold" {
+              let! c = withSignature fsi fs
+              do! expectOracle c
+              expectFinalIsProvisional c "B.fs"
+              expectPremise c
+          }
+
+          testAsync "edited and checked again" {
+              let! c = withSignature fsi fs
+              let! e = withSignature fsi edited
+              do! expectOracle e
+              expectFinalIsProvisional e "B.fs"
+              expectEditRechecksWith seen c e "B.fs"
+          } ]
+
+let private conforms = conformsWith true
+
+/// What InteractiveChecker's check of the file gives, for its queries.
+let private referenceResults (c: Checked) (file: string) =
+    async {
+        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions c.Spec)
+        let sourceReader f = let t = c.Texts[f] in hash t, lazy t
+        let path = (c.File file).File
+        let! _, results, _ = checker.ParseAndCheckFileInProject(c.Spec.ProjectFile, Array.ofList c.Spec.SourceFiles, sourceReader, path)
+        return results
+    }
+
+/// A flat module of `n` values, in B.fs with B.fsi (`signed`) or in C.fs without a signature: the time to check it
+/// cold by declaration, and the time to check its last declaration again (the best of 20).
+let private flatModule (n: int) (signed: bool) =
+    async {
+        let values = String.concat "\n" [ for i in 1..n -> $"let v%d{i} (x: int) = x + %d{i}" ]
+
+        let overrides =
+            if signed then
+                [ "B.fsi", "module Tiny.B\n\nval two: int\n" + String.concat "\n" [ for i in 1..n -> $"val v%d{i}: x: int -> int" ] + "\n"
+                  "B.fs", "module Tiny.B\n\nlet two = Tiny.A.one + 1\n" + values + "\n" ]
+            else
+                [ "C.fs", "module Tiny.C\n\nlet three = Tiny.B.two + 1\n" + values + "\n" ]
+
+        let! spec = ProjectSpec.load tinyProject |> Async.AwaitTask
+        let spec = ProjectSpec.sequential spec
+        let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+        let texts = sources spec (Map.ofList overrides)
+        let target = if signed then "B.fs" else "C.fs"
+        let mutable before = []
+        let mutable timed = 0.0, 0.0
+
+        for file in spec.SourceFiles do
+            let parse = DeclarationChecker.Parse(ctx, file, texts[file])
+
+            if file.EndsWith ".fsi" then
+                before <- before @ [ DeclarationChecker.CheckSignatureFile(ctx, before, parse) ]
+            else
+                let start, env0 = DeclarationChecker.BeginFile(ctx, before, parse)
+                let decls = DeclarationChecker.Split parse
+                let clock = Diagnostics.Stopwatch.StartNew()
+
+                let results =
+                    decls
+                    |> Array.mapFold
+                        (fun env decl ->
+                            let r = DeclarationChecker.CheckDeclaration(start, env, decl, Threading.CancellationToken.None)
+                            r, r.EnvAfter)
+                        env0
+                    |> fst
+
+                let cold = clock.Elapsed.TotalMilliseconds
+
+                if Path.GetFileName file = target then
+                    let last = decls.Length - 1
+
+                    let again =
+                        [ for _ in 1..20 ->
+                              let clock = Diagnostics.Stopwatch.StartNew()
+                              DeclarationChecker.CheckDeclaration(start, results[last - 1].EnvAfter, decls[last], Threading.CancellationToken.None) |> ignore
+                              clock.Elapsed.TotalMilliseconds ]
+                        |> List.min
+
+                    timed <- cold, again
+
+                before <- before @ [ (DeclarationChecker.FinishFile(start, results, parse)).Signature ]
+
+        return timed
     }
 
 let private shape (attribute: string) (field: string) =
@@ -290,36 +407,81 @@ let tests =
                     "a value bound to a lambda takes its arity from a signature without arguments (List.moreThanOne)"
                     "val moreThanOne: ('a list -> bool)\nval after: int\n"
                     "\nlet moreThanOne =\n    function\n    | []\n    | [ _ ] -> false\n    | _ -> true\n\nlet after = 1\n"
+                    "\nlet moreThanOne l =\n    match l with\n    | []\n    | [ _ ] -> false\n    | _ -> true\n\nlet after = 1\n"
 
                 conforms
                     "a partial active pattern bound to a lambda (|Val|_|)"
                     "val (|Val|_|): (int option -> int option)\nval after: int\n"
                     "\nlet (|Val|_|) =\n    function\n    | Some i when i > 0 -> Some i\n    | _ -> None\n\nlet after = 1\n"
+                    "\nlet (|Val|_|) x =\n    match x with\n    | Some i when i > 0 -> Some i\n    | _ -> None\n\nlet after = 1\n"
 
                 conforms
                     "a partial active pattern with an argument returning a union case (|StaticParameter|_|)"
                     "val (|Wrap|_|): _x: obj -> ('a -> 'a option)\nval after: int\n"
                     "\nlet (|Wrap|_|) (_x: obj) = Some\n\nlet after = 1\n"
+                    "\nlet (|Wrap|_|) (_x: obj) y = Some y\n\nlet after = 1\n"
 
                 conforms
                     "a partial active pattern with an argument (|Val|_|) (x: obj)"
                     "val (|Val|_|): x: obj -> int option\nval after: int\n"
                     "\nlet (|Val|_|) (x: obj) =\n    match x with\n    | :? int as i -> Some i\n    | _ -> None\n\nlet after = 1\n"
+                    "\nlet (|Val|_|) (y: obj) =\n    match y with\n    | :? int as i -> Some i\n    | _ -> None\n\nlet after = 1\n"
 
                 conforms
                     "an interface rec group takes [<Interface>] from its signature (IAdaptiveValue)"
                     "\n[<Interface>]\ntype IA =\n    abstract M: IB -> int\n\nand [<Interface>] IB =\n    abstract N: IA -> int\n\nval after: int\n"
                     "\ntype IA =\n    abstract M: IB -> int\n\nand IB =\n    abstract N: IA -> int\n\nlet after = 1\n"
+                    "\n[<Interface>]\ntype IA =\n    abstract M: IB -> int\n\nand IB =\n    abstract N: IA -> int\n\nlet after = 1\n"
 
                 conforms
                     "a class takes [<Class>] from its signature (ChangeableValue, ReadOnlySpanExtensions)"
                     "\n[<Sealed; Class>]\ntype K =\n    new: unit -> K\n    member X: int\n\nval after: int\n"
                     "\n[<Sealed>]\ntype K() =\n    member _.X = 1\n\nlet after = 1\n"
+                    "\n[<Sealed; Class>]\ntype K() =\n    member _.X = 1\n\nlet after = 1\n"
 
                 conforms
                     "a member takes an argument name from its signature (BatchRecalculateDirty)"
                     "\ntype T =\n    new: unit -> T\n    member M: t: int -> int\n\nval after: int\n"
                     "\ntype T() =\n    member _.M(_: int) = 1\n\nlet after = 1\n"
+                    "\ntype T() =\n    member _.M(t: int) = t\n\nlet after = 1\n"
+
+                // The fingerprint numbers type parameters, and what the declarations after it report shows them by
+                // position too ('a), so a name is not part of what they see
+                conformsWith
+                    false
+                    "a type parameter takes its name from its signature"
+                    "val g: x: 'a -> 'a\nval after: int\n"
+                    "\nlet g (x: 'b) = x\n\nlet after = 1\n"
+                    "\nlet g (x: 'a) = x\n\nlet after = 1\n"
+
+                // C2 of the Task 6 review: the finish's conformance is undone by the next check of the file, and its
+                // check results, read after that, apply it again
+                testAsync "a finish's check results, read after a later check, show the implementation conformed" {
+                    let fsi = "\ntype T =\n    new: unit -> T\n    /// From the signature\n    member M: t: int -> int\n\nval use1: int\nval after: int\n"
+                    let fs = "\ntype T() =\n    member _.M(_: int) = 1\n\nlet use1 = T().M(1)\n\nlet after = use1 + 1\n"
+                    let! c = withSignature fsi fs
+                    let f = c.File "B.fs"
+                    let last = f.Declarations.Length - 1
+                    DeclarationChecker.CheckDeclaration(f.Start, f.Results[last - 1].EnvAfter, f.Declarations[last], Threading.CancellationToken.None) |> ignore
+                    let! expected = referenceResults c "B.fs"
+                    let text = c.Texts[f.File]
+                    expectLikeReference 2 text expected f.FileResult.CheckResults "B.fs, read after a later check"
+                    let lines = text.Split '\n'
+                    let line = lines |> Array.findIndex (fun l -> l.StartsWith "let use1")
+                    let column = lines[line].IndexOf "M(" + 1
+
+                    let location (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+                        sprintf "%A" (results.GetDeclarationLocation(line + 1, column, lines[line], [ "M" ], false))
+
+                    Expect.stringContains (location expected) "DeclFound" "the reference finds M's declaration"
+                    Expect.equal (location f.FileResult.CheckResults) (location expected) "go to M's declaration"
+
+                    let tip (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+                        tooltipText (results.GetToolTip(line + 1, column, lines[line], [ "M" ], FSharp.Compiler.Tokenization.FSharpTokenTag.Identifier))
+
+                    Expect.stringContains (tip expected) "t: int" "the reference shows the argument name the signature gives"
+                    Expect.equal (tip f.FileResult.CheckResults) (tip expected) "M's tooltip"
+                }
 
                 testAsync "a namespace fragment's module takes an arity from its signature (UntypedAstUtils)" {
                     let fsi =
@@ -332,7 +494,35 @@ let tests =
                     do! expectOracle c
                     expectFinalIsProvisional c "B.fs"
                     expectPremise c
+                    let edited = fs.Replace("let moreThanOne =\n        function", "let moreThanOne l =\n        match l with")
+                    let! e = check tinyProject [ "B.fsi", fsi; "B.fs", edited ]
+                    do! expectOracle e
+                    expectEditRechecks c e "B.fs"
                 } ]
+
+          // I1 of the Task 6 review: the conformance check at each declaration's check is proportional to the
+          // declaration, not to the module it is in
+          testAsync "checking a flat module with a signature file costs about what it does without one" {
+              // Each warmed up, then three times, alternating, keeping the fastest run: a busy machine slows a run,
+              // not all of them
+              let! _ = flatModule 2000 true
+              let! _ = flatModule 2000 false
+              let signed = ResizeArray()
+              let plain = ResizeArray()
+
+              for _ in 1..3 do
+                  let! s = flatModule 2000 true
+                  signed.Add s
+                  let! p = flatModule 2000 false
+                  plain.Add p
+
+              let best (runs: ResizeArray<float * float>) = (runs |> Seq.map fst |> Seq.min), (runs |> Seq.map snd |> Seq.min)
+              let signedCold, signedAgain = best signed
+              let plainCold, plainAgain = best plain
+              printfn $"2000 values: cold %.0f{signedCold} ms with B.fsi, %.0f{plainCold} ms without; again %.3f{signedAgain} ms, %.3f{plainAgain} ms"
+              Expect.isLessThanOrEqual signedCold (1.5 * plainCold) $"cold by declaration: %.0f{signedCold} ms with a signature, %.0f{plainCold} ms without"
+              Expect.isLessThanOrEqual signedAgain (2.0 * plainAgain) $"a declaration checked again: %.3f{signedAgain} ms with a signature, %.3f{plainAgain} ms without"
+          }
 
           // What else of the finish broke the premise on the corpora: passes over the whole file that change a
           // declaration no other declaration takes part in
