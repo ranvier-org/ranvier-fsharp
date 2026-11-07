@@ -39,10 +39,17 @@ type internal FileSig =
 
     static member Of(signature: FileSignature) = { Signature = signature }
 
-    /// Equal when the file signatures' fingerprints are, compared structurally, never by reference.
+    /// Equal when the file signatures' fingerprints are, compared structurally, or when they are the same signature. A
+    /// fingerprint not yet taken compares unequal: what depends on the file compares the fingerprints it reads.
     static member Comparer =
         { new IEqualityComparer<FileSig> with
-            member _.Equals(a, b) = String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal)
+            member _.Equals(a, b) =
+                obj.ReferenceEquals(a.Signature, b.Signature)
+                // A fingerprint no one has asked for is not taken here: the file had no dependents when it was checked
+                || (a.Signature.HasFingerprint
+                    && b.Signature.HasFingerprint
+                    && String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal))
+
             member _.GetHashCode s = StringComparer.Ordinal.GetHashCode s.Fingerprint }
 
 /// Hands each value to the observers subscribed when it is sent.
@@ -77,6 +84,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable declarationRoots = 0L
     let mutable scopedCheckHook: string -> unit = ignore
     let mutable beginFileHook: string -> unit = ignore
+    let mutable setupHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
     let phaseAllocated = Dictionary<string, int64>()
     let premise = Subject<DeclarationKey * string>()
@@ -118,6 +126,15 @@ type internal ProjectShared(ctx: ProjectContext) =
         with get () = Volatile.Read &beginFileHook
         and set (hook: string -> unit) = Volatile.Write(&beginFileHook, hook)
 
+    /// Runs on the graph thread, with the file's path, each time a promoted file's declaration setup is computed.
+    /// For tests.
+    member _.SetupHook
+        with get () = Volatile.Read &setupHook
+        and set (hook: string -> unit) = Volatile.Write(&setupHook, hook)
+
+    /// Runs work on the graph thread after the current run, as GraphHost.Post. Set once the host is known.
+    member val Post: (unit -> unit) -> unit = ignore with get, set
+
     member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
 
     /// Adds a finish's FileResult.PhaseTicks to the running totals; finishes of different files run concurrently.
@@ -136,6 +153,13 @@ type internal ProjectShared(ctx: ProjectContext) =
 
         lock phaseAllocated (fun () ->
             phaseAllocated[phase] <- (match phaseAllocated.TryGetValue phase with | true, b -> b | _ -> 0L) + allocated)
+
+    /// Adds the bytes each part of a CheckFile or FinishFile allocated (FileResult.PhaseAllocated), under `prefix`.
+    member _.AddPartsAllocated(prefix: string, parts: IReadOnlyDictionary<string, int64>) =
+        lock phaseAllocated (fun () ->
+            for KeyValue(part, bytes) in parts do
+                let phase = prefix + part
+                phaseAllocated[phase] <- (match phaseAllocated.TryGetValue phase with | true, b -> b | _ -> 0L) + bytes)
 
     /// A copy of the running totals of the bytes each phase allocated (file-level graph only).
     member _.PhaseAllocated: IReadOnlyDictionary<string, int64> =
@@ -304,7 +328,9 @@ type internal FileDepsValue =
       Dependencies: int[][]
       /// For each file, the earlier files with the same qualified name. Deduplicating the file's module name reads
       /// them, whether or not it depends on them.
-      SameName: int[][] }
+      SameName: int[][]
+      /// For each file, whether a later file depends on it
+      HasDependents: bool[] }
 
 module internal FileDeps =
 
@@ -324,6 +350,15 @@ module internal FileDeps =
                 seen[name] <- ResizeArray [ i ]
                 [||])
 
+    let private hasDependents (dependencies: int[][]) =
+        let has = Array.zeroCreate dependencies.Length
+
+        for deps in dependencies do
+            for d in deps do
+                has[d] <- true
+
+        has
+
     /// The dependencies of every file, from every file's current parse: re-run whenever any parse changes, so the
     /// checker's dependency snapshot is of the parses the value holds. Superseded flights do not run, so a late one
     /// never replaces a newer snapshot.
@@ -340,10 +375,13 @@ module internal FileDeps =
                     gate.Run(
                         ticket,
                         fun () ->
-                            { Parsed = parsed
-                              Dependencies =
+                            let dependencies =
                                 project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
-                              SameName = sameNames parsed }
+
+                            { Parsed = parsed
+                              Dependencies = dependencies
+                              SameName = sameNames parsed
+                              HasDependents = hasDependents dependencies }
                     )))
 
         // Read through a plain memo: the setup keys cut off on what they read, and a memo with a cutoff reading an async
@@ -361,6 +399,9 @@ type internal SetupKey =
       Before: FileSignature list
       Fingerprints: string[]
       SameName: int[]
+      /// Whether a later file depended on the file when the key was read: if not, its check need not take its
+      /// signature's fingerprint. Not part of the key's identity.
+      HasDependents: bool
       /// Whether Files are the file's dependencies and fewer than every earlier file: the checker then accepts the
       /// setup only while its dependency snapshot is current
       Scoped: bool }
@@ -428,6 +469,7 @@ module internal Setup =
                   Before = signatures |> Seq.map _.Signature |> List.ofSeq
                   Fingerprints = signatures |> Array.map _.Fingerprint
                   SameName = d.SameName[index]
+                  HasDependents = d.HasDependents[index]
                   Scoped = files.Length < index }
 
             match previous with

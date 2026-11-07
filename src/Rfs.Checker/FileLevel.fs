@@ -96,8 +96,11 @@ module internal WholeFile =
                 signatureOf
                 scopedKey
                 (fun key ->
-                    let r = project.Measure("checkFile", fun () -> DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse))
+                    // A file nothing depends on takes its signature's fingerprint only if something asks for it later
+                    let r =
+                        project.Measure("checkFile", fun () -> DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse, key.HasDependents))
                     project.AddFinishPhaseTicks r.PhaseTicks
+                    project.AddPartsAllocated("checkFile.", r.PhaseAllocated)
                     project.CountFileLevelCheck()
                     r)
                 (fun r -> Some r.Diagnostics)
@@ -118,6 +121,17 @@ module internal WholeFile =
                 let p = file.Parsed.Value
                 struct (p.Version, DeclarationChecker.CountDeclarations p.Parse))
 
+        /// The declaration nodes' setup, or None when computing it failed: the failure stays in this file, which is then
+        /// checked whole, as after a failed build (N1).
+        let setupOf (g: DeclFile) =
+            try
+                ValueSome g.Setup.Value
+            with
+            | NotReadyException _ -> reraise ()
+            | e ->
+                Diagnostics.Trace.WriteLine $"Rfs.Checker: setting %s{path} up by declaration failed: %O{e}"
+                ValueNone
+
         /// The build state as it stands, from tracked reads; pending while any of them is.
         let stateOf () =
             if not wanted.Value then
@@ -132,12 +146,13 @@ module internal WholeFile =
                     // The nodes are made by an effect once the file is known to have more than one declaration
                     | ValueNone -> Building
                     | ValueSome g ->
-                        let setup = g.Setup.Value
-
-                        match promoted.Value, failed.Value with
-                        | ValueSome known, _ when Nodes.same known setup -> Built
-                        | _, ValueSome(struct (at, v)) when Nodes.same at setup && v = file.Text.Value.Version -> BuildFailed
-                        | _ -> Building
+                        match setupOf g with
+                        | ValueNone -> BuildFailed
+                        | ValueSome setup ->
+                            match promoted.Value, failed.Value with
+                            | ValueSome known, _ when Nodes.same known setup -> Built
+                            | _, ValueSome(struct (at, v)) when Nodes.same at setup && v = file.Text.Value.Version -> BuildFailed
+                            | _ -> Building
 
         /// The state, or None while it is pending.
         let stateNow () =
@@ -146,18 +161,34 @@ module internal WholeFile =
             with NotReadyException _ ->
                 ValueNone
 
+        /// Whether the latest finish of the current setup reported a name its dependencies do not give (C3), and the
+        /// whole check of the current text from the same dependencies still does: until it no longer does, nothing is
+        /// checked by declaration, as the finish could not be published (M12). Tracked reads; the whole check is read
+        /// only after such a finish.
+        let blockedOf (g: DeclFile) =
+            match g.Unresolved.Value, setupOf g with
+            | ValueSome at, ValueSome setup when Nodes.same at setup ->
+                let key, _ = whole.Value
+                not key.Scoped
+            | _ -> false
+
         // Whether the declaration nodes run: while built, or while this file is the project's builder
         let driven =
             createMemo (fun _ ->
-                match stateNow () with
-                | ValueSome Built -> true
-                | ValueSome Building -> project.Builder.Value = ValueSome index
+                match stateNow (), decl.Value with
+                | ValueSome Built, ValueSome g ->
+                    try
+                        not (blockedOf g)
+                    with NotReadyException _ ->
+                        false
+                | ValueSome Building, _ -> project.Builder.Value = ValueSome index
                 | _ -> false)
 
         let published =
             createMemo (fun _ ->
                 if wanted.Value then
                     match decl.Value with
+                    | ValueSome g when stateOf () = Built && blockedOf g -> Whole
                     | ValueSome g when stateOf () = Built ->
                         let f = g.Current.Value
 
@@ -177,9 +208,8 @@ module internal WholeFile =
                     | _ -> Whole)
 
         // Cut off by fingerprint, reading plain memos, never an async check directly (see Nodes). CheckFile and
-        // FinishFile give one text and setup the same fingerprint, so a promotion changes nothing after the file, unless
-        // the signature holds compiler-generated names: a declaration's are numbered from the declaration, so the files
-        // after it are then checked again.
+        // FinishFile give one text and setup the same fingerprint, compiler-generated names included (M2), so a
+        // promotion or a restart changes nothing after the file.
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ ->
                 match published.Value with
@@ -201,6 +231,22 @@ module internal WholeFile =
 
         let keptAt (version: int64) (k: KeptResult) =
             if k.Version = version then ValueSome k.Result else ValueNone
+
+        /// Disposes the owner of dropped declaration nodes, once their readers have moved off them. A memo keeps its
+        /// sources until it runs again, and a disposed node its last value, so the memos that read the nodes run again
+        /// first: otherwise one nothing reads (driven, the builder) would keep the declaration state alive. Outside any
+        /// run, on the graph thread.
+        let release (o: Owner) =
+            flush ()
+
+            untrack (fun () ->
+                driven.TryValue |> ignore
+                published.TryValue |> ignore
+                signature.TryValue |> ignore
+                project.Builder.TryValue |> ignore)
+
+            if not (isNull (box o)) then
+                o.Dispose()
 
         let activate () =
             // Keeps the published result checked, so files that do not depend on each other check in parallel; reports
@@ -235,7 +281,18 @@ module internal WholeFile =
                                         owner.Value <- o
                                         FileNodes.impl project file index deps scopedKey driven))
 
-                            decl.Value <- ValueSome g))
+                            decl.Value <- ValueSome g)
+                    elif count <= 1 && untrack (fun () -> decl.Value.IsSome) then
+                        // A wanted file whose text became one declaration keeps none of its declaration state (N2)
+                        let o = owner.Value
+                        owner.Value <- Unchecked.defaultof<_>
+
+                        untrack (fun () ->
+                            decl.Value <- ValueNone
+                            promoted.Value <- ValueNone
+                            failed.Value <- ValueNone)
+
+                        project.Post(fun () -> release o))
 
             // Promotes the file once its build has finished for its current text and setup; records a failed build, so
             // the builder moves on to the next wanted file
@@ -326,20 +383,9 @@ module internal WholeFile =
                         promoted.Value <- ValueNone
                         failed.Value <- ValueNone)
 
-                    // Readers move off the declaration nodes before their owner goes. A memo keeps its sources until it
-                    // runs again, and a disposed node its last value, so the memos that read the nodes run again now:
-                    // otherwise one nothing reads (driven, the builder) would keep the declaration state alive.
-                    flush ()
-
-                    untrack (fun () ->
-                        driven.TryValue |> ignore
-                        published.TryValue |> ignore
-                        signature.TryValue |> ignore
-                        project.Builder.TryValue |> ignore)
-
-                    if not (isNull (box owner.Value)) then
-                        owner.Value.Dispose()
-                        owner.Value <- Unchecked.defaultof<_>
+                    let o = owner.Value
+                    owner.Value <- Unchecked.defaultof<_>
+                    release o
 
             member _.Promoted version =
                 if file.Version <> version then
@@ -350,6 +396,12 @@ module internal WholeFile =
                     match stateNow (), decl.Peek with
                     | ValueSome(Single v), _ -> if v = version then ValueSome FileLevel else ValueNone
                     | ValueSome BuildFailed, _ -> ValueSome FileLevel
+                    | ValueSome Built, ValueSome g when (try blockedOf g with NotReadyException _ -> true) ->
+                        // Read before the finish, which is not checked while blocked (or while that is not known)
+                        match (try ValueSome(blockedOf g) with NotReadyException _ -> ValueNone), whole.TryValue with
+                        | ValueSome true, Ready(key, _) when key.Parsed.Version = version -> ValueSome FileLevel
+                        | _, Failed e -> raise (InvalidOperationException($"%s{path} failed to check", e))
+                        | _ -> ValueNone
                     | ValueSome Built, ValueSome g ->
                         match g.Current.TryValue, published.TryValue with
                         | Ready f, Ready(ByDeclaration(_, p)) when f.Version = version && Nodes.same p f -> ValueSome Declarations

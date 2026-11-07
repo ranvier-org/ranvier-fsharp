@@ -606,4 +606,119 @@ let tests =
                                   let! r = edit s x text
                                   do! expectOracle s r.Diagnostics $"%A{mode}: X.fs is %s{header}"
                           })
+          }
+
+          // M2 (Task 5): CheckFile and FinishFile give a file with compiler-generated names one fingerprint, so a restart
+          // of a promoted file changes what the files after it see once, not again when it is built by declaration
+          testTask "an upstream signature edit re-checks the dependents of a promoted file with generated names once" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let holders =
+                              "\ntype Holder1() as this =\n    let value = baseValue\n    member _.V = value\n    member _.Self = this\n"
+                              + "\ntype Holder2() as this =\n    let value = baseValue\n    member _.V = value\n    member _.Self = this\n"
+                              + "\nlet adder = fun (x: int) -> x + 1\n"
+
+                          let! _ = edit s b (s.Texts[b] + holders)
+                          Expect.contains (dependencies s).[c] b "C.fs depends on B.fs"
+                          do! promote s [ b ]
+                          let mutable checksOfC = 0
+
+                          s.Graph.OnScopedCheck(fun path ->
+                              if String.Equals(path, c, StringComparison.OrdinalIgnoreCase) then
+                                  Interlocked.Increment &checksOfC |> ignore)
+
+                          // B.fs's Start and Holders take baseValue's type, so B.fs's signature changes with it
+                          let! r = replace s a "let baseValue = 10" "let baseValue = 10L"
+                          do! expectMode s b Declarations "B.fs is built again for its new setup"
+                          Expect.equal (Volatile.Read &checksOfC) 1 "C.fs is checked once"
+                          do! expectOracle s r.Diagnostics "baseValue is an int64"
+                      })
+          }
+
+          // M12: a promoted file whose finish from its dependencies reports an unresolved name is checked whole, and not
+          // also by declaration, while the whole check from its dependencies still reports it
+          testTask "a promoted file with an unresolved name is checked whole only" {
+              do!
+                  withSession (startOn chainsProject FileLevel) (fun s ->
+                      task {
+                          // Set up from C.fs alone, fewer than every earlier file
+                          let d = Path.Combine(Path.GetDirectoryName chainsProject, "D.fs")
+                          let! _ = edit s d (s.Texts[d] + "\nlet bad = notDefinedAnywhere\n")
+                          let! modes = promoteAs s [ d ]
+                          Expect.equal modes [ FileLevel ] "its finish reports an unresolved name"
+                          let! r, checks = counted s (fun () -> replace s d "shiftTwice offset + 1" "shiftTwice offset + 2")
+                          Expect.isFalse (List.contains "D.fs" (ranFiles r)) $"no declaration of D.fs is checked: %A{r.Ran}"
+                          Expect.equal checks 2L "D.fs is checked whole, from its dependencies and from every earlier file"
+                          do! expectOracle s r.Diagnostics "total + 2"
+                          let! r = replace s d "\nlet bad = notDefinedAnywhere\n" "\n"
+                          let! mode = s.Graph.WhenPromoted(d, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "built by declaration once the name is gone"
+                          do! expectOracle s r.Diagnostics "the unresolved name removed"
+                      })
+          }
+
+          // N1: a promoted file whose declaration setup fails is checked whole, and the files after it are still built
+          testTask "a failed declaration setup does not hold up later files" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let mutable failing = 1
+
+                          s.Graph.OnSetup(fun path ->
+                              if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) && Volatile.Read &failing = 1 then
+                                  failwith "the declaration setup failed (test)")
+
+                          let! modes = promoteAs s [ a; c ]
+                          Expect.equal modes [ FileLevel; Declarations ] "A.fs's setup failed, C.fs, after it, is built"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "A.fs checked whole"
+                          Volatile.Write(&failing, 0)
+                          let! r = replace s a "x * 2" "x * 3"
+                          do! expectMode s a Declarations "set up again for its new text"
+                          do! expectOracle s r.Diagnostics "A.fs promoted after its text changed"
+                      })
+          }
+
+          // N2: a wanted file whose text becomes one declaration keeps none of its declaration state
+          testTask "a wanted file that becomes one declaration drops its declaration nodes" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let! held = s.Graph.DeclarationObjects a
+                          Expect.equal held.Length 3 "a declaration result, its environment and its FileStart"
+                          let roots = s.Graph.DeclarationRoots
+                          let original = s.Texts[a]
+                          let! r = edit s a (original.Replace("module Deps.A", "module rec Deps.A"))
+                          do! expectMode s a FileLevel "a module rec file is checked whole"
+                          do! expectOracle s r.Diagnostics "module rec A.fs"
+                          do! dropTrace s
+                          let gone = collected held
+                          Expect.equal gone [ true; true; true ] $"the declaration result, its environment and its FileStart are collected: %A{gone}"
+                          let! r = edit s a original
+                          let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "still wanted: built again once it has declarations"
+                          Expect.equal s.Graph.DeclarationRoots (roots + 1L) "with new declaration nodes"
+                          do! expectOracle s r.Diagnostics "A.fs back to its declarations"
+                      })
+          }
+
+          // The finish's phases add up to the time spent in FinishFile, so the phase profile attributes all of it
+          testTask "the finish phases add up to the finish time" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let finishPhases = set [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
+                          let phases () = s.Graph.FinishPhaseTicks |> Seq.filter (fun kv -> finishPhases.Contains kv.Key) |> Seq.sumBy _.Value
+                          let ticks0, phases0 = s.Graph.FinishTicks, phases ()
+                          let! r, checks = counted s (fun () -> replace s a "x * 2" "x * 3")
+                          Expect.equal checks 0L "no file is checked whole, so the phases are the finish's alone"
+                          Expect.equal r.Delta 1L "scale is checked and A.fs finished"
+                          let toMs (t: int64) = float t * 1000. / float Diagnostics.Stopwatch.Frequency
+                          let finishMs, phaseMs = toMs (s.Graph.FinishTicks - ticks0), toMs (phases () - phases0)
+                          Expect.isGreaterThan finishMs 0. "A.fs is finished"
+                          Expect.isLessThanOrEqual (abs (finishMs - phaseMs)) (max 1. (finishMs * 0.05)) $"the phases (%.3f{phaseMs} ms) add up to the finish (%.3f{finishMs} ms)"
+                      })
           } ]

@@ -161,6 +161,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
             o["finishShare"] <- opt e.FinishShare
             o["segmentRows"] <- opt e.SegmentRows
             o["finishPhaseMs"] <- e.FinishPhaseMs |> Option.map phasesMs |> Option.toObj
+            o["phaseAllocatedMb"] <- e.PhaseAllocatedMb |> Option.map phasesMs |> Option.toObj
             o["fileLevelChecks"] <- opt e.FileLevelChecks
             o["chainFallbacks"] <- opt e.ChainFallbacks
 

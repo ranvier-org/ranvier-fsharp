@@ -9,6 +9,7 @@ open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
 open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open Rfs.Harness
@@ -220,68 +221,6 @@ let private interactive (p: Project) =
             let! _, checkResults, _ = checker.ParseAndCheckFileInProject(p.Spec.ProjectFile, Array.ofList p.Spec.SourceFiles, sourceReader, file)
             return checkResults
         }
-
-let private tagged (text: RichText) = text.Text
-
-let private tooltipText (ToolTipText elements) =
-    [ for element in elements do
-          match element with
-          | ToolTipElement.Group items ->
-              for item in items do
-                  yield tagged item.MainDescription
-                  yield! item.TypeMapping |> List.map tagged
-                  yield! item.Remarks |> Option.map tagged |> Option.toList
-          | ToolTipElement.CompositionError error -> yield "error: " + error
-          | ToolTipElement.None -> yield "none" ]
-    |> String.concat "\n"
-
-let private useText (u: FSharpSymbolUse) =
-    $"%A{u.Range} %s{u.Symbol.FullName} definition=%b{u.IsFromDefinition}"
-
-/// Up to five symbol uses spread over the file, at least `atLeast`, as a query at the end of each one's names gives
-/// them: line, column, line text and names.
-let private positions (atLeast: int) (text: string) (uses: FSharpSymbolUse seq) =
-    let lines = text.Split '\n' |> Array.map (fun line -> line.TrimEnd '\r')
-
-    let candidates =
-        uses
-        |> Seq.choose (fun u ->
-            let r = u.Range
-
-            if r.StartLine <> r.EndLine then
-                None
-            else
-                let line = lines[r.StartLine - 1]
-                let names = line.Substring(r.StartColumn, r.EndColumn - r.StartColumn)
-
-                if names.Length > 0 && names |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_' || c = '.') then
-                    Some(r.StartLine, r.EndColumn, line, List.ofArray (names.Split '.'))
-                else
-                    None)
-        |> Seq.distinct
-        |> Array.ofSeq
-
-    Expect.isGreaterThanOrEqual candidates.Length atLeast $"the file has %d{atLeast} symbol uses to ask about"
-    let count = min 5 candidates.Length
-    Array.init count (fun i -> candidates[if count = 1 then 0 else i * (candidates.Length - 1) / (count - 1)])
-
-/// The file's lazily built check results give the reference's symbol uses, and its tooltips and symbol uses at up to
-/// five positions.
-let private expectLikeReference (atLeast: int) (text: string) (expected: FSharpCheckFileResults) (actual: FSharpCheckFileResults) (what: string) =
-    let usesOf (results: FSharpCheckFileResults) =
-        results.GetAllUsesOfAllSymbolsInFile() |> Seq.map useText |> Seq.sort |> List.ofSeq
-
-    Expect.isNonEmpty (usesOf expected) $"%s{what}: the reference has symbol uses"
-    Expect.sequenceEqual (usesOf actual) (usesOf expected) $"%s{what}: every symbol use"
-    Expect.isSome actual.ImplementationFile $"%s{what}: the typed implementation file"
-
-    for line, column, lineText, names in positions atLeast text (expected.GetAllUsesOfAllSymbolsInFile()) do
-        let at = $"%s{what} at %d{line}:%d{column} %A{names}"
-        let tip (results: FSharpCheckFileResults) = tooltipText (results.GetToolTip(line, column, lineText, names, FSharpTokenTag.Identifier))
-        Expect.equal (tip actual) (tip expected) $"%s{at}: the tooltip"
-        let useAt (results: FSharpCheckFileResults) = results.GetSymbolUseAtLocation(line, column, lineText, names) |> Option.map useText
-        Expect.isSome (useAt expected) $"%s{at}: the reference resolves it"
-        Expect.equal (useAt actual) (useAt expected) $"%s{at}: the symbol use"
 
 /// The message of the InvalidOperationException reading the results raises, if any.
 let private refusedResults (result: FileResult) =
@@ -715,8 +654,7 @@ let fileLevelTests =
               let a = p.FileNamed "A.fs"
               let fresh = DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)).Signature.Fingerprint
               Expect.stringContains fresh "@" "the signature holds compiler-generated names"
-              // Checked by declaration, a declaration's names are numbered from the declaration, not from the file's
-              // start, so the two fingerprints differ: each is compared with its own sequential check
+              // Each is compared with its own sequential check: a declaration's names are numbered from the declaration
               let freshByDeclarations = (byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, text))).Signature.Fingerprint
               Expect.stringContains freshByDeclarations "@" "the declarations' signature holds compiler-generated names"
               let clock = Diagnostics.Stopwatch.StartNew()
@@ -920,4 +858,124 @@ let fileLevelTests =
                       Expect.contains dependencies[indexOf "Z.fs"] (indexOf "X.fs") $"%s{header}: Z.fs depends on X.fs"
                       Expect.contains dependencies[indexOf "X.fs"] (indexOf "X.fsi") $"%s{header}: X.fs still depends on X.fsi"
                       Expect.isEmpty z $"%s{header}: the oracle reports nothing for Z.fs (Ab's f shadows W's)"
+          }
+
+          // M2 (Task 5): a check numbers its compiler-generated names over what it checks, the whole file or one
+          // declaration, so the fingerprint leaves the count out
+          testTask "a file checked whole and by declaration gives one fingerprint for its compiler-generated names" {
+              let holder i =
+                  $"type Holder%d{i}() as this =\n    let value = %d{i}\n    member _.V = value\n    member _.Self = this\n\n"
+
+              let text =
+                  "module Deps.A\n\n"
+                  + holder 1
+                  + holder 2
+                  + "let first, second = 1, 2\n\nlet third, fourth = 3, 4\n\nlet adder = fun (x: int) -> x + 1\n"
+
+              let! p = load depsProject [ "A.fs", text ]
+              let a = p.FileNamed "A.fs"
+              let whole = DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text))
+              let byDecl = byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, text))
+              Expect.stringContains whole.Signature.Fingerprint "init@" "the signature holds compiler-generated names"
+              Expect.equal byDecl.Signature.Fingerprint whole.Signature.Fingerprint "FinishFile's fingerprint is CheckFile's"
+          }
+
+          // The lazy FinishFile results and the reads of compiled names in them hold the file's lock, as CheckFile's do
+          testTask "a lazy finish build beside checks of the same file leaves their fingerprints alone" {
+              let holders =
+                  [ for i in 1..150 ->
+                        $"type Holder%d{i}() as this =\n    let value = %d{i}\n    member _.V = value\n    member _.Self = this\n    member _.Twice = (fun () -> value * 2) ()\n\n" ]
+                  |> String.concat ""
+
+              let text = "module Deps.A\n\n" + holders
+              let! p = load depsProject [ "A.fs", text ]
+              let a = p.FileNamed "A.fs"
+              let fresh = DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)).Signature.Fingerprint
+              let freshByDeclarations = (byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, text))).Signature.Fingerprint
+              Expect.stringContains fresh "@" "the signature holds compiler-generated names"
+              let clock = Diagnostics.Stopwatch.StartNew()
+              DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)) |> ignore
+              let checkMs = int clock.ElapsedMilliseconds
+              let onThread (work: unit -> 'T) = Task.Factory.StartNew<'T>(work, TaskCreationOptions.LongRunning)
+              let mutable moved = []
+
+              for round in 1..8 do
+                  let parse = DeclarationChecker.Parse(p.Context, a, text)
+                  let finished = byDeclarations p [] parse
+
+                  // The build and the queries read the compiled names of the file's values
+                  let build =
+                      onThread (fun () ->
+                          let results = finished.CheckResults
+
+                          for u in results.GetAllUsesOfAllSymbolsInFile() do
+                              match u.Symbol with
+                              | :? FSharpMemberOrFunctionOrValue as v -> v.CompiledName |> ignore
+                              | _ -> ())
+
+                  let checks =
+                      [ for k in 0..3 ->
+                            onThread (fun () ->
+                                Threading.Thread.Sleep(k * checkMs / 4)
+                                DeclarationChecker.CheckFile(p.Context, [], parse).Signature.Fingerprint) ]
+
+                  let byDecl = onThread (fun () -> (byDeclarations p [] parse).Signature.Fingerprint)
+                  let! whole = Task.WhenAll checks
+                  let! declared = byDecl
+                  do! build
+
+                  if declared <> freshByDeclarations || whole |> Array.exists ((<>) fresh) then
+                      moved <- round :: moved
+
+              Expect.isEmpty moved "every check's fingerprint equals a sequential check's in every round"
+          }
+
+          // Go to implementation on a use of a signature file's value reads the range the implementation file's
+          // conformance wrote on it: only a check of the implementation file's latest parse writes it
+          testTask "go to implementation through a signature gives the current implementation's range" {
+              let project = fixture "Graph"
+              let! p = load project []
+              let lib = p.FileNamed "Lib.fs"
+              let user = p.FileNamed "Use.fs"
+              let moved = "module Lib\n\n\n\n// moved down\nlet libValue = 41\n\nlet private hidden = 0\n"
+              let parses = parseAll p
+              let libAt = parses |> Array.findIndex (fun parse -> parse.FileName = lib)
+              let userAt = parses |> Array.findIndex (fun parse -> parse.FileName = user)
+              let whole = chain p parses
+              let before = [ for w in whole[.. libAt - 1] -> w.Signature ]
+              let older = parses[libAt]
+              let newer = DeclarationChecker.Parse(p.Context, lib, moved)
+              DeclarationChecker.CheckFile(p.Context, before, newer) |> ignore
+              // A check of the text before it, as a superseded flight or a lazy build of an older result runs
+              DeclarationChecker.CheckFile(p.Context, before, older) |> ignore
+              let userResult = whole[userAt].Result.Value
+              let userText = p.Texts[user]
+              let lineText = userText.Split('\n') |> Array.find (fun line -> line.Contains "Lib.libValue")
+              let line = (userText.Split('\n') |> Array.findIndex (fun l -> l.Contains "Lib.libValue")) + 1
+              let column = lineText.IndexOf "Lib.libValue" + "Lib.libValue".Length
+              let goTo (results: FSharpCheckFileResults) =
+                  match results.GetDeclarationLocation(line, column, lineText, [ "Lib"; "libValue" ], false) with
+                  | FindDeclResult.DeclFound r -> $"%s{Path.GetFileName r.FileName} %O{r}"
+                  | other -> sprintf "%A" other
+              let! reference = interactive { p with Texts = p.Texts.Add(lib, moved) } user
+              let expected = goTo reference
+              Expect.stringContains expected "Lib.fs" "the reference goes to Lib.fs"
+              Expect.equal (goTo userResult.CheckResults) expected "after a check of the older text"
+              let onThread (work: unit -> 'T) = Task.Factory.StartNew<'T>(work, TaskCreationOptions.LongRunning)
+              let mutable differed = []
+
+              for round in 1..5 do
+                  let others =
+                      [ onThread (fun () -> DeclarationChecker.CheckFile(p.Context, before, older) |> ignore)
+                        onThread (fun () -> DeclarationChecker.CheckFile(p.Context, [ for w in whole[.. userAt - 1] -> w.Signature ], parses[userAt]) |> ignore) ]
+
+                  for _ in 1..20 do
+                      let actual = goTo userResult.CheckResults
+
+                      if actual <> expected then
+                          differed <- (round, actual) :: differed
+
+                  do! Task.WhenAll others
+
+              Expect.isEmpty differed "go to implementation gives the current text's range each time"
           } ]

@@ -190,7 +190,7 @@ let tests =
               let work = freshDir "declarations"
               let out = Path.Combine(work, "out")
               let scenario = writeDepsScenario "Deps" work
-              let phases = [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+              let phases = [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
 
               let! code =
                   Checkpoint.execute [ Engines.declarations ] [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--in-process" |]
@@ -217,7 +217,7 @@ let tests =
                   Expect.isTrue (share > 0. && share <= 1.) $"%s{r.Step}: finish share within the latency ({share})"
                   let ms = s["finishPhaseMs"].AsObject()
                   let keys = ms |> Seq.map _.Key |> Set.ofSeq
-                  Expect.isTrue (Set.isSubset (set phases) keys) $"%s{r.Step}: the ten parts of the finish ({keys})"
+                  Expect.isTrue (Set.isSubset (set phases) keys) $"%s{r.Step}: the eleven parts of the finish ({keys})"
                   // A.fs's signature edits restart its dependents: checked whole, then built again
                   let checkFileMs = ms["checkFile"].GetValue<float>()
                   Expect.equal (checkFileMs > 0.) (s["fileLevelChecks"].GetValue<int64>() > 0L) $"%s{r.Step}: CheckFile is timed when it runs"
@@ -285,7 +285,7 @@ let tests =
                   set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "setup"; "tail"; "definitions"; "fingerprint"; "render"; "checkSignatureFile" ]
 
               let finishPhases =
-                  set [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+                  set [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
 
               for s in decl["steps"].AsArray() do
                   let ms = s["finishPhaseMs"].AsObject()
@@ -296,7 +296,10 @@ let tests =
                   Expect.isTrue (timed "sinks") $"""{s["step"]}: the promoted A.fs is finished"""
 
               let coldAllocated = decl["coldCounters"].["phaseAllocatedMb"].AsObject() |> Seq.map _.Key |> Set.ofSeq
-              Expect.equal coldAllocated (set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "checkSignatureFile" ]) "the cold check's allocations by phase"
+              let phases, parts = coldAllocated |> Set.partition (fun phase -> not (phase.Contains "."))
+              Expect.equal phases (set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "checkSignatureFile" ]) "the cold check's allocations by phase"
+              Expect.isTrue (parts |> Set.forall (fun part -> part.StartsWith "checkFile." || part.StartsWith "finish.")) $"and by part of CheckFile and FinishFile: %A{parts}"
+              Expect.contains parts "checkFile.tail" "CheckFile's check"
 
               let slim = extraOf "file-slim"
 

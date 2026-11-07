@@ -275,6 +275,17 @@ let private sameLine: Mutation =
             let i, at = pick random spots
             Some(unlines (Array.updateAt i (ls[i].Insert(at, " ")) ls), $"double a space on line %d{i + 1}")
 
+/// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
+/// recursive function inside a task builder is not compiled to a state machine (FS3511).
+let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
+    let rec attempt tries =
+        match (pick random mutations) random text with
+        | Some edit -> edit
+        | None when tries < 20 -> attempt (tries + 1)
+        | None -> text, "no edit"
+
+    attempt 0
+
 let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let! s = startOn project mode
@@ -329,12 +340,6 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             // Half the time the oracle is asked before the wanted files' builds have settled
             let waitForBuilds = random.Next 2 = 0
 
-            let rec attempt tries =
-                match (pick random mutations) random s.Texts[file] with
-                | Some edit -> edit
-                | None when tries < 20 -> attempt (tries + 1)
-                | None -> s.Texts[file], "no edit"
-
             // Now and then a file goes back to how it was, undoing its edits at once: errors otherwise pile up until
             // every file is broken and the checks run on error recovery alone.
             let text, what =
@@ -343,7 +348,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                 elif random.Next 6 = 0 then
                     originals[file], "revert to the original"
                 else
-                    attempt 0
+                    mutate random mutations s.Texts[file]
 
             let fail (problem: string) =
                 let texts =

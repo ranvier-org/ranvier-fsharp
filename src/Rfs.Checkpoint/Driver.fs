@@ -38,6 +38,8 @@ type StepExtra =
       SegmentRows: int option
       /// Time inside each part of FinishFile during the edit (FileResult.PhaseTicks).
       FinishPhaseMs: Map<string, float> option
+      /// The bytes each phase of the graph, and each part of CheckFile and FinishFile, allocated during the edit (MB).
+      PhaseAllocatedMb: Map<string, float> option
       /// CheckFile runs during the edit, superseded flights included.
       FileLevelChecks: int64 option
       /// Setups from dependencies refused during the edit (a stale snapshot), checked from every earlier file instead.
@@ -291,6 +293,14 @@ module Driver =
                                     a.FinishPhaseTicks
                                     |> Map.map (fun phase ticks ->
                                         toMs (ticks - (b.FinishPhaseTicks |> Map.tryFind phase |> Option.defaultValue 0L)))
+                                    |> Some
+                                | _ -> None
+                              PhaseAllocatedMb =
+                                match countersBefore, countersAfter with
+                                | Some b, Some a ->
+                                    a.PhaseAllocated
+                                    |> Map.map (fun phase bytes ->
+                                        float (bytes - (b.PhaseAllocated |> Map.tryFind phase |> Option.defaultValue 0L)) / 1048576.)
                                     |> Some
                                 | _ -> None
                               FileLevelChecks = delta _.FileLevelChecks

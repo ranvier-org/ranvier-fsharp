@@ -551,13 +551,23 @@ type internal IFileNode =
 /// disposed with their owner when it is demoted.
 [<Sealed>]
 type internal DeclFile
-    (split: Memo<Parsed>, setup: Memo<DeclSetup>, current: Memo<Finished>, publish: Finished -> unit, segmentRows: unit -> int) =
+    (
+        split: Memo<Parsed>,
+        setup: Memo<DeclSetup>,
+        current: Memo<Finished>,
+        unresolved: Signal<DeclSetup voption>,
+        publish: Finished -> unit,
+        segmentRows: unit -> int
+    ) =
     /// The file's parse in the dependency snapshot, split into declarations
     member _.Split = split
     /// What the file is set up from
     member _.Setup = setup
     /// The finish of the current results: pending while the setup or any result is
     member _.Current = current
+    /// The setup of the latest finish of the current text, while that finish was set up from fewer than every earlier
+    /// file and reported a name they do not give (C3). Written once such a finish settles, so reading it checks nothing.
+    member _.Unresolved = unresolved
     /// Reports each result of `finished` not reported before (AdoptedChecks). Untracked; graph thread.
     member _.Publish(finished: Finished) = publish finished
     member _.SegmentRows() = segmentRows ()
@@ -631,6 +641,7 @@ module internal FileNodes =
             createMemo (fun previous ->
                 let key = scopedKey.Value
                 let p = split.Value
+                project.SetupHook path
 
                 if not (obj.ReferenceEquals(p.Parse, key.Parsed.Parse)) then
                     invalidOp $"%s{path}: the split is not of the parse the setup is read with"
@@ -766,6 +777,7 @@ module internal FileNodes =
 
                         project.AddFinishTicks watch.ElapsedTicks
                         project.AddFinishPhaseTicks fileResult.PhaseTicks
+                        project.AddPartsAllocated("finish.", fileResult.PhaseAllocated)
 
                         return
                             { Version = i.Parsed.Version
@@ -789,6 +801,7 @@ module internal FileNodes =
         // What a finish of the current text tells the rows: TypedUses (R13), and the declarations whose final
         // fingerprint broke the D1 premise.
         let premiseChecked = HashSet<RowCheck>(HashIdentity.Reference)
+        let unresolved = createSignal (ValueNone: DeclSetup voption)
 
         createEffect (fun () ->
             if driven.Value then
@@ -797,6 +810,12 @@ module internal FileNodes =
                 match current.TryValue with
                 | Ready f when f.Version = version ->
                     untrack (fun () ->
+                        unresolved.Value <-
+                            if f.Start.Setup.Key.Scoped && Setup.hasUnresolved f.FileResult.Diagnostics then
+                                ValueSome f.Start.Setup
+                            else
+                                ValueNone
+
                         let live = HashSet<DeclarationKey>(f.Checks |> Seq.map (fun (row, _) -> row.Key), HashIdentity.Structural)
                         premiseChecked.RemoveWhere(fun c -> not (live.Contains c.Key)) |> ignore
 
@@ -848,5 +867,5 @@ module internal FileNodes =
                 if not (live.Contains k) then
                     published.Remove k |> ignore
 
-        DeclFile(split, setup, current, publish, fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length)
+        DeclFile(split, setup, current, unresolved, publish, fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length)
 

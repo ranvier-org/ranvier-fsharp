@@ -98,6 +98,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             let started = Diagnostics.Stopwatch.GetTimestamp()
             let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
             let project = ProjectShared ctx
+            project.Post <- host.Post
 
             // Nothing else of the graph runs yet, so the process's allocations are the context's
             project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
@@ -332,6 +333,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Runs `hook` off the graph thread, with the file's path, just before a promotion build sets the file up. For
     /// tests.
     member internal _.OnBeginFile(hook: string -> unit) : unit = project.BeginFileHook <- hook
+
+    /// Runs `hook` on the graph thread, with the file's path, each time a promoted file's declaration setup is
+    /// computed: a hook that throws fails that setup. For tests.
+    member internal _.OnSetup(hook: string -> unit) : unit = project.SetupHook <- hook
 
     /// Weak references to a declaration result of the file, the environment it was checked in, and the FileStart of
     /// its published declaration results; empty while none are published. For tests.
