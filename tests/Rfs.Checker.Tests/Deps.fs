@@ -29,6 +29,8 @@ let fileOf (name: string) = Path.Combine(depsDir, name)
 type Session =
     { Host: GraphHost
       Graph: ProjectGraph
+      /// How the graph checks every file
+      Mode: FileMode
       Spec: ProjectSpec
       Oracle: OracleClient
       /// A project context of its own, for checking the current texts from scratch
@@ -52,11 +54,12 @@ let settle (t: Task<'T>) : Task<'T> =
         return! t
     }
 
-let start () : Task<Session> =
+/// A graph over Deps checking every file in `mode`, settled on the files as they are on disk.
+let startWith (mode: FileMode) : Task<Session> =
     task {
         let! spec = ProjectSpec.load depsProject
         let host = GraphHost.Start "deps"
-        let! graph = ProjectGraph.Create(host, spec)
+        let! graph = ProjectGraph.CreateWithMode(host, spec, mode)
         let! _ = graph.AllDiagnostics() |> settle
         let! oracle = OracleClient.start ()
         let! fresh = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
@@ -68,11 +71,15 @@ let start () : Task<Session> =
         return
             { Host = host
               Graph = graph
+              Mode = mode
               Spec = spec
               Oracle = oracle
               Fresh = fresh
               Texts = texts }
     }
+
+/// A graph over Deps as ProjectGraph.Create makes it: every file file-level.
+let start () = startWith FileLevel
 
 type Edit =
     { /// How many CheckDeclaration results were published (AdoptedChecks): superseded flights are not counted
@@ -113,7 +120,7 @@ let edit (s: Session) (file: string) (text: string) : Task<Edit> =
         use _ = s.Graph.Ran |> Observable.subscribe ran.Enqueue
         let before = s.Graph.AdoptedChecks
         s.Texts[file] <- text
-        s.Graph.SetText(file, text)
+        s.Graph.SetText(file, text) |> ignore
         let! diagnostics = s.Graph.AllDiagnostics() |> settle
 
         return
@@ -139,11 +146,11 @@ let oracleDiff (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDiag
         return Diagnostics.compare expected actual
     }
 
-/// Each implementation file's final fingerprints from a declaration-by-declaration check of the current texts from
-/// scratch, with nothing kept.
+/// Each implementation file's final fingerprints, and its file signature's, from a declaration-by-declaration check of
+/// the current texts from scratch, with nothing kept.
 let freshFingerprints (s: Session) =
     let mutable before = []
-    let result = Dictionary<string, IReadOnlyDictionary<DeclarationKey, string>>(StringComparer.OrdinalIgnoreCase)
+    let result = Dictionary<string, IReadOnlyDictionary<DeclarationKey, string> * string>(StringComparer.OrdinalIgnoreCase)
 
     for file in s.Spec.SourceFiles do
         let parse = DeclarationChecker.Parse(s.Fresh, file, s.Texts[file])
@@ -163,30 +170,38 @@ let freshFingerprints (s: Session) =
                 |> fst
 
             let finished = DeclarationChecker.FinishFile(start, results, parse)
-            result[file] <- finished.Fingerprints
+            result[file] <- (finished.Fingerprints, finished.Signature.Fingerprint)
             before <- before @ [ finished.Signature ]
 
     result
 
 /// The lines by which the graph's final fingerprints differ from a check from scratch: a kept result that a full check
-/// would give differently, even when the diagnostics agree. Fingerprints that are not describable (`?`) are skipped.
+/// would give differently, even when the diagnostics agree. A file-level result has no per-declaration fingerprints, so
+/// its file signature's fingerprint is compared. Fingerprints that are not describable (`?`) are skipped.
 let fingerprintDiff (s: Session) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
         let fresh = freshFingerprints s
 
         return
-            [ for KeyValue(file, expected) in fresh do
-                  let actual = graph[file].Fingerprints
+            [ for KeyValue(file, (expected, expectedFile)) in fresh do
+                  match s.Mode with
+                  | FileLevel ->
+                      let actual = graph[file].Signature.Fingerprint
 
-                  for KeyValue(key, fp) in expected do
-                      match actual.TryGetValue key with
-                      | true, a when a = fp || a.StartsWith "?" || fp.StartsWith "?" -> ()
-                      | true, a -> $"%s{Path.GetFileName file} %A{key.Name}: %s{a} <> fresh %s{fp}"
-                      | _ -> $"%s{Path.GetFileName file} %A{key.Name}: missing"
+                      if not (actual = expectedFile || actual.StartsWith "?" || expectedFile.StartsWith "?") then
+                          $"%s{Path.GetFileName file}: file signature %s{actual} <> fresh %s{expectedFile}"
+                  | Declarations ->
+                      let actual = graph[file].Fingerprints
 
-                  if actual.Count <> expected.Count then
-                      $"%s{Path.GetFileName file}: %d{actual.Count} declarations <> fresh %d{expected.Count}" ]
+                      for KeyValue(key, fp) in expected do
+                          match actual.TryGetValue key with
+                          | true, a when a = fp || a.StartsWith "?" || fp.StartsWith "?" -> ()
+                          | true, a -> $"%s{Path.GetFileName file} %A{key.Name}: %s{a} <> fresh %s{fp}"
+                          | _ -> $"%s{Path.GetFileName file} %A{key.Name}: missing"
+
+                      if actual.Count <> expected.Count then
+                          $"%s{Path.GetFileName file}: %d{actual.Count} declarations <> fresh %d{expected.Count}" ]
     }
 
 /// The graph's diagnostics equal the oracle's, its fingerprints equal a check from scratch, and the D1 premise held.

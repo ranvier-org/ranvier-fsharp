@@ -38,6 +38,10 @@ type StepExtra =
       SegmentRows: int option
       /// Time inside each part of FinishFile during the edit (FileResult.PhaseTicks).
       FinishPhaseMs: Map<string, float> option
+      /// CheckFile runs during the edit, superseded flights included.
+      FileLevelChecks: int64 option
+      /// Setups from dependencies refused during the edit (a stale snapshot), checked from every earlier file instead.
+      ChainFallbacks: int64 option
       /// The fork's graph-check counts, when logged.
       GraphCheck: GraphCheckCounts option }
 
@@ -275,6 +279,8 @@ module Driver =
                                         toMs (ticks - (b.FinishPhaseTicks |> Map.tryFind phase |> Option.defaultValue 0L)))
                                     |> Some
                                 | _ -> None
+                              FileLevelChecks = delta _.FileLevelChecks
+                              ChainFallbacks = delta _.ChainFallbacks
                               GraphCheck = r.GraphCheck }
                             : StepExtra
                         )

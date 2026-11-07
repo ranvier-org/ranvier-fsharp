@@ -5,6 +5,7 @@ open System.IO
 open System.Text.RegularExpressions
 open System.Threading.Tasks
 open Expecto
+open Rfs.Checker
 open Rfs.Checker.Tests.Deps
 
 /// One random edit of a file's text, with what it did; None when the text offers nothing to edit this way.
@@ -250,9 +251,9 @@ let private sameLine: Mutation =
             let i, at = pick random spots
             Some(unlines (Array.updateAt i (ls[i].Insert(at, " ")) ls), $"double a space on line %d{i + 1}")
 
-let private run (seed: int) (steps: int) =
+let private run (mode: FileMode) (seed: int) (steps: int) =
     task {
-        let! s = start ()
+        let! s = startWith mode
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
         let files = s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fs") |> Array.ofList
@@ -304,7 +305,7 @@ let private run (seed: int) (steps: int) =
                 let texts =
                     String.Join("\n", s.Texts |> Seq.map (fun kv -> $"--- %s{Path.GetFileName kv.Key}\n%s{kv.Value}"))
 
-                failtest $"seed %d{seed}, step %d{step}: %s{Path.GetFileName file}: %s{what}\n%s{problem}\n%s{texts}"
+                failtest $"%A{mode} seed %d{seed}, step %d{step}: %s{Path.GetFileName file}: %s{what}\n%s{problem}\n%s{texts}"
 
             let! r =
                 task {
@@ -336,17 +337,21 @@ let private run (seed: int) (steps: int) =
             published <- published + r.Checked.Length
 
         printfn
-            $"seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
+            $"%A{mode} seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
 
     }
 
-[<Tests>]
-let tests =
+let private fuzz (name: string) (mode: FileMode) =
     testSequenced
     <| testList
-        "OracleFuzz"
-        [ testTask "seed 1515: 200 random edits equal the oracle after each" { do! run 1515 200 }
-          testTask "seed 4242: 200 random edits equal the oracle after each" { do! run 4242 200 }
-          testTask "seed 7919: 200 random edits equal the oracle after each" { do! run 7919 200 }
-          testTask "seed 47514: 200 random edits equal the oracle after each" { do! run 47514 200 }
-          testTask "seed 63352: 200 random edits equal the oracle after each" { do! run 63352 200 } ]
+        name
+        [ for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
+              testTask $"seed %d{seed}: 200 random edits equal the oracle after each" { do! run mode seed 200 } ]
+
+/// The graph as ProjectGraph.Create makes it: every file file-level
+[<Tests>]
+let tests = fuzz "OracleFuzz" FileLevel
+
+/// Every file checked by declaration, set up from the files it depends on
+[<Tests>]
+let declarationTests = fuzz "OracleFuzzDeclarations" Declarations

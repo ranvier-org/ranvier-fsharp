@@ -1,0 +1,450 @@
+namespace Rfs.Checker
+
+open System
+open System.Collections.Generic
+open System.Threading
+open System.Threading.Tasks
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Declarations
+open FSharp.Compiler.Diagnostics
+open Ranvier
+
+/// How a file is checked.
+type FileMode =
+    /// Whole, by CheckFile (CheckSignatureFile for a signature file), set up from the files it depends on
+    | FileLevel
+    /// One declaration at a time, set up from the files it depends on
+    | Declarations
+
+[<NoEquality; NoComparison>]
+type internal Versioned = { Text: string; Version: int64 }
+
+[<ReferenceEquality>]
+type internal Parsed =
+    { Version: int64
+      Text: string
+      Parse: FSharpParseFileResults
+      /// Empty for a signature file, and for a file checked whole
+      Declarations: ParsedDeclaration[]
+      /// The text before the first declaration: the file's module or namespace header
+      Prologue: string }
+
+/// What later files are checked against: a file's signature, and in Declarations mode the files so far.
+[<ReferenceEquality>]
+type internal FileSig =
+    { Signature: FileSignature
+      /// Declarations mode: the signature fingerprints of the files so far, the last first
+      Chain: string list
+      /// Declarations mode: the signatures of the files so far, in file order
+      Signatures: FileSignature list }
+
+    member s.Fingerprint = s.Signature.Fingerprint
+
+    /// Before the first file
+    static member Empty =
+        { Signature = Unchecked.defaultof<_>
+          Chain = []
+          Signatures = [] }
+
+    /// The signature of a file checked whole
+    static member Of(signature: FileSignature) =
+        { Signature = signature
+          Chain = []
+          Signatures = [] }
+
+    /// Equal when the file signatures' fingerprints are, compared structurally, never by reference.
+    static member Comparer =
+        { new IEqualityComparer<FileSig> with
+            member _.Equals(a, b) = String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal)
+            member _.GetHashCode s = StringComparer.Ordinal.GetHashCode s.Fingerprint }
+
+    /// Declarations mode: equal when the chains of fingerprints are.
+    static member ChainComparer =
+        { new IEqualityComparer<FileSig> with
+            member _.Equals(a, b) = a.Chain = b.Chain
+            member _.GetHashCode s = s.Chain.Length }
+
+/// Hands each value to the observers subscribed when it is sent.
+[<Sealed>]
+type internal Subject<'T>() =
+    let observers = ResizeArray<IObserver<'T>>()
+
+    member _.Next(value: 'T) =
+        let snapshot = lock observers (fun () -> observers.ToArray())
+
+        for o in snapshot do
+            o.OnNext value
+
+    interface IObservable<'T> with
+        member _.Subscribe o =
+            lock observers (fun () -> observers.Add o)
+
+            { new IDisposable with
+                member _.Dispose() =
+                    lock observers (fun () -> observers.Remove o |> ignore) }
+
+/// Shared by every file of a project.
+[<Sealed>]
+type internal ProjectShared(ctx: ProjectContext) =
+    let mutable checkedCount = 0L
+    let mutable adoptedCount = 0L
+    let mutable finishTicks = 0L
+    let mutable premiseBreaks = 0L
+    let mutable fileLevelChecks = 0L
+    let mutable chainFallbacks = 0L
+    let mutable scopedCheckHook: string -> unit = ignore
+    let finishPhaseTicks = Dictionary<string, int64>()
+    let premise = Subject<DeclarationKey * string>()
+    let published = Subject<DeclarationKey * string>()
+    let ran = Subject<DeclarationKey * string>()
+
+    member _.Context = ctx
+    member _.CheckedCount = Interlocked.Read &checkedCount
+    member _.FinishTicks = Interlocked.Read &finishTicks
+    member _.PremiseBreaks = Interlocked.Read &premiseBreaks
+    member _.FileLevelChecks = Interlocked.Read &fileLevelChecks
+    member _.ChainFallbacks = Interlocked.Read &chainFallbacks
+
+    /// Counts a CheckDeclaration that returned, and reports it (on the thread that ran it).
+    member _.CountCheck(key: DeclarationKey, file: string) =
+        Interlocked.Increment &checkedCount |> ignore
+        ran.Next((key, file))
+
+    member _.CountFileLevelCheck() = Interlocked.Increment &fileLevelChecks |> ignore
+    member _.CountChainFallback() = Interlocked.Increment &chainFallbacks |> ignore
+
+    /// Runs off the graph thread, with the file's path, just before a setup from its dependencies is given to the
+    /// checker. For tests.
+    member _.ScopedCheckHook
+        with get () = Volatile.Read &scopedCheckHook
+        and set (hook: string -> unit) = Volatile.Write(&scopedCheckHook, hook)
+
+    member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
+
+    /// Adds a finish's FileResult.PhaseTicks to the running totals; finishes of different files run concurrently.
+    member _.AddFinishPhaseTicks(phases: IReadOnlyDictionary<string, int64>) =
+        lock finishPhaseTicks (fun () ->
+            for KeyValue(phase, ticks) in phases do
+                finishPhaseTicks[phase] <- (match finishPhaseTicks.TryGetValue phase with | true, t -> t | _ -> 0L) + ticks)
+
+    /// A copy of the running totals of FileResult.PhaseTicks.
+    member _.FinishPhaseTicks: IReadOnlyDictionary<string, int64> =
+        lock finishPhaseTicks (fun () -> Dictionary<string, int64>(finishPhaseTicks) :> IReadOnlyDictionary<_, _>)
+
+    member _.CountPremiseBreak(key: DeclarationKey, file: string) =
+        Interlocked.Increment &premiseBreaks |> ignore
+        premise.Next((key, file))
+
+    member _.PremiseBroken = premise :> IObservable<_>
+    /// Reports a check result published for the first time: each result is one CheckDeclaration, adopted.
+    member _.Publish(key: DeclarationKey, file: string) =
+        Interlocked.Increment &adoptedCount |> ignore
+        published.Next((key, file))
+
+    member _.AdoptedCount = Interlocked.Read &adoptedCount
+    member _.Checked = published :> IObservable<_>
+    member _.Ran = ran :> IObservable<_>
+
+module internal Nodes =
+
+    /// The async memo's last settled value while a new flight runs, so readers that only compare it with what they
+    /// saw before are not woken by the flight starting. A reader that needs the new value reads the async memo.
+    let latestOf (memo: AsyncMemo<'T>) : Memo<'T> =
+        createMemo (fun previous ->
+            match memo.TryValue, previous with
+            | Ready v, _ -> v
+            | Pending, ValueSome p -> p
+            | _ -> memo.Value)
+
+    /// latestOf for a memo that is pending while an async memo it reads is.
+    let latestOfMemo (memo: Memo<'T>) : Memo<'T> =
+        createMemo (fun previous ->
+            match memo.TryValue, previous with
+            | Ready v, _ -> v
+            | Pending, ValueSome p -> p
+            | _ -> memo.Value)
+
+    let same (a: obj) (b: obj) = obj.ReferenceEquals(a, b)
+
+    /// A declaration is unchanged when checking it reads the same syntax (R10) at the same place: a result's
+    /// diagnostics and typed tree carry the ranges it was checked at.
+    let declComparer =
+        { new IEqualityComparer<ParsedDeclaration> with
+            member _.Equals(a, b) =
+                same a b
+                || (a.IsUnchangedFrom b
+                    && a.Range.StartLine = b.Range.StartLine
+                    && a.Range.StartColumn = b.Range.StartColumn
+                    && a.Within = b.Within)
+
+            member _.GetHashCode d =
+                hash (d.Text, d.Range.StartLine, d.Range.StartColumn) }
+
+    /// The text before the first declaration.
+    let prologueOf (text: string) (declarations: ParsedDeclaration[]) =
+        if declarations.Length = 0 then
+            text
+        else
+            let start = declarations[0].Range
+            let mutable line = 1
+            let mutable offset = 0
+
+            while line < start.StartLine && offset < text.Length do
+                let next = text.IndexOf('\n', offset)
+
+                if next < 0 then
+                    offset <- text.Length
+                else
+                    offset <- next + 1
+
+                line <- line + 1
+
+            text.Substring(0, min text.Length (offset + start.StartColumn))
+
+    let keyText (key: DeclarationKey) =
+        $"""%s{String.Join(".", key.ModulePath)}|%s{key.Name}|%A{key.Kind}|%d{key.Ordinal}"""
+
+    /// Reads every async memo, so each one's flight starts, then their values: pending while any of them is.
+    let valuesOfAsync (memos: AsyncMemo<'T>[]) : 'T[] =
+        for m in memos do
+            m.TryValue |> ignore
+
+        memos |> Array.map _.Value
+
+    /// valuesOfAsync for memos.
+    let valuesOf (memos: Memo<'T>[]) : 'T[] =
+        for m in memos do
+            m.TryValue |> ignore
+
+        memos |> Array.map _.Value
+
+/// Lets only the newest of a node's flights run its work. A ticket is taken on the graph thread when a flight starts,
+/// so a later ticket is a later input; a flight whose ticket is no longer the newest when its turn comes is cancelled.
+/// The work runs under the gate's lock, so its writes to shared state (the context's latest parse and dependency
+/// snapshot, the process-wide line directives) land in ticket order and the newest one's are the ones left.
+[<Sealed>]
+type internal Gate() =
+    let sync = obj ()
+    let mutable issued = 0L
+
+    member _.Issue() = Interlocked.Increment &issued
+
+    member _.Run(ticket: int64, work: unit -> 'T) : 'T =
+        lock sync (fun () ->
+            if ticket <> Interlocked.Read &issued then
+                raise (OperationCanceledException "a later flight superseded this one")
+
+            work ())
+
+/// A source file's text and its parse.
+[<Sealed>]
+type internal FileText(ctx: ProjectContext, path: string, initial: string, split: bool) =
+    let text = createSignal { Text = initial; Version = 0L }
+    let gate = Gate()
+
+    let parsed =
+        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+            let t = text.Value
+            let ticket = gate.Issue()
+
+            Task.Run<Parsed>(fun () ->
+                gate.Run(
+                    ticket,
+                    fun () ->
+                        let parse = DeclarationChecker.Parse(ctx, path, t.Text)
+                        let declarations = if split then DeclarationChecker.Split parse else [||]
+
+                        { Version = t.Version
+                          Text = t.Text
+                          Parse = parse
+                          Declarations = declarations
+                          Prologue = Nodes.prologueOf t.Text declarations }
+                )))
+
+    member _.Path = path
+    member _.Text = text
+    member _.Parsed: AsyncMemo<Parsed> = parsed
+    /// The version of the text set last. Graph thread.
+    member _.Version = text.Peek.Version
+
+    /// Sets the text unless a later version is already set: writes posted from different threads may arrive out of order.
+    member _.SetText(t: string, version: int64) =
+        if version > text.Peek.Version then
+            text.Value <- { Text = t; Version = version }
+
+/// What FileDependencies gave for one parse of every file.
+[<ReferenceEquality>]
+type internal FileDepsValue =
+    { /// The parses, in file order: the dependency snapshot the checker holds is of these
+      Parsed: Parsed[]
+      Dependencies: int[][]
+      /// For each file, the earlier files with the same qualified name. Deduplicating the file's module name reads
+      /// them, whether or not it depends on them.
+      SameName: int[][] }
+
+module internal FileDeps =
+
+    let private sameNames (parsed: Parsed[]) =
+        let seen = Dictionary<string, ResizeArray<int>>(StringComparer.OrdinalIgnoreCase)
+
+        parsed
+        |> Array.mapi (fun i p ->
+            let name = p.Parse.ParseTree.QualifiedName.Text
+
+            match seen.TryGetValue name with
+            | true, earlier ->
+                let before = earlier.ToArray()
+                earlier.Add i
+                before
+            | _ ->
+                seen[name] <- ResizeArray [ i ]
+                [||])
+
+    /// The dependencies of every file, from every file's current parse: re-run whenever any parse changes, so the
+    /// checker's dependency snapshot is of the parses the value holds. Superseded flights do not run, so a late one
+    /// never replaces a newer snapshot.
+    let create (ctx: ProjectContext) (files: FileText[]) : Memo<FileDepsValue> =
+        let gate = Gate()
+
+        let deps =
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                let parsed = Nodes.valuesOfAsync (files |> Array.map _.Parsed)
+                let ticket = gate.Issue()
+
+                Task.Run<FileDepsValue>(fun () ->
+                    gate.Run(
+                        ticket,
+                        fun () ->
+                            { Parsed = parsed
+                              Dependencies = DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse)
+                              SameName = sameNames parsed }
+                    )))
+
+        // Read through a plain memo: the setup keys cut off on what they read, and a memo with a cutoff reading an async
+        // memo directly was seen to miss a wake-up once the async memo settled (a Ranvier lost wake-up)
+        createMemo (fun _ -> deps.Value)
+
+/// What a file's setup reads: the earlier files' signatures, either those of the files it depends on or every earlier
+/// one, and the file's parse.
+[<ReferenceEquality>]
+type internal SetupKey =
+    { /// The file's parse in the FileDeps value the key was read from
+      Parsed: Parsed
+      /// The earlier files the setup reads, ascending
+      Files: int[]
+      Before: FileSignature list
+      Fingerprints: string[]
+      SameName: int[]
+      /// Whether Files are the file's dependencies and fewer than every earlier file: the checker then accepts the
+      /// setup only while its dependency snapshot is current
+      Scoped: bool }
+
+/// A check from a setup read from the file's dependencies.
+type internal Attempt<'R> =
+    | Done of SetupKey * 'R
+    /// The check reported an unresolved name (C3/R17): the earlier files it did not read may define it
+    | Unresolved of SetupKey
+    /// The checker refused the setup: its dependency snapshot was not current for the file (this FileDeps value)
+    | Stale of SetupKey * FileDepsValue
+
+module internal Setup =
+
+    /// FS0039 (UndefinedName: every "is not defined"), and a record label not found
+    let private unresolvedCodes = set [ 39; 1129 ]
+
+    let hasUnresolved (diagnostics: FSharpDiagnostic[]) =
+        diagnostics
+        |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error && unresolvedCodes.Contains d.ErrorNumber)
+
+    /// A file checked whole reads all of its parse, and the signatures by their fingerprints.
+    let same (a: SetupKey) (b: SetupKey) =
+        Nodes.same a.Parsed b.Parsed
+        && a.Files = b.Files
+        && a.Fingerprints = b.Fingerprints
+        && a.SameName = b.SameName
+
+    /// The setup of file `index` from its dependencies, or from every earlier file when `chain`. Every signature it
+    /// holds is the current one: it reads them pending, before any check starts. Kept as the same object while `same`
+    /// holds.
+    let key (index: int) (deps: Memo<FileDepsValue>) (signatureOf: int -> Memo<FileSig>) (chain: bool) : Memo<SetupKey> =
+        createMemo (fun previous ->
+            let d = deps.Value
+            let files = if chain then Array.init index id else d.Dependencies[index]
+            let signatures = Nodes.valuesOf (files |> Array.map signatureOf)
+
+            let key =
+                { Parsed = d.Parsed[index]
+                  Files = files
+                  Before = signatures |> Seq.map _.Signature |> List.ofSeq
+                  Fingerprints = signatures |> Array.map _.Fingerprint
+                  SameName = d.SameName[index]
+                  Scoped = files.Length < index }
+
+            match previous with
+            | ValueSome p when same p key -> p
+            | _ -> key)
+
+    /// A file's result, checked off the graph thread from the setup its dependencies give, and from every earlier file
+    /// when the checker refuses that setup (its dependency snapshot went stale) or the check reports an unresolved name.
+    /// Each async memo reads its key before its check starts and returns its last value
+    /// while the key is the same, so a wake that changed nothing runs no check.
+    let build
+        (project: ProjectShared)
+        (path: string)
+        (index: int)
+        (deps: Memo<FileDepsValue>)
+        (signatureOf: int -> Memo<FileSig>)
+        (run: SetupKey -> 'R)
+        (diagnosticsOf: 'R -> FSharpDiagnostic[] option)
+        : Memo<SetupKey * 'R> =
+        let scopedKey = key index deps signatureOf false
+        let chainKey = key index deps signatureOf true
+        let scoped = ref Unchecked.defaultof<AsyncMemo<Attempt<'R>>>
+        let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
+
+        scoped.Value <-
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                let key = scopedKey.Value
+                let current = deps.Value
+                let previous = scoped.Value.Peek
+
+                let reuse =
+                    not (isNull (box previous))
+                    && match previous with
+                       | Done(p, _)
+                       | Unresolved p -> same p key
+                       // Refused for the snapshot it was read from: tried again once FileDeps has a newer one
+                       | Stale(p, seen) -> same p key && Nodes.same seen current
+
+                if reuse then
+                    Task.FromResult previous
+                else
+                    let hook = project.ScopedCheckHook
+
+                    Task.Run<Attempt<'R>>(fun () ->
+                        hook path
+
+                        try
+                            let result = run key
+
+                            match diagnosticsOf result with
+                            | Some diagnostics when key.Scoped && hasUnresolved diagnostics -> Unresolved key
+                            | _ -> Done(key, result)
+                        with :? ArgumentException as e when key.Scoped && e.ParamName = "before" ->
+                            project.CountChainFallback()
+                            Stale(key, current)))
+
+        chained.Value <-
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                let key = chainKey.Value
+                let previous = chained.Value.Peek
+
+                if not (isNull (box previous)) && same (fst previous) key then
+                    Task.FromResult previous
+                else
+                    Task.Run<SetupKey * 'R>(fun () -> key, run key))
+
+        createMemo (fun _ ->
+            match scoped.Value.Value with
+            | Done(key, result) -> key, result
+            | _ -> chained.Value.Value)

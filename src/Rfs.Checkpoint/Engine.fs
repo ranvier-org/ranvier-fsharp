@@ -36,7 +36,12 @@ type EngineCounters =
       /// Published results whose final fingerprint broke the D1 premise.
       PremiseBreaks: int64
       /// Stopwatch ticks of each part of FinishFile (FileResult.PhaseTicks).
-      FinishPhaseTicks: Map<string, int64> }
+      FinishPhaseTicks: Map<string, int64>
+      /// CheckFile runs, superseded flights included.
+      FileLevelChecks: int64
+      /// Setups from a file's dependencies the checker refused (a stale dependency snapshot), checked from every earlier
+      /// file instead.
+      ChainFallbacks: int64 }
 
 /// A checker holding one project in memory, created from the texts on disk.
 type IEngine =
@@ -79,7 +84,9 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
                   FinishTicks = graph.FinishTicks
                   SegmentRows = graph.SegmentRowsTotal
                   PremiseBreaks = graph.PremiseBreaks
-                  FinishPhaseTicks = graph.FinishPhaseTicks |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq }
+                  FinishPhaseTicks = graph.FinishPhaseTicks |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
+                  FileLevelChecks = graph.FileLevelChecks
+                  ChainFallbacks = graph.ChainFallbacks }
 
         member _.DeclarationLines(file, text) = Some(graph.DeclarationLines(file, text))
 
@@ -87,7 +94,7 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
 
         member _.SetText(file, text) =
             let before = graph.AdoptedChecks
-            graph.SetText(file, text)
+            graph.SetText(file, text) |> ignore
             settle before
 
         member _.Dispose() = host.Dispose()
@@ -189,21 +196,27 @@ type private FileSlimEngine(spec: ProjectSpec) =
         member _.Dispose() = ()
 
 module Engines =
-    /// ProjectGraph: declaration-level re-checking on a Ranvier graph.
+    let private graphEngine (create: GraphHost -> ProjectSpec -> Task<ProjectGraph>) (spec: ProjectSpec) =
+        task {
+            let host = GraphHost.Start "checkpoint"
+
+            try
+                let! graph = create host spec
+                return new DeclEngine(host, graph) :> IEngine
+            with e ->
+                host.Dispose()
+                return raise e
+        }
+
+    /// ProjectGraph as it is created: every file checked whole on a Ranvier graph, set up from the files it depends on.
     let decl: EngineFactory =
         { Name = "decl"
-          Create =
-            fun spec ->
-                task {
-                    let host = GraphHost.Start "checkpoint"
+          Create = graphEngine (fun host spec -> ProjectGraph.Create(host, spec)) }
 
-                    try
-                        let! graph = ProjectGraph.Create(host, spec)
-                        return new DeclEngine(host, graph) :> IEngine
-                    with e ->
-                        host.Dispose()
-                        return raise e
-                } }
+    /// ProjectGraph with every file checked one declaration at a time; not one of the checkpoint's engines.
+    let declarations: EngineFactory =
+        { Name = "declarations"
+          Create = graphEngine (fun host spec -> ProjectGraph.CreateWithMode(host, spec, Rfs.Checker.FileMode.Declarations)) }
 
     /// The fork's InteractiveChecker with its file-level signature cutoff, in the project's own type-checking mode: the
     /// cutoff exists only in graph mode, so the project is not forced sequential as the oracle is.

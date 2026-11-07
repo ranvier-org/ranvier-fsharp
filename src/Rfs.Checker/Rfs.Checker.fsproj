@@ -2,8 +2,14 @@
   <ItemGroup>
     <Compile Include="GraphHost.fs" />
     <Compile Include="NameIndex.fs" />
+    <Compile Include="FileDeps.fs" />
     <Compile Include="FileGraph.fs" />
+    <Compile Include="FileLevel.fs" />
     <Compile Include="ProjectGraph.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rfs.Checker.Tests" />
+    <InternalsVisibleTo Include="rfs-checkpoint" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">

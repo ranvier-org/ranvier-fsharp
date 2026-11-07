@@ -6,6 +6,7 @@
     <Compile Include="GraphHostTests.fs" />
     <Compile Include="Deps.fs" />
     <Compile Include="ProjectGraphTests.fs" />
+    <Compile Include="FileModeTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

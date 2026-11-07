@@ -14,10 +14,10 @@ let private c = fileOf "C.fs"
 let private d = fileOf "D.fs"
 let private e = fileOf "E.fs"
 
-/// Runs `body` on a fresh graph over Deps, settled on the files as they are on disk.
+/// Runs `body` on a fresh graph over Deps checking by declaration, settled on the files as they are on disk.
 let private withDeps (body: Session -> Task) =
     task {
-        let! s = start ()
+        let! s = startWith Declarations
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         do! body s
     }
@@ -41,7 +41,7 @@ let tests =
               let host = GraphHost.Start "premise"
 
               try
-                  let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                  let! (graph: ProjectGraph) = ProjectGraph.CreateWithMode(host, spec, Declarations)
                   let! _ = graph.AllDiagnostics() |> settle
                   // Shape's generated comparison members are fingerprinted by their check-time slots, so its final
                   // fingerprint is its check's; A.fs has no free inference variables and no augmentation, so no segment
@@ -164,12 +164,12 @@ let tests =
                               s.Graph.Ran
                               |> Observable.subscribe (fun (k, _) -> if k.Name = "onlyInV1" then v1Ran.TrySetResult(()) |> ignore)
 
-                          s.Graph.SetText(e, original + "\nlet onlyInV1 = 1\n")
+                          s.Graph.SetText(e, original + "\nlet onlyInV1 = 1\n") |> ignore
                           // v2 arrives once a v1 check has run, while v1's finish is still to come
                           let! () = settle v1Ran.Task
                           let v2 = original + "\nlet onlyInV2: string = 2\n"
                           s.Texts[e] <- v2
-                          s.Graph.SetText(e, v2)
+                          s.Graph.SetText(e, v2) |> ignore
                           // Runs on the graph thread after the second write is applied
                           do! s.Host.Read(fun () -> events.Enqueue "<v2 set>")
                           let! diagnostics = s.Graph.AllDiagnostics() |> settle

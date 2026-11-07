@@ -28,19 +28,22 @@ Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json h
 cold and edit allocations, decl's counters after the cold check (with its D1 premise breaks and segment rows), the
 largest declaration of the edited files and the one the first edit falls in (in lines), and per edit the
 CheckDeclaration runs (superseded flights included), adopted checks, FinishFile time, its share of the latency and its
-time per part, rows inside R11/R12 segments, and file-slim's graph-check counts when logged. It sits in a
-subdirectory so `rfs-harness compare` reads only results."""
+time per part, rows inside R11/R12 segments, CheckFile runs (fileLevelChecks), setups from dependencies refused for a
+stale snapshot and checked from every earlier file instead (chainFallbacks), and file-slim's graph-check counts when
+logged. It sits in a subdirectory so `rfs-harness compare` reads only results."""
 
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
-  decl: ProjectGraph.SetText, then AllDiagnostics; checks per declaration, each file seeing every earlier file.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on.
   file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
     the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
   cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
-  decl decls/edit counts adopted checks; extra/<server>.<scenario>.json also has every run, finish time and share,
-    and segment rows.
+  decl decls/edit counts adopted declaration checks (none while every file is file-level);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
 Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
 LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it."""
 
@@ -139,6 +142,8 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                 o["segmentRows"] <- JsonValue.Create c.SegmentRows
                 o["premiseBreaks"] <- JsonValue.Create c.PremiseBreaks
                 o["finishPhaseMs"] <- phasesMs (c.FinishPhaseTicks |> Map.map (fun _ t -> float t * 1000. / float Stopwatch.Frequency))
+                o["fileLevelChecks"] <- JsonValue.Create c.FileLevelChecks
+                o["chainFallbacks"] <- JsonValue.Create c.ChainFallbacks
                 o
 
         let step (e: StepExtra) : JsonNode =
@@ -152,6 +157,8 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
             o["finishShare"] <- opt e.FinishShare
             o["segmentRows"] <- opt e.SegmentRows
             o["finishPhaseMs"] <- e.FinishPhaseMs |> Option.map phasesMs |> Option.toObj
+            o["fileLevelChecks"] <- opt e.FileLevelChecks
+            o["chainFallbacks"] <- opt e.ChainFallbacks
 
             o["graphCheck"] <-
                 match e.GraphCheck with
@@ -247,6 +254,14 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                                         (fmt (Driver.finishShareP50 run |> Option.map ((*) 100.)))
                                         cold.SegmentRows
                                         lastRows
+
+                                    printfn
+                                        "  %s: file checks %d cold, %s/edit; chain fallbacks %d cold, %s/edit"
+                                        engine.Name
+                                        cold.FileLevelChecks
+                                        (fmt (mean _.FileLevelChecks))
+                                        cold.ChainFallbacks
+                                        (fmt (mean _.ChainFallbacks))
 
                                 let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
 

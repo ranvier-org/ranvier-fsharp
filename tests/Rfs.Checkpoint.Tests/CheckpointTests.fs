@@ -145,7 +145,7 @@ let tests =
 
               let decl = results |> List.find (fun r -> r.Server = "decl")
               let slim = results |> List.find (fun r -> r.Server = "file-slim")
-              Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "decl counts its checks"
+              Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked = Some 0)) "decl checks every file whole: no declaration checks"
               Expect.isTrue (slim.Steps |> List.forall (fun s -> s.DeclsChecked.IsNone)) "file-slim has no declaration count"
               Expect.isLessThan slim.StartedAt decl.StartedAt "the baseline runs first"
 
@@ -154,8 +154,10 @@ let tests =
 
               let declExtra = extraOf decl
               Expect.isNotNull (declExtra["coldCounters"]) "decl's counters after the cold check"
-              let coldAdopted = declExtra["coldCounters"].["adopted"].GetValue<int64>()
-              Expect.isGreaterThan coldAdopted 0L "the cold check adopts checks"
+              let cold = declExtra["coldCounters"]
+              Expect.equal (cold["fileLevelChecks"].GetValue<int64>()) 5L "the cold check checks each of Deps' five implementation files once"
+              Expect.equal (cold["chainFallbacks"].GetValue<int64>()) 0L "and sets each up from its dependencies"
+              Expect.equal (cold["adopted"].GetValue<int64>()) 0L "it adopts no declaration checks"
               Expect.isNotNull (declExtra["finishShareP50"]) "finish share p50"
               let declSteps = declExtra["steps"].AsArray() |> List.ofSeq
               Expect.equal declSteps.Length 5 "one extra per edit"
@@ -164,14 +166,45 @@ let tests =
                   let adopted = s["adopted"].GetValue<int64>()
                   Expect.equal (Some(int adopted)) r.DeclsChecked $"%s{r.Step}: decls/edit is the adopted count"
                   Expect.isGreaterThanOrEqual (s["checked"].GetValue<int64>()) adopted $"%s{r.Step}: runs include adopted ones"
-                  Expect.isGreaterThan (s["finishMs"].GetValue<float>()) 0. $"%s{r.Step}: finish time"
-                  let share = s["finishShare"].GetValue<float>()
-                  Expect.isTrue (share > 0. && share <= 1.) $"%s{r.Step}: finish share within the latency ({share})"
+                  Expect.isGreaterThan (s["fileLevelChecks"].GetValue<int64>()) 0L $"%s{r.Step}: decl counts its file checks"
+                  Expect.isGreaterThanOrEqual (s["chainFallbacks"].GetValue<int64>()) 0L $"%s{r.Step}: chain fallbacks"
                   Expect.isGreaterThanOrEqual (s["segmentRows"].GetValue<int>()) 0 $"%s{r.Step}: segment rows"
 
               let slimExtra = extraOf slim
               Expect.isNull (slimExtra["coldCounters"]) "file-slim keeps no counters"
               Expect.equal (slimExtra["steps"].AsArray().Count) 5 "one extra per edit"
+          }
+
+          testTask "checkpoint on Deps checking by declaration" {
+              let work = freshDir "declarations"
+              let out = Path.Combine(work, "out")
+              let scenario = writeDepsScenario "Deps" work
+              let phases = [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+
+              let! code =
+                  Checkpoint.execute [ Engines.declarations ] [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--in-process" |]
+
+              Expect.equal code 0 "exit code"
+              let result = readResults out |> List.exactlyOne
+              Expect.isTrue (result.Steps |> List.forall (fun s -> s.Error.IsNone && s.OracleDiff = Some [])) "every step matches the oracle"
+              Expect.isTrue (result.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "it counts its checks"
+              let extra = JsonNode.Parse(File.ReadAllText(Path.Combine(out, "extra", Report.fileName result)))
+              let coldAdopted = extra["coldCounters"].["adopted"].GetValue<int64>()
+              Expect.isGreaterThan coldAdopted 0L "the cold check adopts checks"
+              Expect.equal (extra["coldCounters"].["fileLevelChecks"].GetValue<int64>()) 0L "no file is checked whole"
+              Expect.isNotNull (extra["finishShareP50"]) "finish share p50"
+              let steps = extra["steps"].AsArray() |> List.ofSeq
+              Expect.equal steps.Length 5 "one extra per edit"
+
+              for s, r in List.zip steps result.Steps do
+                  let adopted = s["adopted"].GetValue<int64>()
+                  Expect.equal (Some(int adopted)) r.DeclsChecked $"%s{r.Step}: decls/edit is the adopted count"
+                  Expect.isGreaterThanOrEqual (s["checked"].GetValue<int64>()) adopted $"%s{r.Step}: runs include adopted ones"
+                  Expect.isGreaterThan (s["finishMs"].GetValue<float>()) 0. $"%s{r.Step}: finish time"
+                  let share = s["finishShare"].GetValue<float>()
+                  Expect.isTrue (share > 0. && share <= 1.) $"%s{r.Step}: finish share within the latency ({share})"
+                  let ms = s["finishPhaseMs"].AsObject()
+                  Expect.equal (ms |> Seq.map _.Key |> Seq.sort |> List.ofSeq) (List.sort phases) $"%s{r.Step}: the ten parts of the finish"
           }
 
           testTask "the oracle sees each edit's text" {
@@ -216,8 +249,6 @@ let tests =
               let work = freshDir "rows"
               let out = Path.Combine(work, "out")
               let scenario = writeDepsScenario "Deps" work
-              let phases = [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
-
               let! code = Checkpoint.execute Engines.all [| "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out; "--in-process" |]
               Expect.equal code 0 "exit code"
               let extraOf (server: string) = JsonNode.Parse(File.ReadAllText(Path.Combine(out, "extra", $"%s{server}.deps-five.json")))
@@ -231,9 +262,9 @@ let tests =
               Expect.isGreaterThanOrEqual edited.Value 1 "the edited declaration has a line"
               Expect.isGreaterThanOrEqual largest.Value edited.Value "no declaration of the edited file is larger than the largest"
 
+              // decl checks every file whole, so no finish runs; "checkpoint on Deps checking by declaration" checks the parts
               for s in decl["steps"].AsArray() do
-                  let ms = s["finishPhaseMs"].AsObject()
-                  Expect.equal (ms |> Seq.map _.Key |> Seq.sort |> List.ofSeq) (List.sort phases) $"""{s["step"]}: the ten parts of the finish"""
+                  Expect.isEmpty (s["finishPhaseMs"].AsObject()) $"""{s["step"]}: no finish"""
 
               let slim = extraOf "file-slim"
 
