@@ -665,7 +665,7 @@ module internal FileNodes =
                 project.SetupHook path
 
                 if not (obj.ReferenceEquals(p.Parse, key.Parsed.Parse)) then
-                    invalidOp $"%s{path}: the split is not of the parse the setup is read with"
+                    raise (GraphInvariantException $"%s{path}: the split is not of the parse the setup is read with")
 
                 let s = { Key = key; Prologue = p.Prologue }
 

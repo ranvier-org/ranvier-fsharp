@@ -769,6 +769,34 @@ let tests =
                               do! step "X.fs fails again" broken true
                           })
           }
+          // S1-R: a file whose setup read an implementation file's failed status while that file was checked again is
+          // not settled until the status is
+          testTask "a dependent of a signature file does not settle on a stale failed status" {
+              let fixture = Path.Combine(Path.GetDirectoryName depsDir, "SigQualName", "SigQualName.fsproj")
+
+              for mode in [ FileLevel; Declarations ] do
+                  do!
+                      withSession (startOn fixture mode) (fun s ->
+                          task {
+                              let x = s.Spec.SourceFiles |> List.find (fun f -> name f = "X.fs")
+                              let y = s.Spec.SourceFiles |> List.find (fun f -> name f = "Y.fs")
+                              let ok = s.Texts[x]
+
+                              for round in 1..3 do
+                                  for what, text in [ "fails", ok.TrimEnd('\n') + failingDefault; "fixed", ok ] do
+                                      s.Texts[x] <- text
+                                      s.Graph.SetText(x, text) |> ignore
+                                      let settled = s.Graph.SettledDiagnostics y
+                                      let diagnostics = s.Graph.Diagnostics y
+                                      let! struct (_, settledY) = settled |> settle
+                                      let! diagnosticsY = diagnostics |> settle
+                                      let! all = s.Graph.AllDiagnostics() |> settle
+                                      do! expectOracle s all $"%A{mode} round %d{round}: X.fs %s{what}"
+                                      let codes (ds: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = ds |> Array.map _.ErrorNumber |> Array.sort
+                                      Expect.equal (codes settledY) (codes all[y]) $"%A{mode} round %d{round}: X.fs %s{what}: SettledDiagnostics(Y.fs)"
+                                      Expect.equal (codes diagnosticsY) (codes all[y]) $"%A{mode} round %d{round}: X.fs %s{what}: Diagnostics(Y.fs)"
+                          })
+          }
           // M5 of the Task 5 review: only a failing setup is contained; a broken invariant of the graph is not
           testTask "a broken invariant in a declaration setup is not contained" {
               do!
@@ -776,7 +804,7 @@ let tests =
                       task {
                           s.Graph.OnSetup(fun path ->
                               if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
-                                  invalidOp "an invariant of the setup broke (test)")
+                                  raise (GraphInvariantException "an invariant of the setup broke (test)"))
 
                           s.Graph.Promote a
 

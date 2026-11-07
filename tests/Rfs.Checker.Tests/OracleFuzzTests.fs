@@ -197,7 +197,8 @@ let private failingDefault: Mutation =
         elif text.Contains "3 * scaleDefaults r" then
             Some(text.Replace("3 * scaleDefaults r", "3 * scaleDefaults * r"), "break areaDefaults")
         else
-            let lambda = if random.Next 2 = 0 then "x + x" else "x + 1.0"
+            // A body, a float use, and only a lambda parameter's type (C1-R)
+            let lambda = pick random [| "x + x"; "x + 1.0"; "()" |]
 
             let added =
                 $"\n\nlet scaleDefaults (x: int) : int = x * 2\n\nlet areaDefaults (r: int) : int = 3 * scaleDefaults * r\n\nlet gDefaults () =\n    (fun x -> %s{lambda})\n    1\n"
@@ -391,7 +392,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                                 do! whenPromoted s.Graph s.Spec
 
                             let! diagnostics = s.Graph.AllDiagnostics() |> settle
-                            return { Delta = 0L; Checked = []; Ran = []; Diagnostics = diagnostics }
+                            return { Delta = 0L; Checked = []; Ran = []; Diagnostics = diagnostics; Settled = diagnostics }
                         else
                             return! editWith waitForBuilds s file text
                     with e ->
@@ -402,6 +403,13 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
 
             if not diff.IsEmpty then
                 fail (String.concat Environment.NewLine diff)
+
+            // Each file's settled diagnostics, asked for before anything settled, are the oracle's for that file too
+            for KeyValue(f, settled) in r.Settled do
+                let perFile = Rfs.Lsp.Diagnostics.compare (r.Diagnostics[f] |> Seq.map Rfs.Projects.FcsDiagnostics.ofFcs |> List.ofSeq) (settled |> Seq.map Rfs.Projects.FcsDiagnostics.ofFcs |> List.ofSeq)
+
+                if not perFile.IsEmpty then
+                    fail ($"SettledDiagnostics of %s{Path.GetFileName f} differ from the settled project's:\n" + String.concat Environment.NewLine perFile)
 
             let! fingerprints = fingerprintDiff s
 

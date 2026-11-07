@@ -104,7 +104,9 @@ type Edit =
       Checked: (DeclarationKey * string) list
       /// Every CheckDeclaration that returned, in order
       Ran: (DeclarationKey * string) list
-      Diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]> }
+      Diagnostics: IReadOnlyDictionary<string, FSharpDiagnostic[]>
+      /// Each file's SettledDiagnostics, asked for right after the text was set, before anything settled
+      Settled: IReadOnlyDictionary<string, FSharpDiagnostic[]> }
 
     /// The names of the published results of a file
     member e.NamesIn(file: string) =
@@ -138,7 +140,13 @@ let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<
         let before = s.Graph.AdoptedChecks
         s.Texts[file] <- text
         s.Graph.SetText(file, text) |> ignore
+        let settledEach = [ for f in s.Spec.SourceFiles -> f, s.Graph.SettledDiagnostics f ]
         let! _ = s.Graph.AllDiagnostics() |> settle
+        let settled = Dictionary<string, FSharpDiagnostic[]>(StringComparer.OrdinalIgnoreCase)
+
+        for f, t in settledEach do
+            let! struct (_, d) = t |> settle
+            settled[f] <- d
 
         if promoted then
             do! whenPromoted s.Graph s.Spec
@@ -149,7 +157,8 @@ let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<
             { Delta = s.Graph.AdoptedChecks - before
               Checked = List.ofSeq events
               Ran = List.ofSeq ran
-              Diagnostics = diagnostics }
+              Diagnostics = diagnostics
+              Settled = settled }
     }
 
 /// Sets the text of `file` and waits until every file is settled and every wanted file's promotion has.

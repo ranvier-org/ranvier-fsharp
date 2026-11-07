@@ -121,8 +121,8 @@ let private interactive (p: Project) (text: string) =
 
 /// C1 of the Task 5 review: the file-end defaults stop at the first default that fails, so whether a later body's
 /// inference variable gets its default, and how its messages show it, depends on another declaration.
-let private failingDefault (lambda: string) =
-    $"module Deps.A\n\nlet scale (x: int) : int = x * 2\n\nlet area (r: int) : int = 3 * scale * r\n\nlet g () =\n    (fun x -> %s{lambda})\n    1\n"
+let private failingDefault (body: string) =
+    $"module Deps.A\n\nlet scale (x: int) : int = x * 2\n\nlet area (r: int) : int = 3 * scale * r\n\nlet g () =\n%s{body}    1\n"
 
 /// Each compiled name the implementation file's values have, in order.
 let private compiledNames (results: FSharpCheckFileResults) =
@@ -209,12 +209,17 @@ let tests =
           }
 
           yield!
-              [ for name, lambda in [ "x + x", "x + x"; "x + 1.0", "x + 1.0" ] do
+              [ for name, body in
+                    [ "x + x", "    (fun x -> x + x)\n"
+                      "x + 1.0", "    (fun x -> x + 1.0)\n"
+                      // C1-R: a variable only a lambda parameter's type holds, and one only a local value's does
+                      "a lambda parameter", "    (fun x -> ())\n"
+                      "a local value", "    let f = fun x -> ()\n    ignore f\n" ] do
                     for broken in [ true; false ] do
                         let what = if broken then "fixed" else "broken"
 
                         testTask $"a body whose default another declaration stops is rendered again (%s{name}, area %s{what})" {
-                            let broken' = failingDefault lambda
+                            let broken' = failingDefault body
                             let fixedText = broken'.Replace("3 * scale * r", "3 * scale r")
                             let text, edited = if broken then broken', fixedText else fixedText, broken'
                             let! p = load [ a, text ]

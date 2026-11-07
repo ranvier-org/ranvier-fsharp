@@ -45,12 +45,22 @@ module internal WholeFile =
     /// The file's result while it is for text version `version`, and was set up from the current signatures of the
     /// files it read: a memo that is ready is consistent with every node it read, and the setup read those signatures
     /// pending.
-    let private settledAt (file: FileText) (result: Memo<SetupKey * 'R>) (version: int64) : (SetupKey * 'R) voption =
+    /// Whether every implementation file whose failed status the key read (SetupKey.Consulted) has settled its signature:
+    /// while one is checked again its status is the last one, which its check may still change (S1-R). A tracked read,
+    /// so a waiter wakes when the signature settles.
+    let statusSettled (signatureOf: int -> Memo<FileSig>) (key: SetupKey) =
+        key.Consulted
+        |> Array.forall (fun i ->
+            match (signatureOf i).TryValue with
+            | Pending -> false
+            | _ -> true)
+
+    let private settledAt (signatureOf: int -> Memo<FileSig>) (file: FileText) (result: Memo<SetupKey * 'R>) (version: int64) : (SetupKey * 'R) voption =
         if file.Version <> version then
             ValueNone
         else
             match result.TryValue with
-            | Ready((key, _) as r) when key.Parsed.Version = version -> ValueSome r
+            | Ready((key, _) as r) when key.Parsed.Version = version && statusSettled signatureOf key -> ValueSome r
             | Failed e -> raise (InvalidOperationException($"%s{file.Path} failed to check", e))
             | _ -> ValueNone
 
@@ -129,7 +139,7 @@ module internal WholeFile =
             with
             | NotReadyException _ -> reraise ()
             // An invariant of the graph broken: a bug, never degraded to a whole check
-            | :? InvalidOperationException -> reraise ()
+            | :? GraphInvariantException -> reraise ()
             | e ->
                 Diagnostics.Trace.WriteLine $"Rfs.Checker: setting %s{path} up by declaration failed: %O{e}"
                 ValueNone
@@ -229,10 +239,10 @@ module internal WholeFile =
                 | _ -> ValueNone
 
         let finishedAt (version: int64) (f: Finished) =
-            if f.Version = version then ValueSome f else ValueNone
+            if f.Version = version && statusSettled signatureOf f.Start.Setup.Key then ValueSome f else ValueNone
 
         let keptAt (version: int64) (k: KeptResult) =
-            if k.Version = version then ValueSome k.Result else ValueNone
+            if k.Version = version && statusSettled signatureOf k.Key then ValueSome k.Result else ValueNone
 
         /// Disposes the owner of dropped declaration nodes, once their readers have moved off them. A memo keeps its
         /// sources until it runs again, and a disposed node its last value, so the memos that read the nodes run again
@@ -337,7 +347,7 @@ module internal WholeFile =
                 match current version with
                 | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map _.FileResult.Diagnostics
                 | ValueSome(Kept k) -> keptAt version k |> ValueOption.map _.Diagnostics
-                | ValueSome Whole -> settledAt file whole version |> ValueOption.map (fun (_, r) -> r.Diagnostics)
+                | ValueSome Whole -> settledAt signatureOf file whole version |> ValueOption.map (fun (_, r) -> r.Diagnostics)
                 | ValueNone -> ValueNone
 
             member _.Results version =
@@ -350,7 +360,7 @@ module internal WholeFile =
                 match current version with
                 | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map _.FileResult
                 | ValueSome(Kept k) -> keptAt version k
-                | ValueSome Whole -> settledAt file whole version |> ValueOption.map snd
+                | ValueSome Whole -> settledAt signatureOf file whole version |> ValueOption.map snd
                 | ValueNone -> ValueNone
 
             member _.SegmentRows() =
@@ -461,7 +471,7 @@ module internal WholeFile =
             member _.Mode = FileLevel
             member _.Text = file
             member _.Signature = signature
-            member _.Settled version = settledAt file result version |> ValueOption.map (fun (key, _) -> key.Parsed.Parse.Diagnostics)
+            member _.Settled version = settledAt signatureOf file result version |> ValueOption.map (fun (key, _) -> key.Parsed.Parse.Diagnostics)
             member _.Results _ = raise (wholeOnly file.Path)
             member _.FileResult _ = ValueNone
             member _.SegmentRows() = 0

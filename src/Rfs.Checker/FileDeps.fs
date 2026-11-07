@@ -50,12 +50,12 @@ type internal FileSig =
                     && b.Signature.HasFingerprint
                     && String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal))
 
-            // Never takes a fingerprint: equal values have taken theirs, or are the same signature
-            member _.GetHashCode s =
-                if s.Signature.HasFingerprint then
-                    StringComparer.Ordinal.GetHashCode s.Fingerprint
-                else
-                    0 }
+            // Constant: equality changes once a fingerprint is taken, so no hash of either is stable over a value's life
+            member _.GetHashCode _ = 0 }
+
+/// An invariant of the graph broke: a bug, never contained or degraded to a whole check.
+type internal GraphInvariantException(message: string) =
+    inherit Exception(message)
 
 /// Hands each value to the observers subscribed when it is sent.
 [<Sealed>]
@@ -434,6 +434,10 @@ type internal SetupKey =
       /// Whether a later file depended on the file when the key was read: if not, its check need not take its
       /// signature's fingerprint. Not part of the key's identity.
       HasDependents: bool
+      /// The implementation files whose failed status (`ProjectShared.FailedOf`) the key read: an answer given while
+      /// such a file is checked again is its last one, so a result of this key is settled only once each of them is.
+      /// Not part of the key's identity.
+      Consulted: int[]
       /// Whether Files are the file's dependencies and fewer than every earlier file: the checker then accepts the
       /// setup only while its dependency snapshot is current
       Scoped: bool }
@@ -499,21 +503,22 @@ module internal Setup =
         createMemo (fun previous ->
             let d = deps.Value
 
-            let files =
+            let files, consulted =
                 if chain then
-                    Array.init index id
+                    Array.init index id, [||]
                 else
                     let listed = d.Dependencies[index]
                     let present = HashSet<int>(listed)
 
-                    let failed =
+                    let consulted =
                         [| for j in listed do
                                let i = d.ImplementationOf[j]
 
-                               if i >= 0 && i < index && not (present.Contains i) && (project.FailedOf i).Value then
+                               if i >= 0 && i < index && not (present.Contains i) then
                                    yield i |]
 
-                    if failed.Length = 0 then listed else Array.append listed failed |> Array.sort
+                    let failed = consulted |> Array.filter (fun i -> (project.FailedOf i).Value)
+                    (if failed.Length = 0 then listed else Array.append listed failed |> Array.sort), consulted
             let signatures = Nodes.valuesOf (files |> Array.map signatureOf)
 
             let key =
@@ -523,6 +528,7 @@ module internal Setup =
                   Fingerprints = signatures |> Array.map _.Fingerprint
                   SameName = d.SameName[index]
                   HasDependents = d.HasDependents[index]
+                  Consulted = consulted
                   Scoped = files.Length < index }
 
             match previous with
