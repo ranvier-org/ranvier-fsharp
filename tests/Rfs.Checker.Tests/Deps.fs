@@ -57,13 +57,22 @@ let settle (t: Task<'T>) : Task<'T> =
         return! t
     }
 
-/// A graph over `project` checking every file in `mode`, settled on the files as they are on disk.
+/// Waits until promoting every file has settled for its latest text (at once for a file that is not wanted).
+let whenPromoted (graph: ProjectGraph) (spec: ProjectSpec) : Task =
+    task {
+        for f in spec.SourceFiles do
+            do! graph.WhenPromoted(f, CancellationToken.None) |> settle
+    }
+
+/// A graph over `project` checking every file in `mode`, settled on the files as they are on disk; in Declarations
+/// mode, once every implementation file is promoted.
 let startOn (project: string) (mode: FileMode) : Task<Session> =
     task {
         let! spec = ProjectSpec.load project
         let host = GraphHost.Start "deps"
         let! graph = ProjectGraph.CreateWithMode(host, spec, mode)
         let! _ = graph.AllDiagnostics() |> settle
+        do! whenPromoted graph spec
         let! oracle = OracleClient.start ()
         let! fresh = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
         let texts = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -117,8 +126,9 @@ type Edit =
         |> List.countBy (fun (k, _) -> k.Name)
         |> Map.ofList
 
-/// Sets the text of `file` and waits until every file is settled.
-let edit (s: Session) (file: string) (text: string) : Task<Edit> =
+/// Sets the text of `file` and waits until every file is settled, and when `promoted`, until promoting every wanted
+/// file has settled too.
+let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<Edit> =
     task {
         let events = ConcurrentQueue<DeclarationKey * string>()
         let ran = ConcurrentQueue<DeclarationKey * string>()
@@ -127,6 +137,11 @@ let edit (s: Session) (file: string) (text: string) : Task<Edit> =
         let before = s.Graph.AdoptedChecks
         s.Texts[file] <- text
         s.Graph.SetText(file, text) |> ignore
+        let! _ = s.Graph.AllDiagnostics() |> settle
+
+        if promoted then
+            do! whenPromoted s.Graph s.Spec
+
         let! diagnostics = s.Graph.AllDiagnostics() |> settle
 
         return
@@ -135,6 +150,9 @@ let edit (s: Session) (file: string) (text: string) : Task<Edit> =
               Ran = List.ofSeq ran
               Diagnostics = diagnostics }
     }
+
+/// Sets the text of `file` and waits until every file is settled and every wanted file's promotion has.
+let edit (s: Session) (file: string) (text: string) : Task<Edit> = editWith true s file text
 
 let replace (s: Session) (file: string) (oldText: string) (newText: string) =
     let text = s.Texts[file]
@@ -182,8 +200,9 @@ let freshFingerprints (s: Session) =
     result
 
 /// The lines by which the graph's final fingerprints differ from a check from scratch: a kept result that a full check
-/// would give differently, even when the diagnostics agree. A file-level result has no per-declaration fingerprints, so
-/// its file signature's fingerprint is compared. Fingerprints that are not describable (`?`) are skipped.
+/// would give differently, even when the diagnostics agree. A result of a file checked whole has no per-declaration
+/// fingerprints, so its file signature's fingerprint is compared. Fingerprints that are not describable (`?`) are
+/// skipped.
 let fingerprintDiff (s: Session) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
@@ -191,13 +210,13 @@ let fingerprintDiff (s: Session) : Task<string list> =
 
         return
             [ for KeyValue(file, (expected, expectedFile)) in fresh do
-                  match s.Mode with
-                  | FileLevel ->
-                      let actual = graph[file].Signature.Fingerprint
+                  let byDeclaration = graph[file].Fingerprints.Count > 0
+                  let actualFile = graph[file].Signature.Fingerprint
 
-                      if not (actual = expectedFile || actual.StartsWith "?" || expectedFile.StartsWith "?") then
-                          $"%s{Path.GetFileName file}: file signature %s{actual} <> fresh %s{expectedFile}"
-                  | Declarations ->
+                  if not (actualFile = expectedFile || actualFile.StartsWith "?" || expectedFile.StartsWith "?") then
+                      $"%s{Path.GetFileName file}: file signature %s{actualFile} <> fresh %s{expectedFile}"
+
+                  if byDeclaration then
                       let actual = graph[file].Fingerprints
 
                       for KeyValue(key, fp) in expected do

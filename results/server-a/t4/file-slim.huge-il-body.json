@@ -1,0 +1,102 @@
+{
+  "server": "file-slim",
+  "scenario": "huge-il-body",
+  "commit": "fbc9be3aa8159670bbb660c3b7b7e22368f4e279",
+  "startedAt": "2026-11-07T09:36:25.9422179Z",
+  "coldMs": 19246.2481,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #1 fwd",
+      "latencyMs": 1573.8852,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #2 inv",
+      "latencyMs": 807.5154,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #3 fwd",
+      "latencyMs": 770.2351,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #4 inv",
+      "latencyMs": 756.5385,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #5 fwd",
+      "latencyMs": 792.9783,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #6 inv",
+      "latencyMs": 755.4737,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #7 fwd",
+      "latencyMs": 1392.3067,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #8 inv",
+      "latencyMs": 742.3687,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #9 fwd",
+      "latencyMs": 724.1159,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Compiler/AbstractIL/il.fs 3632:44-3632:45 #10 inv",
+      "latencyMs": 742.2637,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 1755.78515625,
+  "allocatedMb": 25327.912521362305,
+  "gen2": 9
+}

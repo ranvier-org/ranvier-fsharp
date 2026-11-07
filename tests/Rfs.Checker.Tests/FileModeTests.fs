@@ -54,6 +54,29 @@ let private counted (s: Session) (work: unit -> Task<Edit>) =
 /// Changes the type of D.fs's `after`; no other implementation file depends on D.fs in the fixture as it is
 let private afterType = "let after = 42", "let after : int64 = 42L"
 
+let private c = fileOf "C.fs"
+
+/// Promotes the files and waits until each is checked by declaration for its latest text.
+let private promote (s: Session) (files: string list) =
+    task {
+        for f in files do
+            s.Graph.Promote f
+
+        for f in files do
+            do! s.Graph.WhenPromoted(f, CancellationToken.None) |> settle
+    }
+
+let private expectMode (s: Session) (file: string) (expected: FileMode) (what: string) =
+    task {
+        let! mode = s.Graph.Mode file
+        Expect.equal mode expected $"%s{name file}: %s{what}"
+    }
+
+/// The edit's CheckDeclaration runs, by file name
+let private ranFiles (r: Edit) = r.Ran |> List.map (snd >> name) |> List.distinct |> List.sort
+
+let private recProject = Path.Combine(Path.GetDirectoryName depsDir, "Rec", "Rec.fsproj")
+
 [<Tests>]
 let tests =
     testSequenced
@@ -241,5 +264,156 @@ let tests =
 
                               if header <> "back" then
                                   Expect.exists r.Diagnostics[y] (fun d -> d.ErrorNumber = 39) $"%s{header}: Y.fs reports A as not defined"
+                      })
+          }
+
+          // Task 4: promotion
+          testTask "promote then body edit re-checks one declaration" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          do! expectMode s a Declarations "promoted"
+                          let! r, checks = counted s (fun () -> replace s a "x * 2" "x * 3")
+                          Expect.equal r.Delta 1L "one CheckDeclaration adopted: scale"
+                          Expect.equal (r.NamesIn a) [ "scale" ] "only scale is published again"
+                          Expect.equal checks 0L "no file is checked whole"
+                          do! expectMode s a Declarations "still promoted"
+                          do! expectOracle s r.Diagnostics "body edit of a promoted file"
+                      })
+          }
+
+          testTask "signature edit restarts dependents file-level" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let dependents = recheckedBy s a |> List.filter ((<>) a)
+                          Expect.isNonEmpty dependents "files depend on A.fs"
+
+                          let! r, checks =
+                              counted s (fun () -> replace s a "let scale (x: int) : int = x * 2" "let scale (x: int) : int64 = int64 (x * 2)")
+
+                          do! expectMode s a Declarations "the edited file keeps its setup"
+                          Expect.equal (r.NamesIn a) [ "doubled"; "scale" ] "scale and its user in A.fs"
+                          Expect.equal (ranFiles r) [ "A.fs" ] "no declaration of another file is checked"
+                          Expect.isGreaterThanOrEqual checks (int64 dependents.Length) $"each dependent is checked whole: %A{List.map name dependents}"
+
+                          for f in dependents do
+                              do! expectMode s f FileLevel "not wanted, checked whole"
+
+                          do! expectOracle s r.Diagnostics "scale returns int64"
+                      })
+          }
+
+          testTask "restarted promoted file comes back" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          Expect.contains (dependencies s).[c] a "C.fs depends on A.fs"
+                          do! promote s [ a; c ]
+                          do! expectMode s c Declarations "promoted"
+                          // C.fs's build after the restart waits here, so its file-level state can be seen
+                          use release = new ManualResetEventSlim(false)
+                          let mutable armed = 1
+
+                          s.Graph.OnBeginFile(fun path ->
+                              if String.Equals(path, c, StringComparison.OrdinalIgnoreCase) && Volatile.Read &armed = 1 then
+                                  release.Wait(TimeSpan.FromMinutes 2.) |> ignore)
+
+                          let! r =
+                              editWith false s a (s.Texts[a].Replace("let scale (x: int) : int = x * 2", "let scale (x: int) : int64 = int64 (x * 2)"))
+
+                          do! expectMode s c FileLevel "its setup changed: checked whole until it is built again"
+                          do! expectOracle s r.Diagnostics "C.fs checked whole"
+                          Volatile.Write(&armed, 0)
+                          release.Set()
+                          do! s.Graph.WhenPromoted(c, CancellationToken.None) |> settle
+                          do! expectMode s c Declarations "built again for the new setup"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "C.fs promoted again"
+                      })
+          }
+
+          testTask "module rec file stays file-level" {
+              do!
+                  withSession (startOn recProject FileLevel) (fun s ->
+                      task {
+                          let r = s.Spec.SourceFiles |> List.find (fun f -> name f = "R.fs")
+                          do! promote s [ r ]
+                          do! expectMode s r FileLevel "a module rec file splits into one declaration"
+                          let! e, checks = counted s (fun () -> replace s r "let start = 10" "let start = 11")
+                          Expect.equal e.Delta 0L "no declaration is checked"
+                          Expect.isGreaterThan checks 0L "checked whole"
+                          do! expectMode s r FileLevel "still file-level"
+                          do! expectOracle s e.Diagnostics "start = 11"
+                          let! e = replace s r "let start = 11" "let start : string = 11"
+                          do! expectOracle s e.Diagnostics "start is a string"
+                      })
+          }
+
+          testTask "typing during promotion" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          s.Graph.Promote a
+                          let original = s.Texts[a]
+
+                          let texts =
+                              [ for i in 1..5 ->
+                                    if i % 2 = 0 then original.Replace("let baseValue = 10", $"let baseValue : string = %d{i}")
+                                    else original.Replace("let baseValue = 10", $"let baseValue = %d{i}") ]
+
+                          let waits =
+                              [ for text in texts do
+                                    s.Texts[a] <- text
+                                    let version = s.Graph.SetText(a, text)
+                                    yield version, s.Graph.SettledDiagnostics a ]
+
+                          let! results = Task.WhenAll(waits |> List.map snd) |> settle
+                          let versions = [ for struct (v, _) in results -> v ]
+                          Expect.equal versions (List.sort versions) $"the settled versions, in the order asked, rise: %A{versions}"
+
+                          for (posted, _), struct (v, _) in List.zip waits (List.ofArray results) do
+                              Expect.isGreaterThanOrEqual v posted "a settled version is never older than the one posted before the wait"
+
+                          let struct (last, diagnostics) = Array.last results
+                          Expect.equal last (fst (List.last waits)) "the last settles at the last version"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          Expect.equal (Array.map string diagnostics) (Array.map string all[a]) "the last text's diagnostics"
+                          do! expectOracle s all "the last text"
+                          do! s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          do! expectMode s a Declarations "promoted for the last text"
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "the last text, by declaration"
+                      })
+          }
+
+          testTask "demote drops declaration results" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let! results = s.Graph.Results a |> settle
+                          Expect.isNonEmpty results "declaration results while promoted"
+                          s.Graph.Demote a
+                          let! all = s.Graph.AllDiagnostics() |> settle
+                          do! expectOracle s all "the kept result after demotion"
+                          do! expectMode s a FileLevel "demoted"
+
+                          let! (failure: exn option) =
+                              task {
+                                  try
+                                      let! _ = s.Graph.Results a |> settle
+                                      return None
+                                  with ex ->
+                                      return Some ex
+                              }
+
+                          Expect.isTrue (failure |> Option.exists (fun ex -> ex :? InvalidOperationException)) $"no declaration results: %A{failure}"
+                          let! r, checks = counted s (fun () -> replace s a "x * 2" "x * 3")
+                          Expect.equal checks 1L "the next edit checks A.fs whole"
+                          Expect.equal r.Delta 0L "and no declaration"
+                          do! expectOracle s r.Diagnostics "body edit after demotion"
                       })
           } ]

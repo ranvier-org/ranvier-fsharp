@@ -1,0 +1,42 @@
+{
+  "server": "decl",
+  "scenario": "small-cold",
+  "coldAllocatedMb": 2072.232421875,
+  "editAllocatedMb": 0,
+  "promoteMs": 1.4114,
+  "coldCounters": {
+    "checked": 0,
+    "adopted": 0,
+    "finishMs": 0,
+    "segmentRows": 0,
+    "premiseBreaks": 0,
+    "finishPhaseMs": {
+      "checkFile": 7625.8783,
+      "checkSignatureFile": 251.2621,
+      "createProject": 480.8982,
+      "definitions": 2.8418,
+      "fileDependencies": 145.5926,
+      "fingerprint": 229.6745,
+      "parse": 5051.9302,
+      "render": 6.0438,
+      "setup": 274.5791,
+      "tail": 7110.9596
+    },
+    "phaseAllocatedMb": {
+      "checkFile": 1805.9204559326172,
+      "checkSignatureFile": 71.2099609375,
+      "createProject": 53.836334228515625,
+      "fileDependencies": 1.7802276611328125,
+      "parse": 69.02629852294922
+    },
+    "fileLevelChecks": 41,
+    "chainFallbacks": 0
+  },
+  "premiseBreaksAtCold": 0,
+  "segmentRowsAtCold": 0,
+  "largestRowLines": null,
+  "editedRowLines": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": []
+}

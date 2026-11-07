@@ -25,7 +25,8 @@ already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its 
 to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default.
 
 Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json holds what RunResult has no field for:
-cold and edit allocations, decl's counters after the cold check (with its D1 premise breaks and segment rows), the
+cold and edit allocations, the time from the end of the cold check to every edited file being promoted (promoteMs),
+decl's counters after the cold check (with its D1 premise breaks and segment rows), the
 largest declaration of the edited files and the one the first edit falls in (in lines), and per edit the
 CheckDeclaration runs (superseded flights included), adopted checks, FinishFile time, its share of the latency and its
 time per part, rows inside R11/R12 segments, CheckFile runs (fileLevelChecks), setups from dependencies refused for a
@@ -35,13 +36,14 @@ logged. It sits in a subdirectory so `rfs-harness compare` reads only results.""
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
   decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
-    depends on.
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
   file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
     the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
   cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
-  decl decls/edit counts adopted declaration checks (none while every file is file-level);
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
     extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
     segment rows.
 Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
@@ -178,6 +180,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
         o["scenario"] <- JsonValue.Create run.Result.Scenario
         o["coldAllocatedMb"] <- JsonValue.Create run.ColdAllocatedMb
         o["editAllocatedMb"] <- JsonValue.Create run.EditAllocatedMb
+        o["promoteMs"] <- opt run.PromoteMs
         o["coldCounters"] <- counters run.ColdCounters
         o["premiseBreaksAtCold"] <- opt run.PremiseBreaksAtCold
         o["segmentRowsAtCold"] <- opt run.SegmentRowsAtCold
@@ -263,6 +266,8 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                                         (fmt (mean _.FileLevelChecks))
                                         cold.ChainFallbacks
                                         (fmt (mean _.ChainFallbacks))
+
+                                    printfn "  %s: promoted the edited files in %s ms" engine.Name (fmt run.PromoteMs)
 
                                 let errors = result.Steps |> List.filter (fun s -> s.Error.IsSome)
 

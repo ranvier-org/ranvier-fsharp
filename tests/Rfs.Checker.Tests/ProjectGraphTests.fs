@@ -43,6 +43,7 @@ let tests =
               try
                   let! (graph: ProjectGraph) = ProjectGraph.CreateWithMode(host, spec, Declarations)
                   let! _ = graph.AllDiagnostics() |> settle
+                  do! whenPromoted graph spec
                   // Shape's generated comparison members are fingerprinted by their check-time slots, so its final
                   // fingerprint is its check's; A.fs has no free inference variables and no augmentation, so no segment
                   Expect.equal graph.PremiseBreaks 0L "no final fingerprint differs from its check's"

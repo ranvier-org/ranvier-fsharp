@@ -297,8 +297,19 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
         let mutable checks = 0L
         let mutable published = 0
 
+        // Declarations mode starts with every implementation file wanted
+        let wanted = Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+        if mode = Declarations then
+            for f in files do
+                wanted.Add f |> ignore
+
         for step in 1..steps do
             let file = pick random files
+            // Now and then the edit is to promote or demote a file instead of its text
+            let toggle = random.Next 8 = 0
+            // Half the time the oracle is asked before the wanted files' builds have settled
+            let waitForBuilds = random.Next 2 = 0
 
             let rec attempt tries =
                 match (pick random mutations) random s.Texts[file] with
@@ -309,7 +320,9 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             // Now and then a file goes back to how it was, undoing its edits at once: errors otherwise pile up until
             // every file is broken and the checks run on error recovery alone.
             let text, what =
-                if random.Next 6 = 0 then
+                if toggle then
+                    s.Texts[file], (if wanted.Contains file then "demote" else "promote")
+                elif random.Next 6 = 0 then
                     originals[file], "revert to the original"
                 else
                     attempt 0
@@ -323,7 +336,21 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             let! r =
                 task {
                     try
-                        return! edit s file text
+                        if toggle then
+                            if wanted.Remove file then s.Graph.Demote file
+                            else
+                                wanted.Add file |> ignore
+                                s.Graph.Promote file
+
+                            let! _ = s.Graph.AllDiagnostics() |> settle
+
+                            if waitForBuilds then
+                                do! whenPromoted s.Graph s.Spec
+
+                            let! diagnostics = s.Graph.AllDiagnostics() |> settle
+                            return { Delta = 0L; Checked = []; Ran = []; Diagnostics = diagnostics }
+                        else
+                            return! editWith waitForBuilds s file text
                     with e ->
                         return fail (string e)
                 }
@@ -363,16 +390,7 @@ let private fuzz (name: string) (mode: FileMode) =
 
           // Two independent chains, where a file's dependencies are fewer than the files before it
           for seed in [ 1515; 4242 ] ->
-              let name = $"Chains seed %d{seed}: 200 random edits equal the oracle after each"
-
-              // Pending: Declarations mode (the R16 graph, unchanged by Task 3) fails it at step 103, where B.fs gains
-              // `let shift = 99` above `let added15 = shifted`. The oracle's FS0039 for `shifted` suggests `shift`; the graph
-              // reports it without the suggestion. A Declarations-mode bug this fixture found, not yet diagnosed,
-              // carried to Task 4 (Task 3 report, fix round 1).
-              if mode = Declarations && seed = 4242 then
-                  ptestTask name { do! run chainsProject mode seed 200 }
-              else
-                  testTask name { do! run chainsProject mode seed 200 }
+              testTask $"Chains seed %d{seed}: 200 random edits equal the oracle after each" { do! run chainsProject mode seed 200 }
 
           // Signature files standing in for their implementation files: AutoOpen order and qualified-name pairing
           for project, label in [ sigShadowProject, "SigShadow"; sigQualNameProject, "SigQualName" ] ->

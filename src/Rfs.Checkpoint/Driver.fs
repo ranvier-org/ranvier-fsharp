@@ -58,6 +58,9 @@ type EngineRun =
       EditAllocatedMb: float
       /// The engine's counters after its first check.
       ColdCounters: EngineCounters option
+      /// The time from the end of the first check to every edited file being promoted (checked by declaration); None
+      /// for an engine that does not promote.
+      PromoteMs: float option
       /// D1 premise breaks published by the first check.
       PremiseBreaksAtCold: int64 option
       /// Rows inside R11/R12 segments after the first check.
@@ -229,6 +232,11 @@ module Driver =
                         |> Array.sort
                         |> Array.tryHead))
 
+            // As an editor opens the files it edits: outside the timed edits, and after the cold counters
+            let promoteClock = Stopwatch.StartNew()
+            let! promoted = engine.Promote(edits |> List.map _.File |> List.distinct) |> within timeout
+            let promoteMs = if promoted then Some promoteClock.Elapsed.TotalMilliseconds else None
+
             for step in steps do
                 match step, stopped with
                 | _, Some _ -> ()
@@ -317,6 +325,7 @@ module Driver =
                   ColdAllocatedMb = mb coldAllocated
                   EditAllocatedMb = mb editAllocated
                   ColdCounters = coldCounters
+                  PromoteMs = promoteMs
                   PremiseBreaksAtCold = coldCounters |> Option.map _.PremiseBreaks
                   SegmentRowsAtCold = coldCounters |> Option.map _.SegmentRows
                   LargestRowLines = largestRowLines

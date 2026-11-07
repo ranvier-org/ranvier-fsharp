@@ -1,0 +1,192 @@
+{
+  "server": "file-slim",
+  "scenario": "large-bigfile-narrow",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-07T10:10:45.1319244Z",
+  "coldMs": 3124.266,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #1 fwd",
+      "latencyMs": 574.5261,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #2 inv",
+      "latencyMs": 810.7137,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #3 fwd",
+      "latencyMs": 268.1935,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #4 inv",
+      "latencyMs": 268.5212,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #5 fwd",
+      "latencyMs": 234.305,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #6 inv",
+      "latencyMs": 275.1856,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #7 fwd",
+      "latencyMs": 211.0559,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #8 inv",
+      "latencyMs": 222.6758,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #9 fwd",
+      "latencyMs": 217.1145,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #10 inv",
+      "latencyMs": 237.149,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #11 fwd",
+      "latencyMs": 211.3532,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #12 inv",
+      "latencyMs": 210.3499,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #13 fwd",
+      "latencyMs": 192.7277,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #14 inv",
+      "latencyMs": 215.3404,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #15 fwd",
+      "latencyMs": 199.4779,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #16 inv",
+      "latencyMs": 290.289,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #17 fwd",
+      "latencyMs": 199.5692,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #18 inv",
+      "latencyMs": 198.7757,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #19 fwd",
+      "latencyMs": 283.0725,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/Fantomas.Core/CodePrinter.fs 40:18-40:24 #20 inv",
+      "latencyMs": 196.8934,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 405.71875,
+  "allocatedMb": 4316.1689453125,
+  "gen2": 5
+}

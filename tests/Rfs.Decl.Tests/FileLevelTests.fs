@@ -702,6 +702,49 @@ let fileLevelTests =
               Expect.isEmpty moved "the newer text's fingerprint equals a sequential check's in every round"
           }
 
+          // Task 4: a promotion builds a file by declaration while edits still check it whole. The two share the file's
+          // compiler-generated-name counters, which BeginFile and CheckFile reset, so each check of the file holds its lock
+          testTask "a declaration build beside a whole check of the same file leaves both fingerprints alone" {
+              let holders =
+                  [ for i in 1..150 ->
+                        $"type Holder%d{i}() as this =\n    let value = %d{i}\n    member _.V = value\n    member _.Self = this\n\n" ]
+                  |> String.concat ""
+
+              let text = "module Deps.A\n\n" + holders
+              let! p = load depsProject [ "A.fs", text ]
+              let a = p.FileNamed "A.fs"
+              let fresh = DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, text)).Signature.Fingerprint
+              Expect.stringContains fresh "@" "the signature holds compiler-generated names"
+              // Checked by declaration, a declaration's names are numbered from the declaration, not from the file's
+              // start, so the two fingerprints differ: each is compared with its own sequential check
+              let freshByDeclarations = (byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, text))).Signature.Fingerprint
+              Expect.stringContains freshByDeclarations "@" "the declarations' signature holds compiler-generated names"
+              let clock = Diagnostics.Stopwatch.StartNew()
+              byDeclarations p [] (DeclarationChecker.Parse(p.Context, a, text)) |> ignore
+              let buildMs = int clock.ElapsedMilliseconds
+              let onThread (work: unit -> 'T) = Task.Factory.StartNew<'T>(work, TaskCreationOptions.LongRunning)
+              let mutable moved = []
+
+              for round in 1..10 do
+                  let parse = DeclarationChecker.Parse(p.Context, a, text)
+                  let build = onThread (fun () -> (byDeclarations p [] parse).Signature.Fingerprint)
+
+                  // Whole checks start over the time the build takes, so that some reset the counters mid-build
+                  let wholes =
+                      [ for k in 0..5 ->
+                            onThread (fun () ->
+                                Threading.Thread.Sleep(k * buildMs / 5)
+                                DeclarationChecker.CheckFile(p.Context, [], parse).Signature.Fingerprint) ]
+
+                  let! built = build
+                  let! whole = Task.WhenAll wholes
+
+                  if built <> freshByDeclarations || whole |> Array.exists ((<>) fresh) then
+                      moved <- round :: moved
+
+              Expect.isEmpty moved "the build's and every whole check's fingerprint equal a sequential check's in every round"
+          }
+
           testTask "the fingerprint writes access paths as sprintf does" {
               let corpus = Path.GetFullPath(Path.Combine(tinyDir, "..", "..", "..", "..", "ranvier-fsharp-corpus"))
 
@@ -794,4 +837,27 @@ let fileLevelTests =
                   Expect.contains dependencies[indexOf "Y.fs"] (indexOf "X.fs") $"%s{header}: Y.fs depends on X.fs"
                   let! y = oracleFor p (p.FileNamed "Y.fs")
                   Expect.exists y (fun d -> d.Code = "FS0039") $"%s{header}: the oracle reports A as not defined in Y.fs"
+          }
+
+          // T4-C3: an implementation file whose signature file has another qualified name is read by the files after it
+          // as a file without a signature, so its root AutoOpen contents shadow what earlier files give
+          testTask "an implementation file unmatched by its signature file is visible to the files after it" {
+              let project = fixture "SigUnmatched"
+              let unmatched = "[<AutoOpen>]\nmodule Ab\n\nlet f = \"s\"\n"
+
+              for header, text, matched in
+                  [ "on disk", unmatched, false
+                    "module A", "module A\n\nlet x = 1\nlet f = \"s\"\n", true
+                    "back to AutoOpen Ab", unmatched, false ] do
+                  let! (p: Project), (dependencies: int[][]) = expectScopedEqualsChainWith project [ "X.fs", text ]
+                  let indexOf file = p.Spec.SourceFiles |> List.findIndex (fun f -> Path.GetFileName f = file)
+                  let! z = oracleFor p (p.FileNamed "Z.fs")
+
+                  if matched then
+                      Expect.isFalse (Array.contains (indexOf "X.fs") dependencies[indexOf "Z.fs"]) $"%s{header}: Z.fs does not read X.fs"
+                      Expect.exists z (fun d -> d.Code = "FS0001") $"%s{header}: the oracle reports W's f as an int in Z.fs"
+                  else
+                      Expect.contains dependencies[indexOf "Z.fs"] (indexOf "X.fs") $"%s{header}: Z.fs depends on X.fs"
+                      Expect.contains dependencies[indexOf "X.fs"] (indexOf "X.fsi") $"%s{header}: X.fs still depends on X.fsi"
+                      Expect.isEmpty z $"%s{header}: the oracle reports nothing for Z.fs (Ab's f shadows W's)"
           } ]

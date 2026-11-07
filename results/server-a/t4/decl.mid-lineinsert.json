@@ -1,0 +1,102 @@
+{
+  "server": "decl",
+  "scenario": "mid-lineinsert",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-07T10:09:41.5684083Z",
+  "coldMs": 3857.4336,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #1 fwd",
+      "latencyMs": 223.7331,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #2 inv",
+      "latencyMs": 322.1971,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #3 fwd",
+      "latencyMs": 298.6209,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #4 inv",
+      "latencyMs": 96.6062,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #5 fwd",
+      "latencyMs": 104.0009,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #6 inv",
+      "latencyMs": 84.4009,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #7 fwd",
+      "latencyMs": 91.5952,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #8 inv",
+      "latencyMs": 100.7287,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #9 fwd",
+      "latencyMs": 101.3283,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete.Core/DocumentationFormatter.fs 13:0-13:0 #10 inv",
+      "latencyMs": 101.8651,
+      "publishes": 0,
+      "declsChecked": 27,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 379.109375,
+  "allocatedMb": 2605.8479766845703,
+  "gen2": 9
+}

@@ -24,45 +24,26 @@ type internal Parsed =
     { Version: int64
       Text: string
       Parse: FSharpParseFileResults
-      /// Empty for a signature file, and for a file checked whole
+      /// The declarations the parse splits into: set only by a promoted file's declaration nodes, empty otherwise
       Declarations: ParsedDeclaration[]
-      /// The text before the first declaration: the file's module or namespace header
+      /// The text before the first declaration: the file's module or namespace header (the whole text while
+      /// Declarations is empty)
       Prologue: string }
 
-/// What later files are checked against: a file's signature, and in Declarations mode the files so far.
+/// What later files are checked against: a file's signature.
 [<ReferenceEquality>]
 type internal FileSig =
-    { Signature: FileSignature
-      /// Declarations mode: the signature fingerprints of the files so far, the last first
-      Chain: string list
-      /// Declarations mode: the signatures of the files so far, in file order
-      Signatures: FileSignature list }
+    { Signature: FileSignature }
 
     member s.Fingerprint = s.Signature.Fingerprint
 
-    /// Before the first file
-    static member Empty =
-        { Signature = Unchecked.defaultof<_>
-          Chain = []
-          Signatures = [] }
-
-    /// The signature of a file checked whole
-    static member Of(signature: FileSignature) =
-        { Signature = signature
-          Chain = []
-          Signatures = [] }
+    static member Of(signature: FileSignature) = { Signature = signature }
 
     /// Equal when the file signatures' fingerprints are, compared structurally, never by reference.
     static member Comparer =
         { new IEqualityComparer<FileSig> with
             member _.Equals(a, b) = String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal)
             member _.GetHashCode s = StringComparer.Ordinal.GetHashCode s.Fingerprint }
-
-    /// Declarations mode: equal when the chains of fingerprints are.
-    static member ChainComparer =
-        { new IEqualityComparer<FileSig> with
-            member _.Equals(a, b) = a.Chain = b.Chain
-            member _.GetHashCode s = s.Chain.Length }
 
 /// Hands each value to the observers subscribed when it is sent.
 [<Sealed>]
@@ -94,6 +75,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable chainFallbacks = 0L
     let mutable directiveRetries = 0L
     let mutable scopedCheckHook: string -> unit = ignore
+    let mutable beginFileHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
     let phaseAllocated = Dictionary<string, int64>()
     let premise = Subject<DeclarationKey * string>()
@@ -122,6 +104,16 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.ScopedCheckHook
         with get () = Volatile.Read &scopedCheckHook
         and set (hook: string -> unit) = Volatile.Write(&scopedCheckHook, hook)
+
+    /// The index of the file being built by declaration (at most one per project at a time), if any. Set once every
+    /// file's nodes exist. Graph thread.
+    member val Builder: Memo<int voption> = Unchecked.defaultof<_> with get, set
+
+    /// Runs off the graph thread, with the file's path, just before a promotion build sets the file up (BeginFile).
+    /// For tests.
+    member _.BeginFileHook
+        with get () = Volatile.Read &beginFileHook
+        and set (hook: string -> unit) = Volatile.Write(&beginFileHook, hook)
 
     member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
 
@@ -247,15 +239,6 @@ module internal Nodes =
 
         memos |> Array.map _.Value
 
-/// Runs a phase's work, recording its time and allocations (the file-level graph) or not (Declarations mode, whose
-/// finish phases are FinishFile's own).
-[<Sealed>]
-type internal Measure(project: ProjectShared option) =
-    member _.Run(phase: string, work: unit -> 'T) : 'T =
-        match project with
-        | Some p -> p.Measure(phase, work)
-        | None -> work ()
-
 /// Lets only the newest of a node's flights run its work. A ticket is taken on the graph thread when a flight starts,
 /// so a later ticket is a later input; a flight whose ticket is no longer the newest when its turn comes is cancelled.
 /// The work runs under the gate's lock, so its writes to shared state (the context's latest parse and dependency
@@ -276,7 +259,8 @@ type internal Gate() =
 
 /// A source file's text and its parse.
 [<Sealed>]
-type internal FileText(ctx: ProjectContext, path: string, initial: string, split: bool, measure: Measure) =
+type internal FileText(project: ProjectShared, path: string, initial: string) =
+    let ctx = project.Context
     let text = createSignal { Text = initial; Version = 0L }
     let gate = Gate()
 
@@ -289,14 +273,13 @@ type internal FileText(ctx: ProjectContext, path: string, initial: string, split
                 gate.Run(
                     ticket,
                     fun () ->
-                        let parse = measure.Run("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
-                        let declarations = if split then DeclarationChecker.Split parse else [||]
+                        let parse = project.Measure("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
 
                         { Version = t.Version
                           Text = t.Text
                           Parse = parse
-                          Declarations = declarations
-                          Prologue = Nodes.prologueOf t.Text declarations }
+                          Declarations = [||]
+                          Prologue = t.Text }
                 )))
 
     member _.Path = path
@@ -448,20 +431,24 @@ module internal Setup =
             | ValueSome p when same p key -> p
             | _ -> key)
 
-    /// A file's result, checked off the graph thread from the setup its dependencies give, and from every earlier file
-    /// when the checker refuses that setup (its dependency snapshot went stale) or the check reports an unresolved name.
-    /// Each async memo reads its key before its check starts and returns its last value
-    /// while the key is the same, so a wake that changed nothing runs no check.
+    /// The same setup apart from the parse: the files, their fingerprints and the files of the same name.
+    let sameFiles (a: SetupKey) (b: SetupKey) =
+        a.Files = b.Files && a.Fingerprints = b.Fingerprints && a.SameName = b.SameName
+
+    /// A file's result, checked off the graph thread from the setup its dependencies give (`scopedKey`, as `key`
+    /// makes it), and from every earlier file when the checker refuses that setup (its dependency snapshot went stale)
+    /// or the check reports an unresolved name. Each async memo reads its key before its check starts and returns its
+    /// last value while the key is the same, so a wake that changed nothing runs no check.
     let build
         (project: ProjectShared)
         (path: string)
         (index: int)
         (deps: Memo<FileDepsValue>)
         (signatureOf: int -> Memo<FileSig>)
+        (scopedKey: Memo<SetupKey>)
         (run: SetupKey -> 'R)
         (diagnosticsOf: 'R -> FSharpDiagnostic[] option)
         : Memo<SetupKey * 'R> =
-        let scopedKey = key index deps signatureOf false
         let chainKey = key index deps signatureOf true
         let scoped = ref Unchecked.defaultof<AsyncMemo<Attempt<'R>>>
         let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
@@ -514,3 +501,15 @@ module internal Setup =
             match scoped.Value.Value with
             | Done(key, result) -> key, result
             | _ -> chained.Value.Value)
+
+/// What a file checked by declaration is set up from (BeginFile): its setup from its dependencies, and its header.
+/// Kept as the same object while both are unchanged, whatever its parse, so the file is set up again only then.
+[<ReferenceEquality>]
+type internal DeclSetup =
+    { /// The key the setup was first read with; a later body edit keeps the setup and changes the parse
+      Key: SetupKey
+      /// The text before the file's first declaration
+      Prologue: string }
+
+    member s.Same(other: DeclSetup) =
+        Setup.sameFiles s.Key other.Key && String.Equals(s.Prologue, other.Prologue, StringComparison.Ordinal)

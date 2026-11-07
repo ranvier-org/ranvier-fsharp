@@ -106,6 +106,7 @@ let private wrongEngine: EngineFactory =
                 { new IEngine with
                     member _.Counters() = None
                     member _.DeclarationLines(_, _) = None
+                    member _.Promote _ = Task.FromResult false
                     member _.Check() = result
                     member _.SetText(_, _) = result
                   interface IDisposable with
@@ -145,7 +146,7 @@ let tests =
 
               let decl = results |> List.find (fun r -> r.Server = "decl")
               let slim = results |> List.find (fun r -> r.Server = "file-slim")
-              Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked = Some 0)) "decl checks every file whole: no declaration checks"
+              Expect.isTrue (decl.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "decl promoted A.fs: every edit adopts declaration checks"
               Expect.isTrue (slim.Steps |> List.forall (fun s -> s.DeclsChecked.IsNone)) "file-slim has no declaration count"
               Expect.isLessThan slim.StartedAt decl.StartedAt "the baseline runs first"
 
@@ -159,19 +160,27 @@ let tests =
               Expect.equal (cold["chainFallbacks"].GetValue<int64>()) 0L "and sets each up from its dependencies"
               Expect.equal (cold["adopted"].GetValue<int64>()) 0L "it adopts no declaration checks"
               Expect.isNotNull (declExtra["finishShareP50"]) "finish share p50"
+              Expect.isGreaterThan (declExtra["promoteMs"].GetValue<float>()) 0. "decl times the promotion of A.fs"
               let declSteps = declExtra["steps"].AsArray() |> List.ofSeq
               Expect.equal declSteps.Length 5 "one extra per edit"
 
-              for s, r in List.zip declSteps decl.Steps do
+              for i, (s, r) in List.indexed (List.zip declSteps decl.Steps) do
                   let adopted = s["adopted"].GetValue<int64>()
                   Expect.equal (Some(int adopted)) r.DeclsChecked $"%s{r.Step}: decls/edit is the adopted count"
                   Expect.isGreaterThanOrEqual (s["checked"].GetValue<int64>()) adopted $"%s{r.Step}: runs include adopted ones"
-                  Expect.isGreaterThan (s["fileLevelChecks"].GetValue<int64>()) 0L $"%s{r.Step}: decl counts its file checks"
+                  let fileChecks = s["fileLevelChecks"].GetValue<int64>()
+
+                  // The literal keeps A.fs's signature; the return type changes it, and A.fs's dependents are checked whole
+                  if i < 2 then
+                      Expect.equal fileChecks 0L $"%s{r.Step}: a body edit of the promoted file checks no file whole"
+                  else
+                      Expect.isGreaterThan fileChecks 0L $"%s{r.Step}: a signature edit checks the dependents whole"
                   Expect.isGreaterThanOrEqual (s["chainFallbacks"].GetValue<int64>()) 0L $"%s{r.Step}: chain fallbacks"
                   Expect.isGreaterThanOrEqual (s["segmentRows"].GetValue<int>()) 0 $"%s{r.Step}: segment rows"
 
               let slimExtra = extraOf slim
               Expect.isNull (slimExtra["coldCounters"]) "file-slim keeps no counters"
+              Expect.isNull (slimExtra["promoteMs"]) "file-slim promotes nothing"
               Expect.equal (slimExtra["steps"].AsArray().Count) 5 "one extra per edit"
           }
 
@@ -190,8 +199,9 @@ let tests =
               Expect.isTrue (result.Steps |> List.forall (fun s -> s.DeclsChecked |> Option.exists (fun n -> n > 0))) "it counts its checks"
               let extra = JsonNode.Parse(File.ReadAllText(Path.Combine(out, "extra", Report.fileName result)))
               let coldAdopted = extra["coldCounters"].["adopted"].GetValue<int64>()
-              Expect.isGreaterThan coldAdopted 0L "the cold check adopts checks"
-              Expect.equal (extra["coldCounters"].["fileLevelChecks"].GetValue<int64>()) 0L "no file is checked whole"
+              Expect.isGreaterThan coldAdopted 0L "the cold check adopts checks once every file is promoted"
+              // Promoted files are built once they have been checked whole
+              Expect.equal (extra["coldCounters"].["fileLevelChecks"].GetValue<int64>()) 5L "each file is checked whole once"
               Expect.isNotNull (extra["finishShareP50"]) "finish share p50"
               let steps = extra["steps"].AsArray() |> List.ofSeq
               Expect.equal steps.Length 5 "one extra per edit"
@@ -204,7 +214,11 @@ let tests =
                   let share = s["finishShare"].GetValue<float>()
                   Expect.isTrue (share > 0. && share <= 1.) $"%s{r.Step}: finish share within the latency ({share})"
                   let ms = s["finishPhaseMs"].AsObject()
-                  Expect.equal (ms |> Seq.map _.Key |> Seq.sort |> List.ofSeq) (List.sort phases) $"%s{r.Step}: the ten parts of the finish"
+                  let keys = ms |> Seq.map _.Key |> Set.ofSeq
+                  Expect.isTrue (Set.isSubset (set phases) keys) $"%s{r.Step}: the ten parts of the finish ({keys})"
+                  // A.fs's signature edits restart its dependents: checked whole, then built again
+                  let checkFileMs = ms["checkFile"].GetValue<float>()
+                  Expect.equal (checkFileMs > 0.) (s["fileLevelChecks"].GetValue<int64>() > 0L) $"%s{r.Step}: CheckFile is timed when it runs"
           }
 
           testTask "the oracle sees each edit's text" {
@@ -262,15 +276,22 @@ let tests =
               Expect.isGreaterThanOrEqual edited.Value 1 "the edited declaration has a line"
               Expect.isGreaterThanOrEqual largest.Value edited.Value "no declaration of the edited file is larger than the largest"
 
-              // decl checks every file whole, so its phases are the file-level graph's, not FinishFile's; "checkpoint on
-              // Deps checking by declaration" checks the finish's parts
+              // decl checks the files it does not promote whole, and A.fs, which it promotes, by declaration: its phases
+              // are the file-level graph's and FinishFile's; "checkpoint on Deps checking by declaration" checks the
+              // finish's parts
               let fileLevelPhases =
                   set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "setup"; "tail"; "definitions"; "fingerprint"; "render"; "checkSignatureFile" ]
 
+              let finishPhases =
+                  set [ "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "signature"; "render"; "fingerprints"; "sinks" ]
+
               for s in decl["steps"].AsArray() do
-                  let ms = s["finishPhaseMs"].AsObject() |> Seq.map _.Key |> Set.ofSeq
-                  Expect.isTrue (Set.isSubset ms fileLevelPhases) $"""{s["step"]}: only file-level phases ({ms})"""
-                  Expect.contains ms "checkFile" $"""{s["step"]}: the edit's CheckFile is timed"""
+                  let ms = s["finishPhaseMs"].AsObject()
+                  let keys = ms |> Seq.map _.Key |> Set.ofSeq
+                  let timed (phase: string) = ms[phase].GetValue<float>() > 0.
+                  Expect.isTrue (Set.isSubset keys (fileLevelPhases + finishPhases)) $"""{s["step"]}: file-level and finish phases only ({keys})"""
+                  Expect.equal (timed "checkFile") (s["fileLevelChecks"].GetValue<int64>() > 0L) $"""{s["step"]}: CheckFile is timed when it runs"""
+                  Expect.isTrue (timed "sinks") $"""{s["step"]}: the promoted A.fs is finished"""
 
               let coldAllocated = decl["coldCounters"].["phaseAllocatedMb"].AsObject() |> Seq.map _.Key |> Set.ofSeq
               Expect.equal coldAllocated (set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "checkSignatureFile" ]) "the cold check's allocations by phase"
@@ -327,6 +348,7 @@ let tests =
                               { new IEngine with
                                   member _.Counters() = None
                                   member _.DeclarationLines(_, _) = None
+                                  member _.Promote _ = Task.FromResult false
                                   member _.Check() = ok
 
                                   member _.SetText(_, _) =

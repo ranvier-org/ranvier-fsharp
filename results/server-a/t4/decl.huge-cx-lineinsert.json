@@ -1,0 +1,102 @@
+{
+  "server": "decl",
+  "scenario": "huge-cx-lineinsert",
+  "commit": "fbc9be3aa8159670bbb660c3b7b7e22368f4e279",
+  "startedAt": "2026-11-07T09:56:56.5956522Z",
+  "coldMs": 21063.8279,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #1 fwd",
+      "latencyMs": 1966.9124,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #2 inv",
+      "latencyMs": 1859.4163,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #3 fwd",
+      "latencyMs": 1395.4365,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #4 inv",
+      "latencyMs": 1371.9595,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #5 fwd",
+      "latencyMs": 1659.4014,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #6 inv",
+      "latencyMs": 1403.4514,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #7 fwd",
+      "latencyMs": 1332.5793,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #8 inv",
+      "latencyMs": 1384.3017,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #9 fwd",
+      "latencyMs": 1744.3183,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/Compiler/Checking/Expressions/CheckExpressions.fs 99:0-99:0 #10 inv",
+      "latencyMs": 1701.9147,
+      "publishes": 0,
+      "declsChecked": 243,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 1464.74609375,
+  "allocatedMb": 31306.99309539795,
+  "gen2": 13
+}

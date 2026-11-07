@@ -57,15 +57,31 @@ type IEngine =
     /// The first and last line (1-based) of each declaration of `text` as the file's text, for an engine that checks
     /// by declaration; read outside the timed region.
     abstract DeclarationLines: file: string * text: string -> (int * int)[] option
+    /// Promotes the files (as an editor's didOpen would) and waits until each is checked by declaration; false for
+    /// an engine that does not promote.
+    abstract Promote: files: string list -> Task<bool>
 
 type EngineFactory =
     { Name: string
       Create: ProjectSpec -> Task<IEngine> }
 
+/// `everyFile`: every implementation file is wanted (a Declarations graph), so each check also waits until all of them
+/// are checked by declaration again.
 [<Sealed>]
-type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
+type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec, everyFile: bool) =
+    let whenPromoted (files: string list) =
+        task {
+            for f in files do
+                do! graph.WhenPromoted(f, Threading.CancellationToken.None)
+        }
+
     let settle (before: int64) =
         task {
+            let! _ = graph.AllDiagnostics()
+
+            if everyFile then
+                do! whenPromoted spec.SourceFiles
+
             let! all = graph.AllDiagnostics()
             let failures = Array.append (host.TakePostErrors()) (host.TakePumpErrors())
 
@@ -92,6 +108,15 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph) =
                   ChainFallbacks = graph.ChainFallbacks }
 
         member _.DeclarationLines(file, text) = Some(graph.DeclarationLines(file, text))
+
+        member _.Promote files =
+            task {
+                for f in files do
+                    graph.Promote f
+
+                do! whenPromoted files
+                return true
+            }
 
         member _.Check() = settle 0L
 
@@ -187,6 +212,7 @@ type private FileSlimEngine(spec: ProjectSpec) =
     interface IEngine with
         member _.Counters() = None
         member _.DeclarationLines(_, _) = None
+        member _.Promote _ = Task.FromResult false
         member _.Check() = check ()
 
         member _.SetText(file, text) =
@@ -199,27 +225,29 @@ type private FileSlimEngine(spec: ProjectSpec) =
         member _.Dispose() = ()
 
 module Engines =
-    let private graphEngine (create: GraphHost -> ProjectSpec -> Task<ProjectGraph>) (spec: ProjectSpec) =
+    let private graphEngine (everyFile: bool) (create: GraphHost -> ProjectSpec -> Task<ProjectGraph>) (spec: ProjectSpec) =
         task {
             let host = GraphHost.Start "checkpoint"
 
             try
                 let! graph = create host spec
-                return new DeclEngine(host, graph) :> IEngine
+                return new DeclEngine(host, graph, spec, everyFile) :> IEngine
             with e ->
                 host.Dispose()
                 return raise e
         }
 
-    /// ProjectGraph as it is created: every file checked whole on a Ranvier graph, set up from the files it depends on.
+    /// ProjectGraph as it is created: every file checked whole on a Ranvier graph, set up from the files it depends on;
+    /// the files the scenario edits are promoted before the first edit.
     let decl: EngineFactory =
         { Name = "decl"
-          Create = graphEngine (fun host spec -> ProjectGraph.Create(host, spec)) }
+          Create = graphEngine false (fun host spec -> ProjectGraph.Create(host, spec)) }
 
-    /// ProjectGraph with every file checked one declaration at a time; not one of the checkpoint's engines.
+    /// ProjectGraph with every implementation file promoted, each check waiting until all of them are checked by
+    /// declaration; not one of the checkpoint's engines.
     let declarations: EngineFactory =
         { Name = "declarations"
-          Create = graphEngine (fun host spec -> ProjectGraph.CreateWithMode(host, spec, Rfs.Checker.FileMode.Declarations)) }
+          Create = graphEngine true (fun host spec -> ProjectGraph.CreateWithMode(host, spec, Rfs.Checker.FileMode.Declarations)) }
 
     /// The fork's InteractiveChecker with its file-level signature cutoff, in the project's own type-checking mode: the
     /// cutoff exists only in graph mode, so the project is not forced sequential as the oracle is.

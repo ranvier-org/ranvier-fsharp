@@ -1,0 +1,102 @@
+{
+  "server": "file-slim",
+  "scenario": "small-signature",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-07T09:51:07.4128600Z",
+  "coldMs": 5254.0516,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #1 fwd",
+      "latencyMs": 1176.1421,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #2 inv",
+      "latencyMs": 534.8602,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #3 fwd",
+      "latencyMs": 419.5034,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #4 inv",
+      "latencyMs": 411.8346,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #5 fwd",
+      "latencyMs": 482.408,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #6 inv",
+      "latencyMs": 403.5184,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #7 fwd",
+      "latencyMs": 474.0525,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #8 inv",
+      "latencyMs": 479.0795,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #9 fwd",
+      "latencyMs": 393.7847,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 286:20-286:20 #10 inv",
+      "latencyMs": 402.2921,
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 354.2265625,
+  "allocatedMb": 9190.21002960205,
+  "gen2": 8
+}

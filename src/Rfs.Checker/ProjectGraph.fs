@@ -16,8 +16,8 @@ open Rfs.Projects
 /// </summary>
 /// <remarks>
 /// <para>
-/// A graph checks every file whole (FileLevel, as ProjectGraph.Create makes it) or one declaration at a time
-/// (Declarations).
+/// Every file starts checked whole (FileLevel). An implementation file that is promoted is built one declaration at
+/// a time in the background, and then checked by declaration (Declarations) while its setup is unchanged.
 /// </para>
 /// <para>
 /// FileLevel: each file is set up from the signatures of the files it depends on (FileDependencies over every file's
@@ -33,13 +33,14 @@ open Rfs.Projects
 /// earlier declaration it depends on (by name, through TypedUses, or all of them for an unresolvable name), or when an
 /// earlier declaration it depends on with no cutoff re-checks (its module header, an open or another declaration that
 /// affects all later ones). Declarations whose results later checks change in place (R12), and types with the
-/// augmentations that extend them (R11), are checked as a segment, in order. Cross-file granularity is per file (R16):
-/// a file is set up again from every earlier file, and re-checks whole, when the signature fingerprint of an earlier
-/// file changes.
+/// augmentations that extend them (R11), are checked as a segment, in order. The file is set up from the signatures of
+/// the files it depends on, as a file checked whole is. When its setup changes (a dependency's signature fingerprint,
+/// its dependency list or its header: R16's restart), it is checked whole for that state, and built by declaration
+/// again while it is still wanted.
 /// </para>
 /// </remarks>
 [<Sealed>]
-type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, mode: Rfs.Checker.FileMode, files: IFileNode[]) =
+type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, files: IFileNode[]) =
     let requested = Array.zeroCreate<int64> files.Length
 
     let byPath =
@@ -60,67 +61,37 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     let linesContext =
         lazy (DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.RunSynchronously)
 
-    /// Declarations mode: reads each file up to `last` once every one of them is settled on its latest text and on
-    /// the signatures of the files before it.
-    let settledChain (last: int) (read: IFileNode -> string list * int64 -> 'T voption) : 'T[] voption =
-        let results = ResizeArray()
-        let mutable before = []
-        let mutable ok = true
-        let mutable i = 0
-
-        while ok && i <= last do
-            let file = files[i]
-
-            match read file (before, Volatile.Read &requested[i]) with
-            | ValueSome r ->
-                results.Add r
-                before <- file.Signature.Value.Chain
-            | ValueNone -> ok <- false
-
-            i <- i + 1
-
-        if ok then ValueSome(results.ToArray()) else ValueNone
-
-    /// File-level: reads file `i` once it is settled on its latest text, with every write posted to it and to the
-    /// files before it applied. Its result being settled means the files it was set up from are settled too.
-    let settledFile (i: int) (read: IFileNode -> string list * int64 -> 'T voption) : 'T voption =
+    /// Reads file `i` once it is settled on its latest text, with every write posted to it and to the files before it
+    /// applied. Its result being settled means the files it was set up from are settled too.
+    let settledFile (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
         let mutable applied = true
 
         for j in 0..i do
             if files[j].Text.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
-        if applied then read files[i] ([], Volatile.Read &requested[i]) else ValueNone
-
-    /// Reads file `i` once it, and the files it was set up from, are settled on their latest texts.
-    let settledOne (i: int) (read: IFileNode -> string list * int64 -> 'T voption) : 'T voption =
-        match mode with
-        | FileLevel -> settledFile i read
-        | Declarations -> settledChain i read |> ValueOption.map (fun all -> all[i])
+        if applied then read files[i] (Volatile.Read &requested[i]) else ValueNone
 
     /// Reads every file once each is settled on its latest text.
-    let settledAll (read: IFileNode -> string list * int64 -> 'T voption) : 'T[] voption =
-        match mode with
-        | Declarations -> settledChain (files.Length - 1) read
-        | FileLevel ->
-            let results = Array.zeroCreate files.Length
-            let mutable ok = true
-            let mutable i = 0
+    let settledAll (read: IFileNode -> int64 -> 'T voption) : 'T[] voption =
+        let results = Array.zeroCreate files.Length
+        let mutable ok = true
+        let mutable i = 0
 
-            while ok && i < files.Length do
-                match settledFile i read with
-                | ValueSome r -> results[i] <- r
-                | ValueNone -> ok <- false
+        while ok && i < files.Length do
+            match settledFile i read with
+            | ValueSome r -> results[i] <- r
+            | ValueNone -> ok <- false
 
-                i <- i + 1
+            i <- i + 1
 
-            if ok then ValueSome results else ValueNone
+        if ok then ValueSome results else ValueNone
 
     /// A graph whose every file starts file-level.
     static member Create(host: GraphHost, spec: ProjectSpec) : Task<ProjectGraph> =
         ProjectGraph.CreateWithMode(host, spec, FileLevel)
 
-    /// A graph whose every file is checked in `mode`.
+    /// A graph whose every file starts file-level; with `Declarations`, every implementation file is also promoted.
     static member internal CreateWithMode(host: GraphHost, spec: ProjectSpec, mode: Rfs.Checker.FileMode) : Task<ProjectGraph> =
         task {
             let allocated = GC.GetTotalAllocatedBytes true
@@ -129,8 +100,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             let project = ProjectShared ctx
 
             // Nothing else of the graph runs yet, so the process's allocations are the context's
-            if mode = FileLevel then
-                project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
+            project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
             let texts = spec.SourceFiles |> List.map (fun f -> f, File.ReadAllText f) |> Array.ofList
 
             let! files =
@@ -139,56 +109,36 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                         path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
 
                     let fileTexts =
-                        texts
-                        |> Array.map (fun (path, text) ->
-                            FileText(
-                                ctx,
-                                path,
-                                text,
-                                mode = Declarations && not (isSignature path),
-                                Measure(if mode = FileLevel then Some project else None)
-                            ))
+                        texts |> Array.map (fun (path, text) -> FileText(project, path, text))
 
                     let nodes = ResizeArray<IFileNode>()
+                    let deps = FileDeps.create project fileTexts
+                    let signatureOf (j: int) = nodes[j].Signature
 
-                    match mode with
-                    | FileLevel ->
-                        let deps = FileDeps.create project fileTexts
-                        let signatureOf (j: int) = nodes[j].Signature
+                    fileTexts
+                    |> Array.iteri (fun i file ->
+                        nodes.Add(
+                            if isSignature file.Path then
+                                WholeFile.signature project i file deps signatureOf
+                            else
+                                WholeFile.impl project i file deps signatureOf
+                        ))
 
-                        fileTexts
-                        |> Array.iteri (fun i file ->
-                            nodes.Add(
-                                if isSignature file.Path then
-                                    WholeFile.signature project i file deps signatureOf
-                                else
-                                    WholeFile.impl project i file deps signatureOf
-                            ))
+                    // One build at a time: the first file, in file order, that is wanted and not built for its setup
+                    project.Builder <-
+                        createMemo (fun _ -> nodes |> Seq.tryFindIndex _.Building |> ValueOption.ofOption)
 
-                        // The dependencies read every file's parse, so effects start once every file's nodes exist
+                    // The dependencies read every file's parse, so effects start once every file's nodes exist
+                    for node in nodes do
+                        node.Activate()
+
+                    if mode = Declarations then
                         for node in nodes do
-                            node.Activate()
-                    | Declarations ->
-                        let mutable before = None
-
-                        for file in fileTexts do
-                            let node =
-                                if isSignature file.Path then
-                                    FileNodes.signature project file before
-                                else
-                                    let signatureFile =
-                                        fileTexts
-                                        |> Array.tryFind (fun f -> String.Equals(f.Path, file.Path + "i", StringComparison.OrdinalIgnoreCase))
-                                        |> Option.map _.Path
-
-                                    FileNodes.impl project file before signatureFile
-
-                            nodes.Add node
-                            before <- Some node.Signature
+                            node.Promote()
 
                     nodes.ToArray())
 
-            return ProjectGraph(host, project, spec, mode, files)
+            return ProjectGraph(host, project, spec, files)
         }
 
     /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Call it when the
@@ -234,17 +184,17 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         let i = indexOf file
 
         host.WhenSettled(fun () ->
-            settledOne i (fun f (before, version) -> f.Settled(before, version) |> ValueOption.map (fun d -> struct (version, d))))
+            settledFile i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d))))
 
     /// The file's diagnostics once its result is for its latest text and the files it depends on are settled.
     member _.Diagnostics(file: string) : Task<FSharpDiagnostic[]> =
         let i = indexOf file
-        host.WhenSettled(fun () -> settledOne i (fun f s -> f.Settled s))
+        host.WhenSettled(fun () -> settledFile i (fun f version -> f.Settled version))
 
     /// Every file's diagnostics once all of them are settled on their latest texts.
     member _.AllDiagnostics() : Task<IReadOnlyDictionary<string, FSharpDiagnostic[]>> =
         host.WhenSettled(fun () ->
-            settledAll (fun f s -> f.Settled s)
+            settledAll (fun f version -> f.Settled version)
             |> ValueOption.map (fun all ->
                 let d = Dictionary<string, FSharpDiagnostic[]>()
 
@@ -261,31 +211,43 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         if isSignatureFile files[i] then
             invalidArg (nameof file) $"%s{file} is a signature file"
 
-        host.WhenSettled(fun () ->
-            match mode with
-            | FileLevel -> settledFile i (fun f s -> f.Results s)
-            | Declarations ->
-                settledChain i (fun f s ->
-                    if obj.ReferenceEquals(f, files[i]) then
-                        f.Results s |> ValueOption.map Some
-                    else
-                        f.Settled s |> ValueOption.map (fun _ -> None))
-                |> ValueOption.map (fun all -> all[i].Value))
+        host.WhenSettled(fun () -> settledFile i (fun f version -> f.Results version))
 
     /// How the file is checked now.
     member _.Mode(file: string) : Task<Rfs.Checker.FileMode> =
         let node = files[indexOf file]
         host.Read(fun () -> node.Mode)
 
-    /// Every implementation file's FileResult (FinishFile's, or CheckFile's for a file checked file-level) once all
-    /// files are settled on their latest texts.
+    /// Marks an implementation file wanted (a signature file is never promoted): it is built by declaration in the
+    /// background, one file of the project at a time, and checked by declaration once that build has finished for
+    /// its current text and setup. Until then, and after any change of its setup, it is checked whole. A file whose
+    /// text splits into one declaration (module rec, namespace rec) stays file-level. Posts; graph thread.
+    member _.Promote(file: string) : unit =
+        let node = files[indexOf file]
+        host.Post(fun () -> node.Promote())
+
+    /// Clears wanted: the file's declaration results and nodes are dropped, its last result stays published until its
+    /// text or setup changes, and from then on it is checked whole. Posts; graph thread.
+    member _.Demote(file: string) : unit =
+        let node = files[indexOf file]
+        host.Post(fun () -> node.Demote())
+
+    /// Completes once the file is checked by declaration for its latest text, or can not be for that text and setup:
+    /// its text splits into one declaration, or the setup from its dependencies reports an unresolved name (it is then
+    /// checked whole, from every earlier file). Completes at once for a file that is not wanted.
+    member _.WhenPromoted(file: string, ct: CancellationToken) : Task<unit> =
+        let i = indexOf file
+        host.WhenSettled((fun () -> settledFile i (fun f version -> if f.Promoted version then ValueSome() else ValueNone)), ct)
+
+    /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
+    /// is checked whole) once all files are settled on their latest texts.
     member _.AllFileResults() : Task<IReadOnlyDictionary<string, FileResult>> =
         host.WhenSettled(fun () ->
-            settledAll (fun f s ->
+            settledAll (fun f version ->
                 if isSignatureFile f then
-                    f.Settled s |> ValueOption.map (fun _ -> None)
+                    f.Settled version |> ValueOption.map (fun _ -> None)
                 else
-                    f.FileResult s |> ValueOption.map Some)
+                    f.FileResult version |> ValueOption.map Some)
             |> ValueOption.map (fun all ->
                 let d = Dictionary<string, FileResult>()
 
@@ -293,6 +255,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                     result |> Option.iter (fun r -> d[f.Path] <- r)
 
                 d :> IReadOnlyDictionary<_, _>))
+
 
     /// How many declarations of the file are checked in segments (R11 and R12 spans), as the roles stand now. Blocks
     /// until the graph thread answers: never call it from the graph thread.
@@ -354,3 +317,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Runs `hook` off the graph thread, with the file's path, just before a setup from a file's dependencies is given
     /// to the checker. For tests.
     member internal _.OnScopedCheck(hook: string -> unit) : unit = project.ScopedCheckHook <- hook
+
+    /// Runs `hook` off the graph thread, with the file's path, just before a promotion build sets the file up. For
+    /// tests.
+    member internal _.OnBeginFile(hook: string -> unit) : unit = project.BeginFileHook <- hook
