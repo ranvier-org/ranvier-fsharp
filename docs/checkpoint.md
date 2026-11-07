@@ -305,3 +305,65 @@ they could hurt users:
    (active patterns, interface rec groups) should be found and fixed in the fork.
 6. **W1.** A line insert re-checks every declaration below it: 1.3x to 2.6x a body edit here, more in long files.
    Range shifting is needed.
+
+## Premise breaks after Task 6
+
+`rfs-checkpoint --premise-report --scenario <glob> --corpus ../ranvier-fsharp-corpus --out <dir>` checks a scenario's
+project once with every file checked by declaration. It writes `premise-<corpus>.md`, with one line per break from
+`ProjectGraph.PremiseBroken`: file:line, key, kind, and the first differing part of the provisional and final
+fingerprints. The reports from before the fix (R `92a3bc8`, fork `06fc666bf`) are in `results/premise/base/`, and
+those from after it in `results/premise/`.
+
+| corpus | breaks before | breaks after | segment rows before | segment rows after | segment rows at the checkpoint |
+|---|---|---|---|---|---|
+| small | 5 | 0 | 534 | 293 | 444 |
+| mid | 32 | 0 | 323 | 139 | 323 |
+| large | 1 | 0 | 16 | 7 | 16 |
+
+Small's segment rows grew from 444 to 534 between the checkpoint and Task 6's base. The segment rows that remain are
+R11 spans and R12 segments, and none of them is a premise break.
+
+The checkpoint suspected active patterns and interface rec groups. In fact every break had one of three causes. Each
+is something FinishFile does to a declaration that no other declaration takes part in:
+
+1. **Signature conformance** (36 of 38). FinishFile checks a file that has a signature file against it. That check
+   writes into the implementation's items, and the fingerprint describes everything it writes:
+   - a value gets the signature's arity, argument names and argument attributes;
+   - a type, union case, field or module gets the attributes the signature adds.
+
+   The breaks it caused:
+   - **Arity: 29.** These are values bound to a lambda whose signature declares them without arguments:
+     - `val (|ActivePattern|_|): (FSharpSymbolUse -> ... option)` and the like: 26 in mid's `TypedAstPatterns.fs`
+       and `CodeGeneration.fs`, and 2 in the namespace fragments of `UntypedAstUtils.fs`;
+     - `val moreThanOne: ('a list -> bool)`: 1 in large.
+   - **Attributes: 6.** `[<Interface>]` on small's three interface rec groups. `[<Class>]` on `ChangeableValue`,
+     `ReadOnlySpanExtensions`, and `AdaptiveCancellableTask` in `RefCountingTaskCreator`'s rec group.
+   - **Argument name: 1.** `t` in `BatchRecalculateDirty.Compute`.
+2. **A default** (1, small's `HashSet`). `typedefof<HashSetProxy<_>>` in an attribute leaves an inference variable
+   that only the file-end defaults solve. The fingerprint describes the attribute, but the free-variable checks do not
+   look at attributes, so the declaration was not flagged.
+3. **Unit-of-measure normalization** (1, mid's `normalizePathI`). Collecting a declaration's unsolved variables
+   (FindUnsolved) normalizes the solutions of unit-of-measure variables in place: `LocalPath` becomes
+   `LocalPath^1 * 1`. The check took the fingerprint before it collected them (for `LeavesUnsolved`), and the
+   finish's defaults collect them again.
+
+The fix captures each of these at check time, so the fingerprint taken there already describes what the finish
+leaves. It drops nothing from the fingerprint.
+- The check collects the unsolved variables before it takes the fingerprint.
+- It then takes the fingerprint while the declaration holds what the finish would add:
+  - for a file with a signature file, the result of conformance-checking the declaration's items against the
+    corresponding items of the signature;
+  - for a declaration that leaves variables unsolved but depends on no later declaration, the defaults applied to
+    its own contents.
+- Then it undoes both, so later declarations are still checked as a full check checks them: before conformance and
+  before the defaults.
+  - To make this possible, `SignatureConformance` records in the fork's mutation log how to undo what it writes into
+    the implementation's items.
+  - It records only while `UndoableConformance.Recording` is set, which only this check-time step does.
+- The finish can still change less than the check captured: when the whole file does not conform, or when an earlier
+  default fails.
+  - The premise then breaks, and the graph treats the declaration as a leader, as before.
+  - Both happen only in a file with errors.
+
+D1 tests pin each shape (`D1.signature conformance`, `D1.whole-file passes`). No break remains, so there is no
+inherent break to pin.

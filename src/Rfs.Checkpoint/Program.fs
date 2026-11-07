@@ -17,6 +17,7 @@ module Checkpoint =
   rfs-checkpoint --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>] [--child-timeout-min <n>]
                  [--log-cutoff] [--in-process]
   rfs-checkpoint --engine <name> --scenario <glob> --out <dir> [--corpus <dir>] [--step-timeout-s <n>] [--log-cutoff]
+  rfs-checkpoint --premise-report --scenario <glob> --out <dir> [--corpus <dir>]
 
 Run it from the ranvier-fsharp repo root (R9). By default each engine runs in a child process of its own (--engine), so
 cold time, peak working set and allocations are its alone; a child that runs past --child-timeout-min (default 60) is
@@ -32,7 +33,11 @@ largest declaration of the edited files and the one the first edit falls in (in 
 CheckDeclaration runs (superseded flights included), adopted checks, FinishFile time, its share of the latency and its
 time per part, rows inside R11/R12 segments, CheckFile runs (fileLevelChecks), setups from dependencies refused for a
 stale snapshot and checked from every earlier file instead (chainFallbacks), and file-slim's graph-check counts when
-logged. It sits in a subdirectory so `rfs-harness compare` reads only results."""
+logged. It sits in a subdirectory so `rfs-harness compare` reads only results.
+
+--premise-report runs no edits: it checks each scenario's project once with every file checked by declaration, in this
+process, and writes premise-<corpus>.md with one line per D1 premise break (a declaration whose final fingerprint
+differs from its check's): file:line, key, kind, and the first differing part of the two fingerprints."""
 
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
@@ -54,7 +59,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
 
     let private usageError message = raise (Usage message)
 
-    let private switches = set [ "--in-process"; "--log-cutoff" ]
+    let private switches = set [ "--in-process"; "--log-cutoff"; "--premise-report" ]
 
     let private valued =
         set [ "--scenario"; "--out"; "--corpus"; "--step-timeout-s"; "--child-timeout-min"; "--engine" ]
@@ -415,6 +420,21 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                                   | Ok steps -> file, s, steps ] }
 
                 match Map.tryFind "--engine" args with
+                | _ when args.ContainsKey "--premise-report" ->
+                    if args.ContainsKey "--engine" || args.ContainsKey "--in-process" || args.ContainsKey "--log-cutoff" then
+                        usageError "--premise-report runs alone: drop --engine, --in-process and --log-cutoff"
+
+                    Directory.CreateDirectory settings.Out |> ignore
+
+                    for _, s, _ in settings.Scenarios |> List.distinctBy (fun (_, s, _) -> projectOf corpus s) do
+                        let project = projectOf corpus s
+                        let! spec = ProjectSpec.load project
+                        let! breaks, segmentRows = Premise.collect spec
+                        let path = Path.Combine(settings.Out, $"premise-%s{s.Corpus}.md")
+                        File.WriteAllText(path, Premise.markdown s.Corpus (Path.GetDirectoryName project) segmentRows breaks)
+                        printfn "%s: %d premise breaks, %d segment rows -> %s" s.Corpus breaks.Length segmentRows path
+
+                    return 0
                 | Some name ->
                     if args.ContainsKey "--in-process" || args.ContainsKey "--child-timeout-min" then
                         usageError "--engine is the child's mode: drop --in-process and --child-timeout-min"

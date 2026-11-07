@@ -53,6 +53,16 @@ type internal FileSig =
             // Constant: equality changes once a fingerprint is taken, so no hash of either is stable over a value's life
             member _.GetHashCode _ = 0 }
 
+/// A declaration whose final fingerprint, after FinishFile, differs from the one its own check left (the D1 premise
+/// broke), with both fingerprints.
+type PremiseBreak =
+    { Key: DeclarationKey
+      File: string
+      /// The declaration's first line (1-based)
+      Line: int
+      Provisional: string
+      Final: string }
+
 /// An invariant of the graph broke: a bug, never contained or degraded to a whole check.
 type internal GraphInvariantException(message: string) =
     inherit Exception(message)
@@ -93,7 +103,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable setupHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
     let phaseAllocated = Dictionary<string, int64>()
-    let premise = Subject<DeclarationKey * string>()
+    let premise = Subject<PremiseBreak>()
     let published = Subject<DeclarationKey * string>()
     let ran = Subject<DeclarationKey * string>()
 
@@ -189,9 +199,9 @@ type internal ProjectShared(ctx: ProjectContext) =
         this.AddPhase(phase, Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetAllocatedBytesForCurrentThread() - allocated)
         result
 
-    member _.CountPremiseBreak(key: DeclarationKey, file: string) =
+    member _.CountPremiseBreak(premiseBreak: PremiseBreak) =
         Interlocked.Increment &premiseBreaks |> ignore
-        premise.Next((key, file))
+        premise.Next premiseBreak
 
     member _.PremiseBroken = premise :> IObservable<_>
     /// Reports a check result published for the first time: each result is one CheckDeclaration, adopted.

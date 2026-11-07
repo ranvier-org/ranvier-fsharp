@@ -344,7 +344,7 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
 
 
         let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
-        use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun (k, _) -> premise.Enqueue k)
+        use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun b -> premise.Enqueue b.Key)
 
         let mutable withErrors = 0
         let mutable errorFiles = 0

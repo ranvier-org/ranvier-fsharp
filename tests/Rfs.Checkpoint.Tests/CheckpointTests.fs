@@ -307,6 +307,39 @@ let tests =
                   Expect.isNull slim[field] $"file-slim has no %s{field}"
           }
 
+          testTask "--premise-report writes a project's D1 premise breaks without running edits" {
+              let work = freshDir "premise"
+              let out = Path.Combine(work, "out")
+              let scenario = writeDepsScenario "Deps" work
+              let! code = Checkpoint.execute Engines.all [| "--premise-report"; "--scenario"; scenario; "--corpus"; fixturesDir; "--out"; out |]
+              Expect.equal code 0 "exit code"
+              let report = File.ReadAllText(Path.Combine(out, "premise-Deps.md"))
+              Expect.stringStarts report "# D1 premise breaks: Deps\n\n0 breaks; " "the Deps fixture keeps the premise"
+              Expect.isFalse (Directory.Exists(Path.Combine(out, "extra"))) "no engine ran"
+          }
+
+          test "a premise break's line has its place, key, kind and the first differing part" {
+              let key: FSharp.Compiler.Declarations.DeclarationKey =
+                  { ModulePath = [ "Tiny"; "B" ]
+                    Name = "moreThanOne"
+                    Kind = FSharp.Compiler.Declarations.DeclarationKind.Value
+                    Ordinal = 0 }
+
+              let projectDir = Path.Combine(fixturesDir, "Tiny")
+
+              let b: Rfs.Checker.PremiseBreak =
+                  { Key = key
+                    File = Path.Combine(projectDir, "Sub", "B.fs")
+                    Line = 4
+                    Provisional = "val|moreThanOne|1|1|x"
+                    Final = "val|moreThanOne|1|0|x" }
+
+              Expect.equal
+                  (Premise.markdown "Tiny" projectDir 3 [ b ])
+                  "# D1 premise breaks: Tiny\n\n1 breaks; 3 segment rows after the cold check, every file checked by declaration.\n\n## Value: `1` -> `0` (1)\n\n- Sub/B.fs:4 `Tiny.B.moreThanOne` (Value): part 3 after `val|moreThanOne|1`: provisional `1`, final `0`"
+                  "the report"
+          }
+
           testTask "--log-cutoff records file-slim's graph-check counts" {
               let work = freshDir "cutoff"
               let out = Path.Combine(work, "out")

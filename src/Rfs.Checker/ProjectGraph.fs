@@ -360,8 +360,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// their check left (the D1 premise broke). Such a declaration is then checked as a segment leader.
     member _.PremiseBreaks: int64 = project.PremiseBreaks
 
-    /// Each declaration whose final fingerprint broke the D1 premise, with its file, when it is published.
-    member _.PremiseBroken: IObservable<DeclarationKey * string> = project.PremiseBroken
+    /// Each declaration whose final fingerprint broke the D1 premise, with its file and both fingerprints, when it is
+    /// published.
+    member _.PremiseBroken: IObservable<PremiseBreak> = project.PremiseBroken
 
     /// Each CheckDeclaration that returned, with its file, on the thread that ran it.
     member _.Ran: IObservable<DeclarationKey * string> = project.Ran

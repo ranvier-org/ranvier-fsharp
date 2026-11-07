@@ -137,6 +137,35 @@ type Queue<'T>(items: 'T list) =
 let inline head (q: Queue<'T>) = q.Head
 """
 
+/// Where two fingerprints first differ, with the parts before it.
+let private firstDifference (provisional: string) (final: string) =
+    let a, b = provisional.Split '|', final.Split '|'
+    let i = Seq.init (min a.Length b.Length) id |> Seq.tryFind (fun i -> a[i] <> b[i]) |> Option.defaultValue (min a.Length b.Length)
+    let part (parts: string[]) = if i < parts.Length then parts[i] else "(end)"
+    let before = String.concat "|" a[max 0 (i - 8) .. i - 1]
+    $"part %d{i} after '%s{before}': provisional '%s{part a}', final '%s{part b}'"
+
+/// Every declaration of the file has its check's fingerprint after the finish.
+let private expectFinalIsProvisional (c: Checked) (file: string) =
+    for r in (c.File file).Results do
+        let final = c.Final(file, r.Key.Name)
+
+        if final <> r.Fingerprint then
+            failtest $"%s{file} %s{r.Key.Name}: final = provisional, but %s{firstDifference r.Fingerprint final}"
+
+/// Tiny with B.fsi and B.fs replaced; both keep `two`, which C.fs uses.
+let private withSignature (fsi: string) (fs: string) =
+    check tinyProject [ "B.fsi", "module Tiny.B\n\nval two: int\n" + fsi; "B.fs", "module Tiny.B\n\nlet two = Tiny.A.one + 1\n" + fs ]
+
+/// What checking B.fs against B.fsi changes in a declaration is in its fingerprint from its check on.
+let private conforms (name: string) (fsi: string) (fs: string) =
+    testAsync name {
+        let! c = withSignature fsi fs
+        do! expectOracle c
+        expectFinalIsProvisional c "B.fs"
+        expectPremise c
+    }
+
 let private shape (attribute: string) (field: string) =
     $"module Tiny.C\n\n%s{attribute}type Shape =\n    | Circle of radius: %s{field}\n    | Square of side: int\n\nlet after = 1\n"
 
@@ -251,6 +280,82 @@ let tests =
                     // The variable stays in the environment, so after leaves it open too, as rows after an unsolved
                     // `let r = ref []` do
                     Expect.equal (dependsOnLater c) [ "C.fs T"; "C.fs after" ] "X's element type is open: a later T().X.Add 1 decides it"
+                } ]
+
+          // Each shape broke the premise on the corpora: FinishFile checks the file against its signature file, which
+          // gives the implementation's items arities, argument names and attributes from the signature
+          testList
+              "signature conformance"
+              [ conforms
+                    "a value bound to a lambda takes its arity from a signature without arguments (List.moreThanOne)"
+                    "val moreThanOne: ('a list -> bool)\nval after: int\n"
+                    "\nlet moreThanOne =\n    function\n    | []\n    | [ _ ] -> false\n    | _ -> true\n\nlet after = 1\n"
+
+                conforms
+                    "a partial active pattern bound to a lambda (|Val|_|)"
+                    "val (|Val|_|): (int option -> int option)\nval after: int\n"
+                    "\nlet (|Val|_|) =\n    function\n    | Some i when i > 0 -> Some i\n    | _ -> None\n\nlet after = 1\n"
+
+                conforms
+                    "a partial active pattern with an argument returning a union case (|StaticParameter|_|)"
+                    "val (|Wrap|_|): _x: obj -> ('a -> 'a option)\nval after: int\n"
+                    "\nlet (|Wrap|_|) (_x: obj) = Some\n\nlet after = 1\n"
+
+                conforms
+                    "a partial active pattern with an argument (|Val|_|) (x: obj)"
+                    "val (|Val|_|): x: obj -> int option\nval after: int\n"
+                    "\nlet (|Val|_|) (x: obj) =\n    match x with\n    | :? int as i -> Some i\n    | _ -> None\n\nlet after = 1\n"
+
+                conforms
+                    "an interface rec group takes [<Interface>] from its signature (IAdaptiveValue)"
+                    "\n[<Interface>]\ntype IA =\n    abstract M: IB -> int\n\nand [<Interface>] IB =\n    abstract N: IA -> int\n\nval after: int\n"
+                    "\ntype IA =\n    abstract M: IB -> int\n\nand IB =\n    abstract N: IA -> int\n\nlet after = 1\n"
+
+                conforms
+                    "a class takes [<Class>] from its signature (ChangeableValue, ReadOnlySpanExtensions)"
+                    "\n[<Sealed; Class>]\ntype K =\n    new: unit -> K\n    member X: int\n\nval after: int\n"
+                    "\n[<Sealed>]\ntype K() =\n    member _.X = 1\n\nlet after = 1\n"
+
+                conforms
+                    "a member takes an argument name from its signature (BatchRecalculateDirty)"
+                    "\ntype T =\n    new: unit -> T\n    member M: t: int -> int\n\nval after: int\n"
+                    "\ntype T() =\n    member _.M(_: int) = 1\n\nlet after = 1\n"
+
+                testAsync "a namespace fragment's module takes an arity from its signature (UntypedAstUtils)" {
+                    let fsi =
+                        "namespace Tiny\n\nmodule B =\n    val two: int\n    val moreThanOne: ('a list -> bool)\n\nnamespace Other\n\nmodule M =\n    val x: int\n"
+
+                    let fs =
+                        "namespace Tiny\n\nmodule B =\n    let two = Tiny.A.one + 1\n\n    let moreThanOne =\n        function\n        | []\n        | [ _ ] -> false\n        | _ -> true\n\nnamespace Other\n\nmodule M =\n    let x = 1\n"
+
+                    let! c = check tinyProject [ "B.fsi", fsi; "B.fs", fs ]
+                    do! expectOracle c
+                    expectFinalIsProvisional c "B.fs"
+                    expectPremise c
+                } ]
+
+          // What else of the finish broke the premise on the corpora: passes over the whole file that change a
+          // declaration no other declaration takes part in
+          testList
+              "whole-file passes"
+              [ testAsync "a solved unit of measure is normalized as the finish's defaults find it (normalizePathI)" {
+                    let text =
+                        "module Tiny.C\n\n[<Measure>]\ntype LocalPath\n\nlet inline normalizeI (x: int) : int<LocalPath> = LanguagePrimitives.Int32WithMeasure<LocalPath>(x + 1)\n\nlet inline inferred (x: int) = LanguagePrimitives.Int32WithMeasure<LocalPath> x\n\nlet after = 1\n"
+
+                    let! c = check tinyProject [ "C.fs", text ]
+                    do! expectOracle c
+                    expectFinalIsProvisional c "C.fs"
+                    expectPremise c
+                }
+
+                testAsync "an attribute's inference variable takes the finish's default (HashSet's DebuggerTypeProxy)" {
+                    let text =
+                        "module Tiny.C\n\n[<System.Diagnostics.DebuggerTypeProxy(typedefof<Proxy<_>>)>]\ntype Box<'T>(x: 'T) =\n    member _.X = x\n\nand internal Proxy<'T>(b: Box<'T>) =\n    member _.B = b\n\nlet after = 1\n"
+
+                    let! c = check tinyProject [ "C.fs", text ]
+                    do! expectOracle c
+                    expectFinalIsProvisional c "C.fs"
+                    expectPremise c
                 } ]
 
           // The declared 'T of a generic class stays in the environment after it, rigid: it once flagged the class and

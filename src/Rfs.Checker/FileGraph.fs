@@ -872,7 +872,12 @@ module internal FileNodes =
                                 let final = f.FileResult.Fingerprints[row.Key]
 
                                 if not (provisional.StartsWith "?") && not (final.StartsWith "?") && provisional <> final then
-                                    project.CountPremiseBreak(row.Key, path)
+                                    project.CountPremiseBreak
+                                        { Key = row.Key
+                                          File = path
+                                          Line = c.Decl.Range.StartLine
+                                          Provisional = provisional
+                                          Final = final }
                                     leaders <- leaders.Add row.Key
 
                         premiseLeaders.Value <- leaders)

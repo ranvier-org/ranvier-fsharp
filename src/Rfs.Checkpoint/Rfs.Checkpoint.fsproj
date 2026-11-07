@@ -6,6 +6,7 @@
   <ItemGroup>
     <Compile Include="Engine.fs" />
     <Compile Include="Driver.fs" />
+    <Compile Include="Premise.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
