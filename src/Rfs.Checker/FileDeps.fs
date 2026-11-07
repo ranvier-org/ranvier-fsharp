@@ -92,6 +92,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
     let mutable chainFallbacks = 0L
+    let mutable directiveRetries = 0L
     let mutable scopedCheckHook: string -> unit = ignore
     let finishPhaseTicks = Dictionary<string, int64>()
     let phaseAllocated = Dictionary<string, int64>()
@@ -105,6 +106,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.PremiseBreaks = Interlocked.Read &premiseBreaks
     member _.FileLevelChecks = Interlocked.Read &fileLevelChecks
     member _.ChainFallbacks = Interlocked.Read &chainFallbacks
+    member _.DirectiveRetries = Interlocked.Read &directiveRetries
 
     /// Counts a CheckDeclaration that returned, and reports it (on the thread that ran it).
     member _.CountCheck(key: DeclarationKey, file: string) =
@@ -113,6 +115,7 @@ type internal ProjectShared(ctx: ProjectContext) =
 
     member _.CountFileLevelCheck() = Interlocked.Increment &fileLevelChecks |> ignore
     member _.CountChainFallback() = Interlocked.Increment &chainFallbacks |> ignore
+    member _.CountDirectiveRetry() = Interlocked.Increment &directiveRetries |> ignore
 
     /// Runs off the graph thread, with the file's path, just before a setup from its dependencies is given to the
     /// checker. For tests.
@@ -386,6 +389,30 @@ type internal Attempt<'R> =
 
 module internal Setup =
 
+    /// How long a check waits for its file's #line directives to be its parse's again before it fails the node.
+    let private directiveWait = TimeSpan.FromSeconds 10.
+
+    /// The check, tried again while the checker refuses it because its file's #line directives are not its parse's: a
+    /// newer parse of another text of the file replaced them. On this context that parse is a newer text, and the
+    /// flight is cancelled once FileDeps has it; on another context, such as DeclarationLines', the directives come
+    /// back when it parses the held text again. A refused check is never a result, and never fails the node while
+    /// it can still be superseded.
+    let runWhileDirectivesCurrent (project: ProjectShared) (ct: CancellationToken) (run: unit -> 'R) : 'R =
+        let clock = System.Diagnostics.Stopwatch.StartNew()
+
+        let rec attempt () =
+            try
+                run ()
+            with :? InvalidOperationException as e when
+                e.Message.Contains "replaced the line directives"
+                && not ct.IsCancellationRequested
+                && clock.Elapsed < directiveWait ->
+                project.CountDirectiveRetry()
+                Thread.Sleep 5
+                attempt ()
+
+        attempt ()
+
     /// FS0039 (UndefinedName: every "is not defined"), and a record label not found
     let private unresolvedCodes = set [ 39; 1129 ]
 
@@ -440,7 +467,7 @@ module internal Setup =
         let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
 
         scoped.Value <-
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                 let key = scopedKey.Value
                 let current = deps.Value
                 let previous = scoped.Value.Peek
@@ -462,7 +489,7 @@ module internal Setup =
                         hook path
 
                         try
-                            let result = run key
+                            let result = runWhileDirectivesCurrent project ct (fun () -> run key)
 
                             match diagnosticsOf result with
                             | Some diagnostics when key.Scoped && hasUnresolved diagnostics -> Unresolved key
@@ -477,14 +504,14 @@ module internal Setup =
                             Stale(key, current)))
 
         chained.Value <-
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                 let key = chainKey.Value
                 let previous = chained.Value.Peek
 
                 if not (isNull (box previous)) && same (fst previous) key then
                     Task.FromResult previous
                 else
-                    Task.Run<SetupKey * 'R>(fun () -> key, run key))
+                    Task.Run<SetupKey * 'R>(fun () -> key, runWhileDirectivesCurrent project ct (fun () -> run key)))
 
         createMemo (fun _ ->
             match scoped.Value.Value with

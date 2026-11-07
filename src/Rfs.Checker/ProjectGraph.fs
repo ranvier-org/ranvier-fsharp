@@ -312,6 +312,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// current, each then checked from every earlier file.
     member _.ChainFallbacks: int64 = project.ChainFallbacks
 
+    /// How many times a file-level check was tried again because its file's #line directives were a newer parse's.
+    member internal _.DirectiveRetries: int64 = project.DirectiveRetries
+
     /// How many times CheckDeclaration has returned, including runs whose result was never published: a flight
     /// superseded under CancelPrevious that finished before it saw its cancellation.
     member _.CheckedCount: int64 = project.CheckedCount

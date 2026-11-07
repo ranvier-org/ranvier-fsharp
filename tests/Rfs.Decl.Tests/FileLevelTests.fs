@@ -651,4 +651,77 @@ let fileLevelTests =
                           "B.fs has an FS0039 with suggestions"
 
                       Expect.exists d (fun d -> d.Code = "FS1182") "D.fs has an FS1182"
+          }
+
+          // The compiler-generated-name counters are the project's, by file: a lazy build of one text's results must
+          // not move the names a check of a newer text of the same file gives at the same time
+          testTask "a lazy build beside a check of the same file leaves its fingerprint alone" {
+              let holders =
+                  [ for i in 1..150 ->
+                        $"type Holder%d{i}() as this =\n    let value = %d{i}\n    member _.V = value\n    member _.Self = this\n\n" ]
+                  |> String.concat ""
+
+              let older = "module Deps.A\n\n" + holders
+              let newer = older + "let extra = 1\n"
+              let! p = load depsProject [ "A.fs", older ]
+              let a = p.FileNamed "A.fs"
+              let fresh = DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, newer)).Signature.Fingerprint
+              let clock = Diagnostics.Stopwatch.StartNew()
+              DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, newer)) |> ignore
+              let checkMs = int clock.ElapsedMilliseconds
+              Expect.isFalse (fresh.StartsWith "?") "the signature is describable"
+              Expect.stringContains fresh "@" "the signature holds compiler-generated names"
+              let mutable moved = []
+
+              // Lazy builds of older results start while the newer text is checked, staggered over the time a check
+              // takes, so that some reset the counters while the check is still giving names
+              for round in 1..10 do
+                  let olds =
+                      [ for _ in 1..8 -> DeclarationChecker.CheckFile(p.Context, [], DeclarationChecker.Parse(p.Context, a, older)) ]
+
+                  let parse = DeclarationChecker.Parse(p.Context, a, newer)
+                  // Threads of their own, so the thread pool's growth does not delay them
+                  let onThread (work: unit -> 'T) = Task.Factory.StartNew<'T>(work, TaskCreationOptions.LongRunning)
+                  let check = onThread (fun () -> DeclarationChecker.CheckFile(p.Context, [], parse).Signature.Fingerprint)
+
+                  let builds =
+                      olds
+                      |> List.mapi (fun k old ->
+                          onThread (fun () ->
+                              Threading.Thread.Sleep(k * checkMs / 6)
+                              old.CheckResults |> ignore))
+
+                  let! fingerprint = check
+                  let! _ = Task.WhenAll builds
+
+                  if fingerprint <> fresh then
+                      moved <- round :: moved
+
+              Expect.isEmpty moved "the newer text's fingerprint equals a sequential check's in every round"
+          }
+
+          testTask "the fingerprint writes access paths as sprintf does" {
+              let corpus = Path.GetFullPath(Path.Combine(tinyDir, "..", "..", "..", "..", "ranvier-fsharp-corpus"))
+
+              let projects =
+                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix" ] do
+                        yield fixture f
+                    yield Path.Combine(corpus, "small", "src", "FSharp.Data.Adaptive", "FSharp.Data.Adaptive.fsproj")
+                    yield Path.Combine(corpus, "mid", "src", "FsAutoComplete.Core", "FsAutoComplete.Core.fsproj")
+                    yield Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
+
+              let texts = Collections.Generic.HashSet<string * string>()
+
+              for project in projects do
+                  let! p = load project []
+
+                  for f in chain p (parseAll p) do
+                      for pair in DeclarationChecker.AccessPathTexts f.Signature do
+                          texts.Add pair |> ignore
+
+              let mismatches = [ for written, printed in texts do if written <> printed then yield $"%s{written} <> %s{printed}" ]
+              Expect.isEmpty mismatches "every access path is written as sprintf \"%A\" gives it"
+              Expect.isGreaterThan texts.Count 100 "the corpus has many access paths"
+              Expect.exists texts (fun (written, _) -> written.Contains "Namespace") "some path is in a namespace"
+              Expect.exists texts (fun (written, _) -> written.Length > 60) "some path is long enough to go to sprintf"
           } ]

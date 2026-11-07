@@ -184,4 +184,33 @@ let tests =
                           Expect.isGreaterThan s.Graph.ChainFallbacks 0L "the refused setup fell back to the chain"
                           do! expectOracle s r.Diagnostics "after the stale snapshot"
                       })
+          }
+
+          testTask "a check refused for another parse's line directives waits for its own" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          let mutable fired = 0
+                          let mutable restored: Task = Task.CompletedTask
+
+                          // Another context parses E.fs with a #line directive just before E.fs is checked, and parses
+                          // a directive-free text again a moment later, as DeclarationLines' second context does
+                          s.Graph.OnScopedCheck(fun path ->
+                              if String.Equals(path, e, StringComparison.OrdinalIgnoreCase) && Interlocked.Exchange(&fired, 1) = 0 then
+                                  let text = s.Texts[e]
+                                  DeclarationChecker.Parse(s.Fresh, e, "# 1 \"elsewhere.fsy\"\n" + text) |> ignore
+
+                                  restored <-
+                                      Task.Run(fun () ->
+                                          Thread.Sleep 300
+                                          DeclarationChecker.Parse(s.Fresh, e, text) |> ignore))
+
+                          // A warning in E.fs, which the directive would move out of the project
+                          let! r = replace s e "let unrelated = 7" "let unrelated = 7\n\nlet pair = [ 1, 2 ]"
+                          do! restored
+                          Expect.equal fired 1 "the hook ran"
+                          Expect.exists r.Diagnostics[e] (fun d -> d.ErrorNumber = 3886) "E.fs reports its warning"
+                          Expect.isGreaterThan s.Graph.DirectiveRetries 0L "the check was refused and tried again"
+                          do! expectOracle s r.Diagnostics "after the other context's parse"
+                      })
           } ]
