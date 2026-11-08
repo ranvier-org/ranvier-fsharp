@@ -4,6 +4,7 @@ open System
 open System.Threading
 open System.Threading.Tasks
 open Expecto
+open FSharp.Compiler.Declarations
 open Rfs.Checker
 open Rfs.Checker.Tests.Deps
 
@@ -60,6 +61,20 @@ let tests =
                           Expect.equal r.Delta 0L "taking it out again adopts no check"
                           Expect.equal shifted 3L "and shifts the same rows back"
                           do! expectOracle s r.Diagnostics "after the blank line is taken out"
+                      })
+          }
+
+          testTask "a blank line under the header keeps the setup and shifts every row" {
+              do!
+                  withPromoted [ a ] (fun s ->
+                      task {
+                          let rows = (DeclarationChecker.Split(DeclarationChecker.Parse(s.Fresh, a, s.Texts[a]))).Length
+                          let text = s.Texts[a]
+                          let afterHeader = text.IndexOf('\n') + 1
+                          let! r, shifted = shifting s a (text.Insert(afterHeader, "\n"))
+                          Expect.equal r.Delta 0L "no CheckDeclaration adopted: the file is not set up again"
+                          Expect.equal shifted (int64 rows) "every row is shifted"
+                          do! expectOracle s r.Diagnostics "after the blank line under the header"
                       })
           }
 
