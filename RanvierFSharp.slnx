@@ -6,6 +6,7 @@
     <Project Path="src/Rfs.Lsp/Rfs.Lsp.fsproj" />
     <Project Path="src/Rfs.Oracle/Rfs.Oracle.fsproj" />
     <Project Path="src/Rfs.Projects/Rfs.Projects.fsproj" />
+    <Project Path="src/Rfs.Server/Rfs.Server.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj" />
@@ -13,5 +14,6 @@
     <Project Path="tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj" />
     <Project Path="tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj" />
     <Project Path="tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj" />
+    <Project Path="tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj" />
   </Folder>
 </Solution>
