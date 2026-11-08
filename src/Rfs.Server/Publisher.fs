@@ -442,11 +442,22 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
                 gate.Release() |> ignore
         }
 
-    /// Completes when everything queued so far has run. For tests.
-    member internal _.Flushed() : Task =
+    /// Completes when everything queued so far has run: a request that reads a file's latest text waits for it, as the
+    /// edits before it may still be queued. Faults with ObjectDisposedException once the publisher is disposed.
+    member _.Barrier() : Task =
         let done' = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-        post (fun () -> done'.SetResult())
-        done'.Task
+
+        if queue.Writer.TryWrite(fun () -> done'.SetResult()) then
+            done'.Task
+        else
+            Task.FromException(ObjectDisposedException(nameof Publisher))
+
+    /// Completes when everything queued so far has run. For tests.
+    member internal this.Flushed() : Task = this.Barrier()
+
+    /// Parks the queue's consumer until `gate` is set, so what is queued after it waits. For tests.
+    member internal _.Hold(gate: ManualResetEventSlim) : unit =
+        post (fun () -> gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)
 
     /// How many graphs the publisher keeps state for. For tests.
     member internal _.RetainedGraphs: int = lastAdopted.Count + documents.VersionMaps

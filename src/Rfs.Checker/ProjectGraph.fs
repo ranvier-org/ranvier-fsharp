@@ -11,6 +11,41 @@ open FSharp.Compiler.Diagnostics
 open Ranvier
 open Rfs.Projects
 
+module private ReadSupport =
+    /// Takes the lock shared. A grant that arrives after `ct` ended the wait is released at once.
+    let acquireShared (l: AsyncReaderWriterLock) (ct: CancellationToken) : Task<IDisposable> =
+        task {
+            let grant = l.ReadAsync()
+
+            try
+                return! grant.WaitAsync ct
+            with :? OperationCanceledException ->
+                grant.ContinueWith(
+                    (fun (t: Task<IDisposable>) -> if t.IsCompletedSuccessfully then t.Result.Dispose()),
+                    TaskScheduler.Default
+                )
+                |> ignore
+
+                return raise (OperationCanceledException ct)
+        }
+
+    /// The object the fork holds while it checks the file (ProjectChecks.FileLock, internal to the fork).
+    let fileLockOf (ctx: ProjectContext) : string -> obj =
+        let flags = Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
+        let checks = typeof<ProjectContext>.GetProperty("Checks", flags).GetValue ctx
+        let m = checks.GetType().GetMethod("FileLock", flags)
+        fun name -> m.Invoke(checks, [| box name |])
+
+open ReadSupport
+
+/// A file's settled result with the parse and text it is for.
+type FileView =
+    { Result: FileResult
+      Parse: FSharpParseFileResults
+      Text: string
+      /// The graph's version of the text (the one `SetText` returned)
+      Version: int64 }
+
 /// <summary>
 /// A project checked on a Ranvier graph, re-checking only what an edit can change.
 /// </summary>
@@ -245,6 +280,66 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             invalidArg (nameof file) $"%s{file} is a signature file"
 
         settled (fun () -> readSettled i (fun f version -> f.Results version))
+
+    /// Runs `read` off the graph thread on the file's published result, once it is settled on its latest text (as for
+    /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart shared, so no
+    /// finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
+    /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
+    /// signature file, which has no FileResult, and with InvalidOperationException when called holding the file's
+    /// check lock.
+    member _.ReadFile(file: string, read: FileView -> 'T, ct: CancellationToken) : Task<'T> =
+        let i = indexOf file
+
+        if isSignatureFile files[i] then
+            invalidArg (nameof file) $"%s{file} is a signature file"
+
+        let node = files[i] :?> IReadableFile
+        let fileLock = fileLockOf project.Context files[i].Path
+
+        // m2: reading CheckResults takes the FileStart's lock and then the file's check lock; never the other way round
+        let guard () =
+            if Monitor.IsEntered fileLock then
+                invalidOp $"%s{file}: read while holding the file's check lock"
+
+        guard ()
+
+        let readable () = readSettled i (fun _ version -> node.Readable version)
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            let mutable answer = ValueNone
+
+            while answer.IsNone do
+                let! r = host.WhenSettled(readable, linked.Token)
+
+                let run (r: Readable) =
+                    Task.Run(fun () ->
+                        guard ()
+
+                        read
+                            { Result = r.Result
+                              Parse = r.Parsed.Parse
+                              Text = r.Parsed.Text
+                              Version = r.Parsed.Version })
+
+                match r.Lock with
+                | ValueNone ->
+                    let! v = run r
+                    answer <- ValueSome v
+                | ValueSome l ->
+                    let! held = acquireShared l linked.Token
+                    use _ = held
+                    // A finish may have run between the settle and the lock; one in flight now changes the inputs first
+                    let! again = host.Read(fun () -> try readable () with NotReadyException _ -> ValueNone)
+
+                    match again with
+                    | ValueSome a when obj.ReferenceEquals(a.Identity, r.Identity) ->
+                        let! v = run r
+                        answer <- ValueSome v
+                    | _ -> ()
+
+            return answer.Value
+        }
 
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.

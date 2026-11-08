@@ -37,6 +37,22 @@ type internal Published =
     /// Demoted: the last finish's FileResult, kept until the file's text or setup changes
     | Kept of KeptResult
 
+/// A published result with what a reader of it needs.
+[<NoEquality; NoComparison>]
+type internal Readable =
+    { Parsed: Parsed
+      Result: FileResult
+      /// The lock of the FileStart a declaration-level result was finished on: a reader holds it shared, so no finish
+      /// runs on that FileStart meanwhile
+      Lock: AsyncReaderWriterLock voption
+      /// The same object while the same result is published
+      Identity: obj }
+
+/// An implementation file's node, read for its settled published result.
+type internal IReadableFile =
+    /// The published result when it is for text version `version` and the files it was set up from are current
+    abstract Readable: version: int64 -> Readable voption
+
 /// Files checked whole (FileLevel): an implementation file by CheckFile, a signature file by CheckSignatureFile, each
 /// set up from the signatures of the files it depends on. An implementation file can be promoted to be checked one
 /// declaration at a time.
@@ -462,7 +478,33 @@ module internal WholeFile =
                     [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start ]
                 | _ -> []
 
-            member _.Activate() = activate () }
+            member _.Activate() = activate ()
+
+          interface IReadableFile with
+              member _.Readable version =
+                  match current version with
+                  | ValueSome(ByDeclaration(_, f)) ->
+                      finishedAt version f
+                      |> ValueOption.map (fun f ->
+                          { Parsed = f.Parsed
+                            Result = f.FileResult
+                            Lock = ValueSome f.Start.Lock
+                            Identity = box f })
+                  | ValueSome(Kept k) ->
+                      keptAt version k
+                      |> ValueOption.map (fun r ->
+                          { Parsed = k.Key.Parsed
+                            Result = r
+                            Lock = ValueNone
+                            Identity = box k })
+                  | ValueSome Whole ->
+                      settledAt project file whole version
+                      |> ValueOption.map (fun (key, r) ->
+                          { Parsed = key.Parsed
+                            Result = r
+                            Lock = ValueNone
+                            Identity = box r })
+                  | ValueNone -> ValueNone }
 
     /// A signature file, file `index` of the project. Its diagnostics are its parse's: CheckSignatureFile reports none.
     let signature

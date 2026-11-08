@@ -104,7 +104,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                             <| U2.C1
                                 { TextDocumentSyncOptions.Default with
                                     OpenClose = Some true
-                                    Change = Some TextDocumentSyncKind.Incremental } }
+                                    Change = Some TextDocumentSyncKind.Incremental }
+                        HoverProvider = Some(U2.C1 true) }
 
                 return
                     Ok
@@ -201,7 +202,47 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentDocumentSymbol(_) = notImplemented
         member _.TextDocumentFoldingRange(_) = notImplemented
         member _.TextDocumentFormatting(_) = notImplemented
-        member _.TextDocumentHover(_) = notImplemented
+        member _.TextDocumentHover(p: HoverParams) =
+            async {
+                let! ct = Async.CancellationToken
+
+                try
+                    // The edits before this request may still be queued; its answer is for the text they leave
+                    do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                    let path = Paths.ofUri p.TextDocument.Uri
+
+                    match workspace.OwnersOf path with
+                    | [] -> return Ok None
+                    | graph :: _ ->
+                        let! text =
+                            Hover.at graph path (int p.Position.Line) (int p.Position.Character) ct
+                            |> Async.AwaitTask
+
+                        return
+                            Ok(
+                                text
+                                |> Option.map (fun t ->
+                                    { Contents = U3.C1 { Kind = MarkupKind.Markdown; Value = t }
+                                      Range = None })
+                            )
+                with ex ->
+                    let rec root (e: exn) =
+                        match e with
+                        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
+                        | e -> e
+
+                    match root ex with
+                    // The project went away (a reload hides it while it loads again), or the server is shutting down.
+                    // A request the client cancelled never gets here: the library cancels the async itself.
+                    | :? OperationCanceledException
+                    | :? ObjectDisposedException -> return Ok None
+                    // A signature file, which has no result to read, or a position the file does not have
+                    | :? ArgumentException -> return Ok None
+                    | e ->
+                        eprintfn "[ranvierautocomplete] hover failed: %O" e
+                        return LspResult.internalError e.Message
+            }
+
         member _.TextDocumentImplementation(_) = notImplemented
         member _.TextDocumentInlayHint(_) = notImplemented
         member _.TextDocumentInlineValue(_) = notImplemented
@@ -260,7 +301,8 @@ module Server =
               "textDocument/didClose"
               "textDocument/didSave"
               "workspace/didChangeConfiguration"
-              "workspace/didChangeWatchedFiles" ]
+              "workspace/didChangeWatchedFiles"
+              "textDocument/hover" ]
 
     let private handlings () =
         defaultRequestHandlings ()
