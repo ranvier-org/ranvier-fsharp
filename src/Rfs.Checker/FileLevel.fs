@@ -55,8 +55,8 @@ module internal WholeFile =
         Array.forall current key.Files && Array.forall current key.Consulted
 
     /// A file's Current: its signature is settled, and so is everything the setup of the result it is from read. Cut
-    /// off on the answer, reading plain memos and the signature memo only, never an async memo (see Nodes). A failed
-    /// check counts as current: it is raised where its result is read, so nothing waits on it.
+    /// off on the answer. A failed check counts as current: it is raised where its result is read, so nothing waits on
+    /// it.
     let currentOf (project: ProjectShared) (signature: Memo<FileSig>) (key: Memo<SetupKey>) : Memo<bool> =
         createMemoWithComparer HashIdentity.Structural (fun _ ->
             match signature.TryValue, key.TryValue with
@@ -101,7 +101,7 @@ module internal WholeFile =
         (project: ProjectShared)
         (index: int)
         (file: FileText)
-        (deps: Memo<FileDepsValue>)
+        (deps: AsyncMemo<FileDepsValue>)
         (signatureOf: int -> Memo<FileSig>)
         : IFileNode =
         let ctx = project.Context
@@ -232,9 +232,8 @@ module internal WholeFile =
                     | ValueSome k when file.Text.Value.Version = k.Version && Setup.sameFiles scopedKey.Value k.Key -> Kept k
                     | _ -> Whole)
 
-        // Cut off by fingerprint, reading plain memos, never an async check directly (see Nodes). CheckFile and
-        // FinishFile give one text and setup the same fingerprint, compiler-generated names included (M2), so a
-        // promotion or a restart changes nothing after the file.
+        // Cut off by fingerprint. CheckFile and FinishFile give one text and setup the same fingerprint,
+        // compiler-generated names included (M2), so a promotion or a restart changes nothing after the file.
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ ->
                 match published.Value with
@@ -487,7 +486,7 @@ module internal WholeFile =
         (project: ProjectShared)
         (index: int)
         (file: FileText)
-        (deps: Memo<FileDepsValue>)
+        (deps: AsyncMemo<FileDepsValue>)
         (signatureOf: int -> Memo<FileSig>)
         : IFileNode =
         let ctx = project.Context
@@ -504,7 +503,7 @@ module internal WholeFile =
                     project.Measure("checkSignatureFile", fun () -> DeclarationChecker.CheckSignatureFile(ctx, key.Before, key.Parsed.Parse)))
                 (fun _ -> None)
 
-        // Cut off by fingerprint, reading the plain result memo, never the async check directly (see Nodes)
+        // Cut off by fingerprint
         let signature =
             createMemoWithComparer FileSig.Comparer (fun _ -> FileSig.Of(snd result.Value))
 

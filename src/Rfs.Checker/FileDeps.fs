@@ -219,11 +219,6 @@ type internal ProjectShared(ctx: ProjectContext) =
     member _.Ran = ran :> IObservable<_>
 
 /// Helpers for building the graph's nodes.
-///
-/// A memo with a cutoff comparer (createMemoWithComparer, or a memo that returns its previous value while equal) must
-/// never read an async memo directly: read the async memo through a plain memo (`createMemo (fun _ -> m.Value)`).
-/// Task 3 saw a reader of such a memo never woken once the async memo settled (a Ranvier lost wake-up, not reproduced
-/// in isolation: see RanvierWakeTests). FileDeps.create and the file-level signatures follow this rule.
 module internal Nodes =
 
     /// The async memo's last settled value while a new flight runs, so readers that only compare it with what they
@@ -427,32 +422,27 @@ module internal FileDeps =
     /// The dependencies of every file, from every file's current parse: re-run whenever any parse changes, so the
     /// checker's dependency snapshot is of the parses the value holds. Superseded flights do not run, so a late one
     /// never replaces a newer snapshot.
-    let create (project: ProjectShared) (files: FileText[]) : Memo<FileDepsValue> =
+    let create (project: ProjectShared) (files: FileText[]) : AsyncMemo<FileDepsValue> =
         let ctx = project.Context
         let gate = Gate()
 
-        let deps =
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
-                let parsed = Nodes.valuesOfAsync (files |> Array.map _.Parsed)
-                let ticket = gate.Issue()
+        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+            let parsed = Nodes.valuesOfAsync (files |> Array.map _.Parsed)
+            let ticket = gate.Issue()
 
-                Task.Run<FileDepsValue>(fun () ->
-                    gate.Run(
-                        ticket,
-                        fun () ->
-                            let dependencies =
-                                project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
+            Task.Run<FileDepsValue>(fun () ->
+                gate.Run(
+                    ticket,
+                    fun () ->
+                        let dependencies =
+                            project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
 
-                            { Parsed = parsed
-                              Dependencies = dependencies
-                              SameName = sameNames parsed
-                              HasDependents = hasDependents dependencies
-                              ImplementationOf = implementationsOf parsed }
-                    )))
-
-        // Read through a plain memo: the setup keys cut off on what they read, and a memo with a cutoff reading an async
-        // memo directly was seen to miss a wake-up once the async memo settled (a Ranvier lost wake-up)
-        createMemo (fun _ -> deps.Value)
+                        { Parsed = parsed
+                          Dependencies = dependencies
+                          SameName = sameNames parsed
+                          HasDependents = hasDependents dependencies
+                          ImplementationOf = implementationsOf parsed }
+                )))
 
 /// What a file's setup reads: the earlier files' signatures, either those of the files it depends on or every earlier
 /// one, and the file's parse.
@@ -533,7 +523,7 @@ module internal Setup =
     /// it, the signature file's contents included (CheckOneInput's PartialResultOnError), so the signature does not
     /// stand for it. Whether it fails is a cut-off memo of its own (`project.FailedOf`), so its other edits change
     /// nothing here.
-    let key (project: ProjectShared) (index: int) (deps: Memo<FileDepsValue>) (signatureOf: int -> Memo<FileSig>) (chain: bool) : Memo<SetupKey> =
+    let key (project: ProjectShared) (index: int) (deps: AsyncMemo<FileDepsValue>) (signatureOf: int -> Memo<FileSig>) (chain: bool) : Memo<SetupKey> =
         createMemo (fun previous ->
             let d = deps.Value
 
@@ -582,7 +572,7 @@ module internal Setup =
         (project: ProjectShared)
         (path: string)
         (index: int)
-        (deps: Memo<FileDepsValue>)
+        (deps: AsyncMemo<FileDepsValue>)
         (signatureOf: int -> Memo<FileSig>)
         (scopedKey: Memo<SetupKey>)
         (run: SetupKey -> 'R)

@@ -713,7 +713,7 @@ type internal IFileNode =
 [<Sealed>]
 type internal DeclFile
     (
-        split: Memo<Parsed>,
+        split: AsyncMemo<Parsed>,
         setup: Memo<DeclSetup>,
         current: Memo<Finished>,
         unresolved: Signal<DeclSetup voption>,
@@ -771,7 +771,7 @@ module internal FileNodes =
         (project: ProjectShared)
         (file: FileText)
         (index: int)
-        (deps: Memo<FileDepsValue>)
+        (deps: AsyncMemo<FileDepsValue>)
         (scopedKey: Memo<SetupKey>)
         (driven: Memo<bool>)
         : DeclFile =
@@ -794,14 +794,12 @@ module internal FileNodes =
                         Declarations = declarations
                         Prologue = Nodes.prologueOf p.Text declarations }))
 
-        // Read through a plain memo: the setup keeps its previous value while equal (see Nodes)
-        let split = createMemo (fun _ -> parsed.Value)
         let parsedLatest = Nodes.latestOf parsed
 
         let setup =
             createMemo (fun previous ->
                 let key = scopedKey.Value
-                let p = split.Value
+                let p = parsed.Value
                 project.SetupHook path
 
                 if not (obj.ReferenceEquals(p.Parse, key.Parsed.Parse)) then
@@ -899,7 +897,7 @@ module internal FileNodes =
         let inputs =
             createMemo (fun previous ->
                 let order = shared.Order.Value
-                let p = split.Value
+                let p = parsed.Value
                 let s = start.Value
                 let checks = order.Keys |> Array.map (fun k -> let row = shared.RowOf k in row, row.Check.Value)
 
@@ -1041,5 +1039,5 @@ module internal FileNodes =
                 if not (live.Contains k) then
                     published.Remove k |> ignore
 
-        DeclFile(split, setup, current, unresolved, publish, fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length)
+        DeclFile(parsed, setup, current, unresolved, publish, fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length)
 

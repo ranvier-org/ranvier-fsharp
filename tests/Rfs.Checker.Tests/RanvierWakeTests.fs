@@ -1,6 +1,6 @@
-/// A minimal shape of the lost wake-up Task 3 met (fix round 1, I2): a memo with a cutoff comparer that reads an async
-/// memo directly, a key memo that keeps its previous value while equal, and an async consumer of the key that returns
-/// its last value while the key is the same.
+/// A minimal shape of the lost wake-up Task 3 met (fix round 1, I2), fixed in Ranvier by #303: a memo with a cutoff
+/// comparer that reads an async memo directly, a key memo that keeps its previous value while equal, and an async
+/// consumer of the key that returns its last value while the key is the same.
 module Rfs.Checker.Tests.RanvierWakeTests
 
 open System
@@ -16,7 +16,7 @@ type private Shape =
       Upstream: AsyncMemo<int>
       Consumer: AsyncMemo<int> }
 
-/// `direct`: the cutoff memo reads the async memo itself; otherwise through a plain memo, the workaround.
+/// `direct`: the cutoff memo reads the async memo itself; otherwise through a plain memo.
 let private build (direct: bool) (random: Random) : Shape =
     let source = createSignal 0
 
