@@ -617,11 +617,12 @@ let tests = fuzz "OracleFuzz" FileLevel
 [<Tests>]
 let declarationTests = fuzz "OracleFuzzDeclarations" Declarations
 
+/// The m6 tests are slow: they run at milestones, with RFS_M6_TESTS=1, not in the default run
 [<Tests>]
 let unreadTests =
     testSequenced
     <| testList
         "OracleFuzzUnread"
-        [ for mode in [ FileLevel; Declarations ] do
+        [ for mode in (if Environment.GetEnvironmentVariable "RFS_M6_TESTS" = "1" then [ FileLevel; Declarations ] else []) do
               yield testTask $"%A{mode} SigChain2 seed 1515: work finishes with no reader" { do! runUnread sigChain2Project mode 1515 200 }
               yield testTask $"%A{mode} SigChain2: a signature file's comment finishes with no reader" { do! runUnreadSignatures mode } ]
