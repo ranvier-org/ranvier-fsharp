@@ -36,6 +36,9 @@ let private abbreviationBattery (name: string) (abbreviation: string -> string) 
             do! expectOracle s r.Diagnostics "int"
             let! r = edit s d (source "string")
             do! expectOracle s r.Diagnostics "string"
+
+            if name = "abbreviation: a value chain" then
+                Expect.contains (r.NamesIn d) "z" "z's type is A, which it names only through y"
             let! r = edit s d (source "int")
             do! expectOracle s r.Diagnostics "int again"
             let! r = edit s d (source "int64")
@@ -370,16 +373,16 @@ let tests =
                   do! expectOracle s r.Diagnostics "last edited"
               })
 
-          abbreviationBattery "abbreviation: a value chain" (sprintf "type A = %s") [ "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let z = y + y" ]
-          abbreviationBattery "abbreviation: a function result" (sprintf "type A = %s") [ "let g () : A = Unchecked.defaultof<A>"; "g () |> ignore"; "let h = g () + g ()" ]
+          abbreviationBattery "abbreviation: a value chain" (sprintf "type A = %s") [ "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let z = y + 1" ]
+          abbreviationBattery "abbreviation: a function result" (sprintf "type A = %s") [ "let g () : A = Unchecked.defaultof<A>"; "g () |> ignore"; "let h = g () + 1" ]
           abbreviationBattery "abbreviation: member lookup through it" (sprintf "type A = %s") [ "let x: A = Unchecked.defaultof<A>"; "let n = x.ToString().Length"; "let m = x.Length" ]
-          abbreviationBattery "abbreviation of an abbreviation" (sprintf "type A = %s") [ "type B = A"; "let x: B = Unchecked.defaultof<B>"; "let y = x + x" ]
-          abbreviationBattery "abbreviation: generic" (fun t -> $"type L<'x> = list<'x * %s{t}>") [ "let e: L<int> = []"; "let h = e.Head"; "let s = snd h + snd h" ]
+          abbreviationBattery "abbreviation of an abbreviation" (sprintf "type A = %s") [ "type B = A"; "let x: B = Unchecked.defaultof<B>"; "let y = x + 1" ]
+          abbreviationBattery "abbreviation: generic" (fun t -> $"type L<'x> = list<'x * %s{t}>") [ "let e: L<int> = []"; "let h = e.Head"; "let s = snd h + 1" ]
           abbreviationBattery "abbreviation: an attribute through it" (fun t -> "type Attr = System." + (if t = "int" then "ObsoleteAttribute" elif t = "string" then "SerializableAttribute" else "FlagsAttribute")) [ "[<Attr>]\ntype U() = class end"; "let u = U()" ]
           abbreviationBattery "abbreviation: a union through it" (fun t -> $"type Un = | Case of %s{t}\n\ntype A = Un") [ "let a = A.Case Unchecked.defaultof<_>"; "let f (x: A) = match x with Case v -> v"; "let b = f a" ]
           abbreviationBattery "abbreviation: a measure" (fun t -> "[<Measure>] type m\n\n[<Measure>] type q = " + (if t = "int" then "m" elif t = "string" then "m m" else "m m m")) [ "let x = 1.0<q>"; "let y: float<m> = x" ]
           abbreviationBattery "abbreviation: a measure attribute by another name" (fun t -> "type MA = MeasureAttribute\n\n[<MA>] type m\n\n[<MA>] type q = " + (if t = "int" then "m" elif t = "string" then "m m" else "m m m")) [ "let x = 1.0<q>"; "let y: float<m> = x" ]
-          abbreviationBattery "abbreviation shadowing an earlier type's name" (fun t -> $"type T() =\n    member _.A = 1\n\nlet early = T()\n\ntype T = %s{t}") [ "let t: T = Unchecked.defaultof<T>"; "let n = early.A"; "let z = t + t" ]
+          abbreviationBattery "abbreviation shadowing an earlier type's name" (fun t -> $"type T() =\n    member _.A = 1\n\nlet early = T()\n\ntype T = %s{t}") [ "let t: T = Unchecked.defaultof<T>"; "let n = early.A"; "let z = t + 1" ]
           abbreviationBattery "abbreviation of a project type" (fun t -> $"type R = {{ V: %s{t} }}\n\ntype A = R") [ "let mk (v: A) = v"; "let w = (mk { V = Unchecked.defaultof<_> }).V"; "let j = w" ]
 
           testTask "abbreviation named in a signature file" {
@@ -397,20 +400,25 @@ let tests =
               do! expectOracle s r.Diagnostics "the implementation's target differs"
               let! (r: Edit) = edit s e (source "int")
               do! expectOracle s r.Diagnostics "and agrees again"
-              let! (r: Edit) = edit s e (source "int ")
-              do! expectOracle s r.Diagnostics "the same target re-checked"
+              let! (r: Edit) = edit s e (source " int")
+              Expect.contains (r.NamesIn e) "A" "A re-checks with the same print"
+              do! expectOracle s r.Diagnostics "the same target re-checked, user holding the old A"
+              let! (r: Edit) = edit s e (source " int" + "\nlet added = 1\n")
+              do! expectOracle s r.Diagnostics "conformance with a kept user of the old A"
           }
 
           inBothModes "a unit of measure re-checked gives its users one unit" (fun s ->
               task {
                   let source (gap: string) (y: string) =
-                      lines [ $"[<Measure>] type m%s{gap}"; "let x = 1.0<m>"; y ]
+                      lines [ $"[<Measure>] %s{gap}type m"; "let x = 1.0<m>"; "let w = x"; y ]
 
-                  let! r = edit s d (source "" "let y: float<m> = x")
+                  let! r = edit s d (source "" "let y: float<m> = w")
+                  Expect.isEmpty r.Diagnostics[d] "m is a unit"
                   do! expectOracle s r.Diagnostics "the source"
-                  let! r = edit s d (source "  " "let y: float<m> = x")
+                  let! r = edit s d (source "  " "let y: float<m> = w")
+                  Expect.contains (r.NamesIn d) "m" "the unit re-checks"
                   do! expectOracle s r.Diagnostics "the unit re-checked"
-                  let! r = edit s d (source "  " "let y: float<m> = x + x")
+                  let! r = edit s d (source "  " "let y: float<m> = w + 1.0<m>")
                   do! expectOracle s r.Diagnostics "a row meets the unit again"
               })
 
@@ -436,31 +444,150 @@ let tests =
               Expect.isLessThanOrEqual (s.Graph.EnvExtends - extends) (int64 (2 * n)) "environments are assembled in file order"
           }
 
+          inBothModes "an aliased unit of measure with static members re-checked gives its users one unit" (fun s ->
+              task {
+                  let source (gap: string) (y: string) =
+                      lines
+                          [ "type MA = MeasureAttribute"
+                            $"[<MA>]%s{gap}\ntype m =\n    static member X = 1"
+                            "let x = 1.0<m>"
+                            "let w = x"
+                            y ]
+
+                  let! r = edit s d (source "" "let y: float<m> = w")
+                  Expect.equal (String.Join(";", r.Diagnostics[d] |> Array.map _.Message)) "" "m is a unit"
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source " " "let y: float<m> = w")
+                  Expect.contains (r.NamesIn d) "m" "the unit re-checks"
+                  do! expectOracle s r.Diagnostics "the unit re-checked"
+                  let! r = edit s d (source " " "let y: float<m> = w + 1.0<m>")
+                  do! expectOracle s r.Diagnostics "a row meets x's unit and the new one"
+              })
+
+          inBothModes "an aliased AutoOpen on a module reaches rows through no name" (fun s ->
+              task {
+                  let source (attribute: string) =
+                      lines
+                          [ $"type AO = %s{attribute}"
+                            "let x = 1"
+                            "[<AO>]\nmodule M =\n    let x = \"s\""
+                            "let y = x + 1" ]
+
+                  let! r = edit s d (source "System.ObsoleteAttribute")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "AutoOpenAttribute")
+                  do! expectOracle s r.Diagnostics "the module opens itself now"
+                  let! r = edit s d (source "System.ObsoleteAttribute")
+                  do! expectOracle s r.Diagnostics "and stops"
+              })
+
+          testTask "a later file set up from a user of an abbreviation of this file's type sees one type" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let later = fileOf "E.fs"
+
+              let source (gap: string) (rest: string) =
+                  lines [ "type T() =\n    member _.V = 1"; $"type A =%s{gap} T"; "let x: A = T()"; "let y = x"; rest ]
+
+              let! (r: Edit) = edit s d (source "" "let k = 0")
+              do! expectOracle s r.Diagnostics "the source"
+              let! (r: Edit) = edit s later (s.Texts[later] + "\nlet viaD: Deps.D.T = Deps.D.y\n\nlet viaA: Deps.D.A = Deps.D.y\n")
+              do! expectOracle s r.Diagnostics "a later file uses them"
+              let! (r: Edit) = edit s d (source " " "let k = 0")
+              Expect.contains (r.NamesIn d) "y" "y cannot keep the old A: it points at the unmapped T"
+              do! expectOracle s r.Diagnostics "A re-checked with the same print"
+              let! (r: Edit) = edit s d (source " " "let k = 0\n\nlet added = 1")
+              do! expectOracle s r.Diagnostics "D.fs's signature changed, so the later file begins again"
+          }
+
+          testTask "a later file set up from a kept user of an abbreviation of an outside type sees one type" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let later = fileOf "E.fs"
+
+              let source (gap: string) (rest: string) =
+                  lines [ $"type A =%s{gap} int list"; "let x: A = []"; "let y = x"; rest ]
+
+              let! (r: Edit) = edit s d (source "" "let k = 0")
+              do! expectOracle s r.Diagnostics "the source"
+              let! (r: Edit) = edit s later (s.Texts[later] + "\nlet viaD: int list = Deps.D.y\n\nlet viaA: Deps.D.A = Deps.D.y\n")
+              do! expectOracle s r.Diagnostics "a later file uses them"
+              let! (r: Edit) = edit s d (source " " "let k = 0")
+              Expect.isFalse (List.contains "y" (r.NamesIn d)) "y keeps the old A"
+              do! expectOracle s r.Diagnostics "A re-checked with the same print"
+              let! (r: Edit) = edit s d (source " " "let k = 0\n\nlet added = 1")
+              do! expectOracle s r.Diagnostics "D.fs's signature changed, so the later file begins again"
+          }
+
           inBothModes "an abbreviation edit re-checks only its users" (fun s ->
               task {
                   let source (target: string) =
-                      lines [ $"type A = %s{target}"; "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let unrelated = 1" ]
+                      lines [ $"type A = %s{target}"; "let unrelated = 1"; "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let z = y + 1" ]
 
                   let! r = edit s d (source "int")
                   do! expectOracle s r.Diagnostics "the source"
                   let! r = edit s d (source "int64")
                   Expect.isFalse (List.contains "unrelated" (r.NamesIn d)) "a row that holds no A is kept"
                   Expect.contains (r.NamesIn d) "y" "y's type is A"
+                  Expect.contains (r.NamesIn d) "z" "and so is z's"
                   do! expectOracle s r.Diagnostics "the target changed"
               })
 
           inBothModes "an unchanged-print abbreviation re-check keeps later rows" (fun s ->
               task {
                   let source (gap: string) =
-                      lines [ $"type A = int%s{gap}"; "let x: A = Unchecked.defaultof<A>"; "let y = x + 1" ]
+                      lines [ $"type A =%s{gap} int"; "let x: A = Unchecked.defaultof<A>"; "let y = x + 1" ]
 
                   let! r = edit s d (source "")
                   do! expectOracle s r.Diagnostics "the source"
                   let! r = edit s d (source "  ")
-                  Expect.isFalse (List.contains "y" (r.NamesIn d)) "A's print is the same, and A's entity is looked through"
+                  Expect.equal (r.NamesIn d) [ "A" ] "A's print is the same, and type equivalence looks through its entity"
                   do! expectOracle s r.Diagnostics "same print"
-                  let! r = edit s d (lines [ "type A = int  "; "let x: A = Unchecked.defaultof<A>"; "let y = x + 2" ])
+                  let! r = edit s d (lines [ "type A =   int"; "let x: A = Unchecked.defaultof<A>"; "let y = x + 2" ])
                   do! expectOracle s r.Diagnostics "a row mixing the old A and the new"
+              })
+
+          // C1: a row checked after A's same-print re-check meets a kept row's old A
+          inBothModes "a row keeps an old abbreviation it reached through a kept row" (fun s ->
+              task {
+                  let source (gap: string) (target: string) (z: int) =
+                      lines [ $"type A =%s{gap} %s{target}"; "let x: A = Unchecked.defaultof<A>"; "let y = x"; $"let z = y + %d{z}" ]
+
+                  let! r = edit s d (source "" "int" 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source " " "int" 1)
+                  Expect.equal (r.NamesIn d) [ "A" ] "A re-checks with the same print, and its users are kept"
+                  do! expectOracle s r.Diagnostics "same print"
+                  let! r = edit s d (source " " "int" 2)
+                  Expect.contains (r.NamesIn d) "z" "z re-checks, reaching the old A through y"
+                  do! expectOracle s r.Diagnostics "z edited"
+                  let! r = edit s d (source " " "string" 2)
+                  Expect.contains (r.NamesIn d) "z" "z depends on A, whichever A y holds"
+                  do! expectOracle s r.Diagnostics "the target changed"
+              })
+
+          inBothModes "a row keeps a type it reached through a kept row's old abbreviation" (fun s ->
+              task {
+                  let source (gap: string) (literal: int) (z: string) =
+                      lines
+                          [ $"type T() =\n    member _.V = %d{literal}"
+                            $"type A =%s{gap} T"
+                            "let x: A = T()"
+                            "let y = x"
+                            z
+                            "let takes (t: T) = t.V" ]
+
+                  let! r = edit s d (source "" 1 "let z = y")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source " " 1 "let z = y")
+                  do! expectOracle s r.Diagnostics "same print"
+                  let! r = edit s d (source " " 1 "let z = (y)")
+                  do! expectOracle s r.Diagnostics "z edited"
+                  let! r = edit s d (source " " 2 "let z = (y)")
+                  Expect.contains (r.NamesIn d) "z" "z holds T through the old A"
+                  do! expectOracle s r.Diagnostics "T's body edited"
+                  let! r = edit s d (source " " 2 "let z: T = (y)")
+                  do! expectOracle s r.Diagnostics "a row meets T again"
               })
 
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->

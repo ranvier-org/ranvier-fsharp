@@ -263,7 +263,7 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
 /// through its signature, which is reused while its fingerprint is the same, whatever lines its items moved to. That
 /// is an open gap this check does not cover: the fuzz saw C.fs point one line off into B.fs (task-7-report.md, fix
 /// round 1), and Task 16 carries it.
-let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+let private locationsOf (keptValues: bool) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
     |> Seq.map (fun u ->
         let elsewhere =
@@ -277,9 +277,10 @@ let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FS
         match u.Symbol with
         | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere"
         | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
-        // A kept row's use of a value checked again since holds the old value, which conformance did not reach: its
-        // signature location is an open gap too ("a kept user ..." in RecheckTests), carried to the query tasks
-        | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue ->
+        // A kept row's use of a module-level value checked again since holds the old value, which conformance did not
+        // reach: its signature location is an open gap ("a kept user ..." in RecheckTests), carried to the query tasks.
+        // Members need no such allowance: their users re-check with the type.
+        | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as v when keptValues && v.IsModuleValueOrMember && not v.IsMember ->
             $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, implementation %A{u.Symbol.ImplementationLocation}"
         | _ ->
             $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
@@ -287,10 +288,10 @@ let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FS
 
 /// The lines by which the symbol locations of the graph's published results for `file` differ from the interactive
 /// checker's for the current texts (Task 7 review I1: a shifted row must not point at another declaration's old items).
-let locationDiff (s: Session) (file: string) : Task<string list> =
+let private locationDiffWith (keptValues: bool) (s: Session) (file: string) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
-        let actual = locationsOf file graph[file].CheckResults
+        let actual = locationsOf keptValues file graph[file].CheckResults
         let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
@@ -299,12 +300,17 @@ let locationDiff (s: Session) (file: string) : Task<string list> =
             checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
             |> Async.StartAsTask
 
-        let expected = locationsOf file reference
+        let expected = locationsOf keptValues file reference
 
         return
             [ for l in Set.difference expected actual -> "expected only: " + l
               for l in Set.difference actual expected -> "actual only: " + l ]
     }
+
+let locationDiff (s: Session) (file: string) = locationDiffWith false s file
+
+/// As `locationDiff`, for the fuzz, whose edits reach the open gap in `locationsOf`: only for a signed file.
+let locationDiffOfFuzz (s: Session) (file: string) = locationDiffWith (s.Texts.ContainsKey(file + "i")) s file
 
 let expectLocations (s: Session) (file: string) (what: string) =
     task {

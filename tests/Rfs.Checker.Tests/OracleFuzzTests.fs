@@ -382,51 +382,123 @@ let private implicitThroughAugmentation (counter: int ref) : Mutation =
             |> Option.map (fun t -> t, $"add Implicit%d{n}")
 
 /// A variable a later row solves, with readers before and after the solver. Flips what solves it to another type, moves
-/// the solving to the row before the solver or back, deletes it, or adds a second variable linked to it (R12).
+/// the solving to the row before the solver or back, deletes it, or links a second variable to it (R12).
 let private windowSolver (counter: int ref) : Mutation =
     fun random text ->
-        let m = Regex.Match(text, @"let win(\d+) = ref \[\]")
+        let existing = [| for m in Regex.Matches(text, @"let win(\d+) = ref \[\]") -> m.Groups[1].Value |]
 
-        if not m.Success then
+        if existing.Length = 0 then
             counter.Value <- counter.Value + 1
             let n = counter.Value
             appended text $"let win%d{n} = ref []\n\nlet before%d{n} = 1\n\nlet read%d{n} = win%d{n}.Value.Length\n\nlet solve%d{n} () = win%d{n}.Value <- [ 1 ]\n\nlet late%d{n} = win%d{n}.Value.Head + 1" |> Option.map (fun t -> t, $"add win%d{n}")
         else
-            let n = m.Groups[1].Value
+            let n = pick random existing
             let solver = Regex.Match(text, $@"let solve%s{n} \(\) = [^\n]*")
             let before = Regex.Match(text, $@"let before%s{n} = [^\n]*")
+            let link = Regex.Match(text, $@"let link%s{n} = ref \[\]\n\nlet linked%s{n} \(\) = win%s{n}.Value <- link%s{n}.Value\n\n")
 
             if not solver.Success || not before.Success then
                 None
             else
-                match random.Next 5 with
+                match random.Next 6 with
                 | 0 -> Some(text.Replace(solver.Value, $"let solve%s{n} () = win%s{n}.Value <- [ \"s\" ]"), $"win%s{n} solved to string")
                 | 1 -> Some(text.Replace(solver.Value, $"let solve%s{n} () = win%s{n}.Value <- [ 1 ]"), $"win%s{n} solved to int")
                 | 2 -> Some(text.Replace(before.Value, $"let before%s{n} = (win%s{n}.Value <- [ 1 ])"), $"win%s{n} solved earlier")
                 | 3 -> Some(text.Replace(before.Value, $"let before%s{n} = 1"), $"win%s{n} not solved earlier")
+                | 4 when link.Success -> Some(text.Replace(link.Value, ""), $"win%s{n}'s link removed")
+                | 4 ->
+                    Some(
+                        text.Replace(solver.Value, $"let link%s{n} = ref []\n\nlet linked%s{n} () = win%s{n}.Value <- link%s{n}.Value\n\n" + solver.Value),
+                        $"win%s{n} linked to a second variable"
+                    )
                 | _ -> Some(text.Replace(solver.Value, $"let solve%s{n} () = ()"), $"win%s{n} solver gone")
+
+/// A type and an augmentation of it far apart, with rows between them that reach the augmentation's member or overload, a
+/// subclass of the type, a variable left open across the span, or nothing (R11, and R12's windows overlapping its span).
+let private farAugmentation (counter: int ref) : Mutation =
+    fun random text ->
+        let existing = [| for m in Regex.Matches(text, @"type Far(\d+) with") -> m |]
+
+        if existing.Length = 0 then
+            counter.Value <- counter.Value + 1
+            let n = counter.Value
+
+            appended text $"type Far%d{n}() =\n    member _.M(x: obj) = 1\n\nlet farFirst%d{n} = 1\n\ntype Far%d{n} with\n    member _.M(x: string) = 2\n    member _.B = 2\n\nlet farLast%d{n} = Far%d{n}().M(\"s\")"
+            |> Option.map (fun t -> t, $"add Far%d{n}")
+        else
+            let m = pick random existing
+            let n = m.Groups[1].Value
+            counter.Value <- counter.Value + 1
+            let k = counter.Value
+            let added = Regex.Match(text, $@"let farRow%s{n}_\d+[^\n]*\n\n|type FarSub%s{n}_\d+\(\) =\n    inherit Far%s{n}\(\)\n\n")
+
+            if added.Success && random.Next 3 = 0 then
+                Some(replaceMatch text added "", $"remove a row between Far%s{n} and its augmentation")
+            else
+                let row =
+                    match random.Next 5 with
+                    | 0 -> $"let farRow%s{n}_%d{k} () = Far%s{n}().B"
+                    | 1 -> $"let farRow%s{n}_%d{k} () = Far%s{n}().M(\"s\")"
+                    | 2 -> $"type FarSub%s{n}_%d{k}() =\n    inherit Far%s{n}()"
+                    | 3 -> $"let farRow%s{n}_%d{k} = ref []"
+                    | _ -> $"let farRow%s{n}_%d{k} = 1"
+
+                Some(replaceMatch text m (row + "\n\n" + m.Value), $"`%s{row}` between Far%s{n} and its augmentation")
 
 /// Toggles the target of an abbreviation, with a chain of values over it.
 let private abbreviationTarget (counter: int ref) : Mutation =
     fun _ text ->
-        let m = Regex.Match(text, @"type Abbr(\d+) = (int|int64|string)")
+        let m = Regex.Match(text, @"type Abbr(\d+) =( +)(int|int64|string)")
 
         if m.Success then
             let next =
-                match m.Groups[2].Value with
+                match m.Groups[3].Value with
                 | "int" -> "int64"
                 | "int64" -> "string"
                 | _ -> "int"
 
-            Some(replaceMatch text m $"type Abbr%s{m.Groups[1].Value} = %s{next}", $"Abbr%s{m.Groups[1].Value} -> %s{next}")
+            Some(replaceMatch text m $"type Abbr%s{m.Groups[1].Value} =%s{m.Groups[2].Value}%s{next}", $"Abbr%s{m.Groups[1].Value} -> %s{next}")
         else
             counter.Value <- counter.Value + 1
             let n = counter.Value
 
             appended
                 text
-                $"type Abbr%d{n} = int\n\nlet x%d{n}: Abbr%d{n} = Unchecked.defaultof<Abbr%d{n}>\n\nlet y%d{n} = x%d{n}\n\nlet z%d{n} = y%d{n} + y%d{n}"
+                $"type Abbr%d{n} = int\n\nlet x%d{n}: Abbr%d{n} = Unchecked.defaultof<Abbr%d{n}>\n\nlet y%d{n} = x%d{n}\n\nlet z%d{n} = y%d{n} + 1"
             |> Option.map (fun t -> t, $"add Abbr%d{n}")
+
+/// Adds a space inside an abbreviation, which re-checks it with the same print, then leaves `follow` to edit a row over it
+/// and then to change its target: a row that reached the old abbreviation through a kept row must still depend on it.
+let private abbreviationSamePrint (follow: (string -> (string * string) option) option ref) : Mutation =
+    fun _ text ->
+        let m = Regex.Match(text, @"type Abbr(\d+) =( +)(int|int64|string)")
+
+        if not m.Success then
+            None
+        else
+            let n = m.Groups[1].Value
+            let spaces = if m.Groups[2].Length > 3 then " " else m.Groups[2].Value + " "
+
+            follow.Value <-
+                Some(fun text ->
+                    let row = Regex.Match(text, $@"let z%s{n} = y%s{n} \+ (\d+)")
+
+                    if not row.Success then
+                        None
+                    else
+                        follow.Value <-
+                            Some(fun text ->
+                                let abbr = Regex.Match(text, $@"type Abbr%s{n} =( +)(int|int64|string)")
+
+                                if not abbr.Success then
+                                    None
+                                else
+                                    let target = if abbr.Groups[2].Value = "string" then "int" else "string"
+                                    Some(replaceMatch text abbr $"type Abbr%s{n} =%s{abbr.Groups[1].Value}%s{target}", $"Abbr%s{n} -> %s{target} after a row reached the old one"))
+
+                        Some(replaceMatch text row $"let z%s{n} = y%s{n} + %d{int row.Groups[1].Value + 1}", $"edit z%s{n} after Abbr%s{n}'s same-print re-check"))
+
+            Some(replaceMatch text m $"type Abbr%s{n} =%s{spaces}%s{m.Groups[3].Value}", $"a space inside Abbr%s{n}")
 
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
@@ -485,7 +557,11 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                windowSolver counter
                windowSolver counter
                abbreviationTarget counter
-               abbreviationTarget counter |]
+               abbreviationTarget counter
+               abbreviationSamePrint follow
+               abbreviationSamePrint follow
+               farAugmentation counter
+               farAugmentation counter |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
@@ -606,7 +682,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 blankLineEdits <- blankLineEdits + 1
 
                 // A shifted row must point where a full check does (Task 7 review I1), which no diagnostic shows
-                let! locations = locationDiff s file
+                let! locations = locationDiffOfFuzz s file
 
                 if not locations.IsEmpty then
                     fail ("symbol locations differ from a full check:\n" + String.concat Environment.NewLine locations)
