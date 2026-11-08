@@ -68,6 +68,43 @@ let tests =
                   host.Dispose()
           }
 
+          testTask "a wait in flight when its graph is disposed ends" {
+              let! (spec: Rfs.Projects.ProjectSpec) = Rfs.Projects.ProjectSpec.load depsProject
+              let host = GraphHost.Start "dispose-wait"
+              let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+              let! _ = graph.AllDiagnostics() |> settle
+              let gate = new System.Threading.ManualResetEventSlim(false)
+              let reached = TaskCompletionSource()
+
+              // E.fs's check is held, so the wait below cannot settle by itself
+              graph.OnScopedCheck(fun path ->
+                  if String.Equals(path, e, StringComparison.OrdinalIgnoreCase) then
+                      reached.TrySetResult() |> ignore
+                      gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+              try
+                  graph.SetText(e, System.IO.File.ReadAllText e + "\nlet inFlight = 1\n") |> ignore
+                  let waiting = graph.Diagnostics e
+                  do! reached.Task.WaitAsync(TimeSpan.FromSeconds 60.)
+                  Expect.isFalse waiting.IsCompleted "the wait is in flight"
+                  (graph :> IDisposable).Dispose()
+
+                  let! outcome =
+                      task {
+                          try
+                              let! _ = waiting.WaitAsync(TimeSpan.FromSeconds 30.)
+                              return "completed"
+                          with
+                          | :? TimeoutException -> return "hung"
+                          | _ -> return "ended"
+                      }
+
+                  Expect.equal outcome "ended" "the wait ends when its graph is disposed"
+              finally
+                  gate.Set()
+                  host.Dispose()
+          }
+
           testTask "body edit re-checks one declaration" {
               do!
                   withDeps (fun s ->

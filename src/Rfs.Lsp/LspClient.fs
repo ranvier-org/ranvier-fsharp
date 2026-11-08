@@ -368,6 +368,9 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
         settings <- newSettings.DeepClone()
         notify "workspace/didChangeConfiguration" (Protocol.obj' [ "settings", newSettings.DeepClone() ])
 
+    /// Sends a notification the typed members do not cover.
+    member _.Notify(method: string, parameters: JsonNode) : Task = notify method parameters
+
     /// The client's current text of a file opened with DidOpen and updated with DidChange.
     member _.Text(path: string) : string = documents[Protocol.normalizePath path]
 
