@@ -4,7 +4,7 @@ type T =
     new: unit -> T
     member M: t: int -> int
 
-val f: x: int -> y: int -> int
+val f: x: int -> (int -> int)
 
 val g: x: 'a -> 'a
 

@@ -456,6 +456,51 @@ let tests =
 
                 // C2 of the Task 6 review: the finish's conformance is undone by the next check of the file, and its
                 // check results, read after that, apply it again
+                // I1 of the Task 6 re-review: building the results applies the conformance again, and must not land
+                // between a re-check's undo of the finish and its check
+                testAsync "building a finish's check results waits for a re-check that undid the finish" {
+                    let fsi = "\ntype T =\n    new: unit -> T\n    member M: t: int -> int\n\nval use1: int\n"
+                    let fs = "\ntype T() =\n    member _.M(_: int) = 1\n\nlet use1 = T().M(t = 1)\n"
+                    let! c = withSignature fsi fs
+                    let f = c.File "B.fs"
+                    let last = f.Declarations.Length - 1
+                    let cold = f.Results[last]
+                    Expect.isNonEmpty cold.Diagnostics "useM's FS0495 against the unconformed T"
+                    use inGap = new Threading.ManualResetEventSlim()
+                    use built = new Threading.ManualResetEventSlim()
+                    let mutable recheck = Unchecked.defaultof<DeclarationResult>
+
+                    let checker =
+                        Threading.Thread(fun () ->
+                            recheck <- DeclarationChecker.CheckDeclaration(f.Start, f.Results[last - 1].EnvAfter, f.Declarations[last], Threading.CancellationToken.None))
+
+                    // Only on this test's re-check: other tests check Tiny's B.fs meanwhile. Once the results are built
+                    // the check goes on; when the build has to wait for the check, it goes on after a while.
+                    DeclarationChecker.AfterUndoHook <-
+                        fun _ ->
+                            if Threading.Thread.CurrentThread.ManagedThreadId = checker.ManagedThreadId then
+                                inGap.Set()
+                                built.Wait(TimeSpan.FromSeconds 2.) |> ignore
+
+                    try
+                        checker.Start()
+                        Expect.isTrue (inGap.Wait(TimeSpan.FromSeconds 60.)) "the re-check undid the finish"
+
+                        let reader =
+                            Threading.Tasks.Task.Run(fun () ->
+                                f.FileResult.CheckResults |> ignore
+                                built.Set())
+
+                        checker.Join()
+                        do! reader |> Async.AwaitTask
+                    finally
+                        DeclarationChecker.AfterUndoHook <- ignore
+
+                    Expect.equal recheck.Fingerprint cold.Fingerprint "the re-check sees T unconformed, as the cold check did"
+                    let diff = Diagnostics.compare (toLsp cold.Diagnostics) (toLsp recheck.Diagnostics)
+                    Expect.isEmpty diff $"the re-check keeps FS0495:\n%s{String.concat Environment.NewLine diff}"
+                }
+
                 testAsync "a finish's check results, read after a later check, show the implementation conformed" {
                     let fsi = "\ntype T =\n    new: unit -> T\n    /// From the signature\n    member M: t: int -> int\n\nval use1: int\nval after: int\n"
                     let fs = "\ntype T() =\n    member _.M(_: int) = 1\n\nlet use1 = T().M(1)\n\nlet after = use1 + 1\n"

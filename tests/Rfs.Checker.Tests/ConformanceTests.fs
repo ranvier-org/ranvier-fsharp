@@ -66,7 +66,7 @@ let private inMode (mode: FileMode) =
               do! roundTrip mode "member _.M(t: int) = t" "member _.M(_: int) = 1"
           }
 
-          testTask "an arity the signature truncates" { do! roundTrip mode "let f (x: int) y = x + y" "let f (x: int) = fun y -> x + y" }
+          testTask "an arity the signature truncates (two arguments to its one)" { do! roundTrip mode "let f (x: int) y = x + y" "let f (x: int) = let add y = x + y in add" }
 
           testTask "a type parameter the signature renames" { do! roundTrip mode "let g (x: 'a) = x" "let g (x: 'b) = x" }
 

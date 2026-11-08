@@ -305,7 +305,7 @@ let private conformedShape: Mutation =
     fun random text ->
         let toggles =
             [| "member _.M(t: int) = t", "member _.M(_: int) = 1"
-               "let f (x: int) y = x + y", "let f (x: int) = fun y -> x + y"
+               "let f (x: int) y = x + y", "let f (x: int) = let add y = x + y in add"
                "let g (x: 'a) = x", "let g (x: 'b) = x" |]
             |> Array.collect (fun (a, b) -> [| a, b; b, a |])
             |> Array.filter (fun (from, _) -> text.Contains from)
@@ -314,7 +314,7 @@ let private conformedShape: Mutation =
             None
         else
             let from, into = pick random toggles
-            Some(text.Replace(from, into), $"`%s{from}` -> `%s{into}`")
+            Some(text.Replace(from, into), $"conformed shape `%s{from}` -> `%s{into}`")
 
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
@@ -372,6 +372,8 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
         let mutable errorFiles = 0
         let mutable checks = 0L
         let mutable published = 0
+        // Edits conformedShape made: on SigConform every run must make some
+        let mutable conformedEdits = 0
 
         // Declarations mode starts with every implementation file wanted
         let wanted = Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -453,8 +455,14 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             checks <- checks + r.Delta
             published <- published + r.Checked.Length
 
+            if what.StartsWith "conformed shape " then
+                conformedEdits <- conformedEdits + 1
+
         printfn
-            $"%A{mode} seed %d{seed}: %d{steps} edits, %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
+            $"%A{mode} seed %d{seed}: %d{steps} edits (%d{conformedEdits} conformed-shape edits), %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
+
+        if project = sigConformProject then
+            Expect.isGreaterThan conformedEdits 0 $"%A{mode} seed %d{seed}: the run toggles what the signature file overwrites"
 
     }
 

@@ -374,6 +374,10 @@ Task 6 (after review round 1) follows that rule:
 - **The lazy check results apply it again.** Tooltips, go-to-declaration and symbol uses need the conformed items,
   so the lazy results apply the whole file's conformance again under the FileStart's and the file's locks when they
   are built. The next check of the file undoes it with the rest of the latest finish.
+  - The order is not left to timing. CheckDeclaration and ExtendEnv undo the finish and check while they hold the
+    FileStart's lock, so a build of the results cannot land between the undo and the check (re-review I1).
+  - Accepted (re-review M1): after that next check, a superseded FileResult's queries show the implementation
+    unconformed until the next finish's results are built. The server queries only the latest FileResult.
 - **Defaults.** The default captured at check time is still in the fingerprint: small's `HashSet` attribute, for a
   declaration that leaves variables unsolved but depends on no later declaration.
   - Later declarations see the variable unsolved, so the check fingerprints the declaration both before and after
