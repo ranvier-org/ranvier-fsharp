@@ -10,6 +10,7 @@
     <Compile Include="ConformanceTests.fs" />
     <Compile Include="ShiftGraphTests.fs" />
     <Compile Include="RanvierWakeTests.fs" />
+    <Compile Include="RecheckTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

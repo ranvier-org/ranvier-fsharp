@@ -294,6 +294,18 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     member private _.TypedOf(c: RowCheck) =
         NameIndex.typedKeys file.Path c.Key c.Result.TypedUses
 
+    /// The earlier declarations whose entities `c` holds, as the check before `before` saw them. Another check of one
+    /// gives new entities with the same fingerprint, and a later check that meets `c`'s and the new ones reports that
+    /// the type is not itself (FS0193), so `c` stands only while those are the entities it holds. `saw` gives the result
+    /// the check's environment held.
+    member private this.EntitiesHeld(c: RowCheck, before: DeclarationKey, saw: DeclarationKey -> RowCheck) =
+        this.TypedOf c
+        |> Array.filter (fun k ->
+            file.IsBefore(k, before)
+            && (match saw k with
+                | null -> false
+                | held -> held.Result.DefinesEntities))
+
     /// Checks the declaration on its own (read only while its role is Single), unless what it was last checked from is
     /// unchanged.
     member private this.RunCheck(ct: CancellationToken) : Task<RowCheck> =
@@ -323,7 +335,13 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 |> Array.distinct
 
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
-            let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)
+            let identityKeys =
+                if isNull previous then
+                    deps.Identity
+                else
+                    Array.append deps.Identity (this.EntitiesHeld(previous, key, previous.Saw)) |> Array.distinct
+
+            let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)
 
             // Unchanged but for the line it starts on (W1): shifted, not checked again, unless the checker refused it
             refusals.Value |> ignore
@@ -376,7 +394,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 )
             else
                 let start = file.Start.Value
-                this.AwaitSettled(Seq.append tokenKeys deps.Identity)
+                this.AwaitSettled(Seq.append tokenKeys identityKeys)
                 let earlier = file.Earlier(key, start)
 
                 // An earlier result with free inference variables whose segment has not formed yet: checks that solve
@@ -438,7 +456,18 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                     }
                 )
 
-            let identityKeys = outside (seq { for _, _, deps in members do yield! deps.Identity })
+            let identityKeys =
+                outside (
+                    seq {
+                        for r, _, deps in members do
+                            yield! deps.Identity
+
+                            match previousOf r with
+                            | null -> ()
+                            | c -> yield! this.EntitiesHeld(c, key, previous.Saw)
+                    }
+                )
+
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)
             refusals.Value |> ignore

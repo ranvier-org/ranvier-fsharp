@@ -330,6 +330,57 @@ let private blankLine: Mutation =
             let i = 1 + random.Next(ls.Length - 1)
             Some(unlines (Array.insertAt i "" ls), $"blank line inserted at %d{i + 1}")
 
+/// A top-level module file's text with `block` at its end, or None for a namespace, which holds no values.
+let private appended (text: string) (block: string) =
+    if text.TrimStart().StartsWith "namespace" then None else Some(text.TrimEnd('\n') + "\n\n" + block + "\n")
+
+/// A type with a kept function over it and a row that passes a new one to the function. Edits the type's body, which
+/// keeps its fingerprint, and leaves `follow` to edit the row next: a row that mixes the old entity and the new (X1).
+let private typeBodyThenUser (counter: int ref) (follow: (string -> (string * string) option) option ref) : Mutation =
+    fun random text ->
+        let bodies = [| for m in Regex.Matches(text, @"(type Body\d+\(\) =\n\s+member _\.A = )\d+") -> m |]
+
+        if bodies.Length = 0 then
+            counter.Value <- counter.Value + 1
+            let t = $"Body%d{counter.Value}"
+
+            appended text $"type %s{t}() =\n    member _.A = 1\n\nlet use%s{t} (t: %s{t}) = t.A\n\nlet row%s{t} = use%s{t} (%s{t}())"
+            |> Option.map (fun t' -> t', $"add %s{t} with a kept user")
+        else
+            let m = pick random bodies
+            let t = Regex.Match(m.Value, @"Body\d+").Value
+
+            follow.Value <-
+                Some(fun text ->
+                    let m = Regex.Match(text, $@"let row%s{t} = use%s{t} \(%s{t}\(\)\)( \+ 0)?")
+
+                    if not m.Success then
+                        None
+                    else
+                        let edited = if m.Groups[1].Success then m.Value.Replace(" + 0", "") else m.Value + " + 0"
+                        Some(replaceMatch text m edited, $"edit `%s{m.Value}` after its type's body"))
+
+            Some(replaceMatch text m (m.Groups[1].Value + string (random.Next 100)), $"edit the body of %s{t}")
+
+/// Toggles an op_Implicit in an augmentation, which a later row reaches through no name it shows (X9).
+let private implicitThroughAugmentation (counter: int ref) : Mutation =
+    fun _ text ->
+        let plain = Regex.Match(text, @"member _\.Other(\d+) = 1")
+        let implicitOp = Regex.Match(text, @"static member op_Implicit\(t: Implicit(\d+)\) : int = 1")
+
+        if plain.Success then
+            Some(replaceMatch text plain $"static member op_Implicit(t: Implicit%s{plain.Groups[1].Value}) : int = 1", "add op_Implicit to an augmentation")
+        elif implicitOp.Success then
+            Some(replaceMatch text implicitOp $"member _.Other%s{implicitOp.Groups[1].Value} = 1", "take op_Implicit out of an augmentation")
+        else
+            counter.Value <- counter.Value + 1
+            let n = counter.Value
+
+            appended
+                text
+                $"type Implicit%d{n}() =\n    member _.A = 1\n\nlet takes%d{n} (x: int) = x\n\ntype Implicit%d{n} with\n    member _.Other%d{n} = 1\n\nlet row%d{n} = takes%d{n} (Implicit%d{n}())"
+            |> Option.map (fun t -> t, $"add Implicit%d{n}")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -360,6 +411,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
         let pool = names s.Texts.Values
         let originals = Collections.Generic.Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let counter = ref 0
+        let follow = ref None
+        // Each file's edit the previous edit of it left to do next
+        let followed = Collections.Generic.Dictionary<string, string -> (string * string) option>(StringComparer.OrdinalIgnoreCase)
 
         let before =
             [| literal
@@ -376,7 +430,11 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                augmentationMember counter
                sameLine
                conformedShape
-               blankLine |]
+               blankLine
+               typeBodyThenUser counter follow
+               typeBodyThenUser counter follow
+               implicitThroughAugmentation counter
+               implicitThroughAugmentation counter |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
@@ -402,7 +460,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 wanted.Add f |> ignore
 
         for step in 1..steps do
-            let file = pick random files
+            let file = if followed.Count > 0 then Seq.head followed.Keys else pick random files
             // Now and then the edit is to promote or demote a file instead of its text
             let toggle = random.Next 8 = 0
             // Half the time the oracle is asked before the wanted files' builds have settled
@@ -410,13 +468,29 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
 
             // Now and then a file goes back to how it was, undoing its edits at once: errors otherwise pile up until
             // every file is broken and the checks run on error recovery alone.
+            let followUp =
+                match followed.TryGetValue file with
+                | true, next ->
+                    followed.Remove file |> ignore
+                    next s.Texts[file]
+                | _ -> None
+
             let text, what =
-                if toggle then
-                    s.Texts[file], (if wanted.Contains file then "demote" else "promote")
-                elif random.Next 6 = 0 then
-                    originals[file], "revert to the original"
-                else
-                    mutate random mutations s.Texts[file]
+                match followUp with
+                | Some edit when not toggle -> edit
+                | _ ->
+                    if toggle then
+                        s.Texts[file], (if wanted.Contains file then "demote" else "promote")
+                    elif random.Next 6 = 0 then
+                        originals[file], "revert to the original"
+                    else
+                        mutate random mutations s.Texts[file]
+
+            match follow.Value with
+            | Some next ->
+                followed[file] <- next
+                follow.Value <- None
+            | None -> ()
 
             let fail (problem: string) =
                 let texts =
