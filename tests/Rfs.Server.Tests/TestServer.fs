@@ -23,6 +23,25 @@ let startRun () : Task<LspClient * Task<int>> =
         return client, exitCode
     }
 
+/// Like `startRun`, and also hands out the server the connection created, for tests that reach into it.
+let startCapturing () : Task<LspClient * IDisposable * Task<Rfs.Server.RanvierServer>> =
+    task {
+        let toServer = new AnonymousPipeServerStream(PipeDirection.Out)
+        let serverReads = new AnonymousPipeClientStream(PipeDirection.In, toServer.ClientSafePipeHandle)
+        let fromServer = new AnonymousPipeServerStream(PipeDirection.In)
+        let serverWrites = new AnonymousPipeClientStream(PipeDirection.Out, fromServer.ClientSafePipeHandle)
+        let created = TaskCompletionSource<Rfs.Server.RanvierServer>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+        Task.Factory.StartNew(
+            (fun () -> Rfs.Server.Server.runWith (fun s -> created.TrySetResult s |> ignore) serverReads serverWrites),
+            TaskCreationOptions.LongRunning
+        )
+        |> ignore
+
+        let client = LspClient.Connect(fromServer, toServer)
+        return client, (client :> IDisposable), created.Task
+    }
+
 let start () : Task<LspClient * IDisposable> =
     task {
         let! client, _ = startRun ()

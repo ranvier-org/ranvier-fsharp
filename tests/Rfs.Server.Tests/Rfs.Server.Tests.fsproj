@@ -6,6 +6,7 @@
     <Compile Include="TestServer.fs" />
     <Compile Include="LifecycleTests.fs" />
     <Compile Include="WorkspaceTests.fs" />
+    <Compile Include="PublishTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -19,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rfs.Lsp\Rfs.Lsp.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Harness\Rfs.Harness.fsproj" />
     <ProjectReference Include="..\..\src\Rfs.Server\Rfs.Server.fsproj" />
   </ItemGroup>
 </Project>

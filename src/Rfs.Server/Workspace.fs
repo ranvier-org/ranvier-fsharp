@@ -259,10 +259,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let timeout = defaultArg loadTimeout (Workspace.DefaultLoadTimeout())
     let gate = obj ()
     let entries = Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
-    let openTexts = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    let openTexts = Dictionary<string, struct (string * int)>(StringComparer.OrdinalIgnoreCase)
     let mutations = new SemaphoreSlim(1)
     let lifetime = new CancellationTokenSource()
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
+    let mutable onSetText: ProjectGraph -> string -> int64 -> int -> unit = fun _ _ _ _ -> ()
+    let mutable onLoaded: ProjectGraph -> unit = ignore
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -297,20 +299,16 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 created.Value <- Some graph
                 onGraphCreated graph
 
-                // Registered before the settle wait, in the same critical section that reads the open texts: an `Open`
-                // either lands in `openTexts` first and is read here, or finds the entry and goes to the graph.
-                let texts =
-                    lock gate (fun () ->
-                        entries[spec.ProjectFile] <- { Spec = spec; Graph = graph }
+                // Registered before the settle wait, in the same critical section that reads the open texts and sets
+                // them: an `Open` either lands in `openTexts` first and is read here, or finds the entry and sets its
+                // text after these, so older text never overwrites newer.
+                lock gate (fun () ->
+                    entries[spec.ProjectFile] <- { Spec = spec; Graph = graph }
 
-                        spec.SourceFiles
-                        |> List.choose (fun f ->
-                            match openTexts.TryGetValue f with
-                            | true, t -> Some(f, t)
-                            | _ -> None))
-
-                for f, t in texts do
-                    graph.SetText(f, t) |> ignore
+                    for f in spec.SourceFiles do
+                        match openTexts.TryGetValue f with
+                        | true, struct (t, lspVersion) -> onSetText graph f (graph.SetText(f, t)) lspVersion
+                        | _ -> ())
 
                 // The settle waits take no token of their own
                 try
@@ -324,6 +322,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     )
 
                 do! notifyWorkspace (Responses.project spec)
+
+                try
+                    onLoaded graph
+                with ex ->
+                    log $"%s{spec.ProjectFile}: publishing after the load failed: %O{ex}"
+
                 return Loaded spec.ProjectFile
             with ex ->
                 remove spec.ProjectFile |> ignore
@@ -442,13 +446,45 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     member _.Reload(project: string) : Task<unit> = exclusively (fun () -> reload project)
 
     /// A document the editor opened (or changed): its text is the file's, and goes to the graphs of the projects with it
-    member _.Open(path: string, text: string) : unit =
+    /// Returns each graph with the internal version of the text.
+    member _.Open(path: string, text: string, ?lspVersion: int) : (ProjectGraph * int64) list =
         let path = Path.GetFullPath path
-        lock gate (fun () -> openTexts[path] <- text)
+        let lspVersion = defaultArg lspVersion 0
 
-        for e in snapshot () do
-            if isSource e.Spec path then
-                e.Graph.SetText(path, text) |> ignore
+        // One critical section with the registration in loadGraph: the order of the SetText calls is the order of the texts
+        lock gate (fun () ->
+            openTexts[path] <- struct (text, lspVersion)
+
+            [ for e in Seq.toArray entries.Values do
+                  if isSource e.Spec path then
+                      let version = e.Graph.SetText(path, text)
+                      onSetText e.Graph path version lspVersion
+                      yield e.Graph, version ])
+
+    /// Runs `hook` with the graph, file, internal version and LSP version each time an open document's text is set on a
+    /// graph, before any wait on that version can start.
+    member internal _.OnSetText(hook: ProjectGraph -> string -> int64 -> int -> unit) : unit = onSetText <- hook
+
+    /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
+    member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
+
+    /// The projects, transitively, that reference the project of `graph`
+    member _.ReferencingProjects(graph: ProjectGraph) : ProjectGraph list =
+        let all = snapshot ()
+
+        match all |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
+        | None -> []
+        | Some root ->
+            let found = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+            let rec visit (file: string) =
+                for e in all do
+                    if e.Spec.ReferencedProjects |> List.exists (fun r -> String.Equals(r, file, StringComparison.OrdinalIgnoreCase))
+                       && found.Add e.Spec.ProjectFile then
+                        visit e.Spec.ProjectFile
+
+            visit root.Spec.ProjectFile
+            [ for e in all do if found.Contains e.Spec.ProjectFile then yield e.Graph ]
 
     /// The editor closed the document: the file on disk is the file's text again, which the caller reads
     member _.Close(path: string) : unit =

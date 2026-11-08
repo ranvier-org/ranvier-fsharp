@@ -307,7 +307,7 @@ let tests =
                   withWorkspace None (fun workspace _ ->
                       task {
                           let! _ = workspace.Load [ Path.Combine(dir, "Deps.fsproj") ] |> within
-                          workspace.Open(a, File.ReadAllText a + "\nlet broken : int = \"text\"\n")
+                          workspace.Open(a, File.ReadAllText a + "\nlet broken : int = \"text\"\n") |> ignore
                           do! workspace.Reload(Path.Combine(dir, "Deps.fsproj")) |> within
                           let graph = (workspace.ProjectOf a).Value
                           let! diagnostics = graph.Diagnostics a |> within
@@ -407,7 +407,7 @@ let tests =
                               let load = workspace.Load [ project ]
                               do! reached.Task.WaitAsync(TimeSpan.FromSeconds 120.)
                               Expect.isFalse load.IsCompleted "the cold check is held"
-                              workspace.Open(a, File.ReadAllText a + "\nlet broken : int = \"text\"\n")
+                              workspace.Open(a, File.ReadAllText a + "\nlet broken : int = \"text\"\n") |> ignore
                               gate.Set()
                               let! _ = load |> within
                               let graph = (workspace.ProjectOf a).Value

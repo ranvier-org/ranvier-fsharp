@@ -18,6 +18,13 @@ open Helpers
 type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable disposed = 0
     let workspace = new Workspace(host, client)
+    let documents = Documents()
+    let publisher = new Publisher(workspace, client, documents)
+
+    do
+        workspace.OnSetText(fun graph path version lspVersion -> documents.Record(graph, path, version, lspVersion))
+        workspace.OnLoaded publisher.Loaded
+
     let mutable rootPath: string option = None
     let mutable automaticInit = false
     let mutable peekDepth = 2
@@ -25,6 +32,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
+            publisher.Dispose()
             workspace.Dispose()
             host.Dispose()
 
@@ -119,9 +127,43 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.Exit() = ignoreNotification
 
-        member _.TextDocumentDidOpen(_) = ignoreNotification
-        member _.TextDocumentDidChange(_) = ignoreNotification
-        member _.TextDocumentDidClose(_) = ignoreNotification
+        member _.TextDocumentDidOpen(p: DidOpenTextDocumentParams) =
+            async {
+                try
+                    let d = p.TextDocument
+                    publisher.Open(d.Uri, Paths.ofUri d.Uri, d.Version, d.Text)
+                with ex ->
+                    eprintfn "[ranvierautocomplete] didOpen failed: %O" ex
+            }
+
+        member _.TextDocumentDidChange(p: DidChangeTextDocumentParams) =
+            async {
+                try
+                    let apply (text: string) (change: TextDocumentContentChangeEvent) =
+                        match change with
+                        | U2.C1 partial ->
+                            let position (x: Position) = { Rfs.Lsp.Line = int x.Line; Rfs.Lsp.Character = int x.Character }
+
+                            Rfs.Lsp.Document.apply
+                                text
+                                { Range = { Start = position partial.Range.Start; End = position partial.Range.End }
+                                  Text = partial.Text }
+                        | U2.C2 whole -> whole.Text
+
+                    let version = p.TextDocument.Version
+                    publisher.Change(Paths.ofUri p.TextDocument.Uri, version, (fun text -> p.ContentChanges |> Array.fold apply text))
+                with ex ->
+                    eprintfn "[ranvierautocomplete] didChange failed: %O" ex
+            }
+
+        member _.TextDocumentDidClose(p: DidCloseTextDocumentParams) =
+            async {
+                try
+                    publisher.Close(Paths.ofUri p.TextDocument.Uri)
+                with ex ->
+                    eprintfn "[ranvierautocomplete] didClose failed: %O" ex
+            }
+
         member _.TextDocumentDidSave(_) = ignoreNotification
         member _.WorkspaceDidChangeConfiguration(_) = ignoreNotification
         member _.WorkspaceDidChangeWatchedFiles(p: DidChangeWatchedFilesParams) =
@@ -222,14 +264,20 @@ module Server =
         |> Map.add "fsharp/workspacePeek" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspacePeek p))
         |> Map.add "fsharp/workspaceLoad" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspaceLoad p))
 
-    let run (input: Stream) (output: Stream) : int =
+    /// Runs the server, telling `created` about the server the connection makes. For tests.
+    let internal runWith (created: RanvierServer -> unit) (input: Stream) (output: Stream) : int =
         let reason =
             start
                 (handlings ())
                 input
                 output
                 (fun (notify, request) -> new RanvierClient(notify, request))
-                (fun client -> new RanvierServer(client, GraphHost.Start "server"))
+                (fun client ->
+                    let server = new RanvierServer(client, GraphHost.Start "server")
+                    created server
+                    server)
                 defaultRpc
 
         int reason
+
+    let run (input: Stream) (output: Stream) : int = runWith ignore input output
