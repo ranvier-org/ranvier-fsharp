@@ -315,4 +315,6 @@ the clean ones, which is the foreign job, and is why pass 2 is used.
 `results/server-a/final/`: pass 2 (`decl.*`, `file-slim.*`, `extra/`, `logs/`), the compares
 (`compare-checkpoint.md`, `compare-baseline-untraced.md`), `busy-pass1/`, `repeat1` to `repeat4` (body repeats are
 busy; every other scenario in `repeat1` to `repeat3` is clean, and `repeat1` also holds the second huge sample).
+`final/logs/overlap-log.txt` holds both passes (a move of the folder was denied while the log was open; pass 1's
+copy is in `busy-pass1/logs/`; its per-scenario `.log` files in `final/logs/` are pass 2's).
 Each directory's `logs/overlap-log.txt` records the idle-server CPU and the machine load around every scenario.
