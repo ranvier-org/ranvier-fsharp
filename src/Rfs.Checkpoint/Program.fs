@@ -283,7 +283,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
                                         (fmt (mean _.Adopted))
                                         (fmt (mean _.Checked))
                                         (fmt (Driver.finishShareP50 run |> Option.map ((*) 100.)))
-                                        cold.SegmentRows
+                                        (defaultArg run.SegmentRowsAtCold cold.SegmentRows)
                                         lastRows
 
                                     printfn

@@ -1,0 +1,29 @@
+{
+  "name": "huge-il-abbrev",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/Compiler/AbstractIL/il.fs"
+    },
+    {
+      "edit": {
+        "file": "src/Compiler/AbstractIL/il.fs",
+        "range": {
+          "start": {
+            "line": 1153,
+            "character": 14
+          },
+          "end": {
+            "line": 1153,
+            "character": 18
+          }
+        },
+        "text": "uint8",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

@@ -70,9 +70,10 @@ type EngineRun =
       /// The edited files the engine could not promote (checked whole: one declaration, a failed build, or an
       /// unresolved name in the setup from their dependencies); None for an engine that does not promote.
       NotPromoted: string list option
-      /// D1 premise breaks published by the first check.
+      /// D1 premise breaks once the first check is done and the edited files are promoted: no file checks by
+      /// declaration before that.
       PremiseBreaksAtCold: int64 option
-      /// Rows inside R11/R12 segments after the first check.
+      /// Rows inside R11/R12 segments once the first check is done and the edited files are promoted.
       SegmentRowsAtCold: int option
       /// The largest declaration of the edited files, in lines, as their texts on disk split.
       LargestRowLines: int option
@@ -245,6 +246,7 @@ module Driver =
             let promoteClock = Stopwatch.StartNew()
             let! promotion = engine.Promote(edits |> List.map _.File |> List.distinct) |> within timeout
             let promotedMs = promoteClock.Elapsed.TotalMilliseconds
+            let promotedCounters = engine.Counters()
 
             let promoteMs =
                 promotion |> Option.filter (fun p -> not p.Promoted.IsEmpty) |> Option.map (fun _ -> promotedMs)
@@ -349,8 +351,8 @@ module Driver =
                   ColdCounters = coldCounters
                   PromoteMs = promoteMs
                   NotPromoted = promotion |> Option.map _.NotPromoted
-                  PremiseBreaksAtCold = coldCounters |> Option.map _.PremiseBreaks
-                  SegmentRowsAtCold = coldCounters |> Option.map _.SegmentRows
+                  PremiseBreaksAtCold = promotedCounters |> Option.map _.PremiseBreaks
+                  SegmentRowsAtCold = promotedCounters |> Option.map _.SegmentRows
                   LargestRowLines = largestRowLines
                   EditedRowLines = editedRowLines
                   StepExtras = List.ofSeq extras
