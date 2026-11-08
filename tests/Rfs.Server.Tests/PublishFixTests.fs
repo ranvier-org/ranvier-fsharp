@@ -81,18 +81,58 @@ let fixTests =
                             while not stop.Value do
                                 Thread.SpinWait 2000) ]
 
-              for i in 2..501 do
-                  do! s.Lsp.DidChange(a, i, atEnd s a (string (char (97 + i % 26))))
+              try
+                  for i in 2..501 do
+                      do! s.Lsp.DidChange(a, i, atEnd s a (string (char (97 + i % 26))))
 
-              do!
-                  eventually "the server's text" (fun () ->
-                      match s.Server.Documents.TryFind a with
-                      | Some d -> d.LspVersion = 501 && d.Text = s.Lsp.Text a
-                      | None -> false)
+                  do!
+                      eventually "the server's text" (fun () ->
+                          match s.Server.Documents.TryFind a with
+                          | Some d -> d.LspVersion = 501 && d.Text = s.Lsp.Text a
+                          | None -> false)
+              finally
+                  stop.Value <- true
 
-              stop.Value <- true
               do! Task.WhenAll burners
               do! eventually "the last publish" (fun () -> hasVersion s a 501)
+          }
+
+          testTask "a foreign publish does not suppress the file's own" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              let hold = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              let entered = ref false
+
+              s.Server.Publisher.BeforePublish(fun lsp ->
+                  if lsp = 1 then
+                      entered.Value <- true
+                      hold.Task :> Task
+                  else
+                      Task.CompletedTask)
+
+              do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
+              do! eventually "version 1 settled" (fun () -> entered.Value)
+              let counts = s.Counts.Count
+
+              let position = { Line = 0; Character = 0 }
+
+              let foreign =
+                  { File = a
+                    Range = { Start = position; End = position }
+                    Severity = 1
+                    Code = "FS9999"
+                    Message = "reported by another file's check"
+                    Source = "F# Compiler" }
+
+              // Version 1 is the document's current one while its own result is held
+              do! s.Server.Publisher.PublishForeign(a, [ foreign ])
+              hold.SetResult()
+              let! expected = oracleFor s [ a ] a
+              Expect.isFalse (List.isEmpty expected) "the edit breaks A"
+              do! eventually "A's own diagnostics" (fun () -> equalsOracle expected (lastOf s a))
+              do! eventually "the notification of the own publish" (fun () -> s.Counts.Count > counts)
           }
 
           testTask "close takes the unsaved text out and the dependent follows" {

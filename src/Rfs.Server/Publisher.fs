@@ -88,7 +88,7 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
     let post (work: unit -> unit) = queue.Writer.TryWrite work |> ignore
 
     /// Sends the list when it is `force`d or differs from the last one sent for the file. Holds `gate`.
-    let send (path: string) (uri: string) (version: int option) (diagnostics: Rfs.Lsp.Diagnostic list) (force: bool) : Task =
+    let sendWith (track: bool) (path: string) (uri: string) (version: int option) (diagnostics: Rfs.Lsp.Diagnostic list) (force: bool) : Task =
         task {
             let keys = diagnostics |> List.map keyOf
 
@@ -101,7 +101,7 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
                 lastKeys[path] <- keys
 
                 match version with
-                | Some v when (match lastVersion.TryGetValue path with | true, l -> v > l | _ -> true) -> lastVersion[path] <- v
+                | Some v when track && (match lastVersion.TryGetValue path with | true, l -> v > l | _ -> true) -> lastVersion[path] <- v
                 | _ -> ()
 
                 do!
@@ -137,6 +137,13 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
 
             do! client.Notify("rfs/declarationsChecked", box { count = int n }) |> Async.StartAsTask
         }
+
+    let send = sendWith true
+
+    /// A list for a file other than the one checked. It carries the document's current version without recording it
+    /// as published, so the file's own result for that version is still fresh. Holds `gate`.
+    let sendForeign (target: string) (doc: OpenDocument) (union: Rfs.Lsp.Diagnostic list) : Task =
+        sendWith false target doc.Uri (Some doc.LspVersion) union false
 
     /// Records what the check of `source` found, and publishes the files it touched that are open: each file's list is
     /// what every checked file found in it, so a diagnostic that lands in another file (a signature's) is cleared when it
@@ -178,7 +185,7 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
                     if isSame t source then
                         do! send t doc.Uri ownVersion union forceOwn
                     else
-                        do! send t doc.Uri (Some doc.LspVersion) union false
+                        do! sendForeign t doc union
         }
 
     /// Publishes a settled result of the file the edit was for: once per LSP version, and never an older one than the
@@ -420,6 +427,20 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
 
     /// Runs `hook` with the LSP version of a settled result before the publish takes its turn. For tests.
     member internal _.BeforePublish(hook: int -> Task) : unit = beforePublish <- hook
+
+    /// Sends `diagnostics` to the open document at `path` as a diagnostic found by another file's check would be. For
+    /// tests.
+    member internal _.PublishForeign(path: string, diagnostics: Rfs.Lsp.Diagnostic list) : Task =
+        task {
+            do! gate.WaitAsync lifetime.Token
+
+            try
+                match documents.TryFind path with
+                | Some doc -> do! sendForeign path doc diagnostics
+                | None -> ()
+            finally
+                gate.Release() |> ignore
+        }
 
     /// Completes when everything queued so far has run. For tests.
     member internal _.Flushed() : Task =
