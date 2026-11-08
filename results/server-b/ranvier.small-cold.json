@@ -1,0 +1,21 @@
+{
+  "server": "ranvier",
+  "scenario": "small-cold",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-08T23:04:15.5495638Z",
+  "coldMs": 7108.7192,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FSharp.Data.Adaptive/Core/Transaction.fs",
+      "latencyMs": 133.5354,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 219.09765625,
+  "allocatedMb": 1949.1918411254883,
+  "gen2": 4
+}

@@ -78,5 +78,14 @@
     "oracle": "report",
     "projectLoad": "fsharp/workspaceLoad",
     "initOptions": {}
+  },
+  {
+    "name": "ranvier",
+    "command": "dotnet",
+    "cwd": ".",
+    "args": [ "src/Rfs.Server/bin/Release/net10.0/ranvierautocomplete.dll" ],
+    "oracle": "strict",
+    "projectLoad": "fsharp/workspaceLoad",
+    "initOptions": { "AutomaticWorkspaceInit": false }
   }
 ]
