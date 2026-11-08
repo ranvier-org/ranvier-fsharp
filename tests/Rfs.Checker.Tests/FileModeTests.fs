@@ -569,8 +569,8 @@ let tests =
           }
 
           // M3: the Declarations fuzz's Chains seed 1515 step 19, at small size. The texts its first 18 steps left, then
-          // B.fs's literal: before Ranvier #303, the graph settled here only with an effect observing every file's
-          // signature (a lost wake-up)
+          // B.fs's literal: at Task 4 the graph settled here only with an effect observing every file's signature (a lost
+          // wake-up). It no longer needs one, and the test no longer fails on a Ranvier without #303.
           testTask "a literal edit after a run of restarts settles" {
               do!
                   withSession (startOn chainsProject Declarations) (fun s ->
