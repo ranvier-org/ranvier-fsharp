@@ -286,10 +286,6 @@ module internal WholeFile =
             // Keeps the published result checked, so files that do not depend on each other check in parallel; reports
             // the declaration results of a published finish of the current text
             createEffect (fun () ->
-                // Also keeps the signature observed when no later file reads it: a published result pending on a source
-                // that had settled was seen to be woken only through the signature (a Ranvier lost wake-up)
-                signature.TryValue |> ignore
-
                 match published.Value with
                 | Whole ->
                     whole.TryValue |> ignore
@@ -301,9 +297,6 @@ module internal WholeFile =
                     if f.Version = file.Text.Value.Version then
                         untrack (fun () -> g.Publish f)
                 | Kept _ -> ())
-
-            // Keeps Current observed, as the signature is above, so waiters never read one a lost wake-up left behind
-            createEffect (fun () -> isCurrent.TryValue |> ignore)
 
             // Makes the declaration nodes once a wanted file is known to have more than one declaration
             createEffect (fun () ->
@@ -528,6 +521,5 @@ module internal WholeFile =
                 createEffect (fun () ->
                     result.TryValue |> ignore
                     observe ())
-                createEffect (fun () -> isCurrent.TryValue |> ignore)
 
             member _.Kick() = observe () }
