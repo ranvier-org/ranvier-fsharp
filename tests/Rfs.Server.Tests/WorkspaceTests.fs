@@ -272,18 +272,27 @@ let tests =
 
           testTask "settle timeout fails the project and the server keeps serving" {
               do!
-                  withWorkspace (Some(TimeSpan.FromMilliseconds 1.)) (fun workspace sent ->
+                  withWorkspace (Some(TimeSpan.FromMilliseconds 200.)) (fun workspace sent ->
                       task {
-                          let! results = workspace.Load [ depsProject ] |> within
+                          // The cold check cannot finish before the timeout: it is held at a file's first check
+                          let gate = new ManualResetEventSlim(false)
 
-                          match results with
-                          | [ Failed(p, reason) ] ->
-                              Expect.equal p depsProject "Deps"
-                              Expect.stringContains reason "timed out" "the reason names the timeout"
-                          | other -> failtest $"unexpected results %A{other}"
+                          workspace.OnGraphCreated(fun graph ->
+                              graph.OnScopedCheck(fun _ -> gate.Wait(TimeSpan.FromSeconds 60.) |> ignore))
 
-                          Expect.isEmpty workspace.Projects "the stalled graph was disposed and dropped"
-                          Expect.isTrue (sent.Notifications |> Array.exists (fun (m, _) -> m = "window/showMessage")) "the user is told"
+                          try
+                              let! results = workspace.Load [ depsProject ] |> within
+
+                              match results with
+                              | [ Failed(p, reason) ] ->
+                                  Expect.equal p depsProject "Deps"
+                                  Expect.stringContains reason "timed out" "the reason names the timeout"
+                              | other -> failtest $"unexpected results %A{other}"
+
+                              Expect.isEmpty workspace.Projects "the stalled graph was disposed and dropped"
+                              Expect.isTrue (sent.Notifications |> Array.exists (fun (m, _) -> m = "window/showMessage")) "the user is told"
+                          finally
+                              gate.Set()
                       })
           }
 

@@ -52,6 +52,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     member _.Client = client
     member _.Host = host
     member _.Workspace = workspace
+    member internal _.Documents = documents
+    member internal _.Publisher = publisher
 
     member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
         async {
@@ -127,42 +129,44 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.Exit() = ignoreNotification
 
+        // These three queue their work before returning, not inside the async the library starts on the thread pool,
+        // so the queue holds the editor's order.
         member _.TextDocumentDidOpen(p: DidOpenTextDocumentParams) =
-            async {
-                try
-                    let d = p.TextDocument
-                    publisher.Open(d.Uri, Paths.ofUri d.Uri, d.Version, d.Text)
-                with ex ->
-                    eprintfn "[ranvierautocomplete] didOpen failed: %O" ex
-            }
+            try
+                let d = p.TextDocument
+                publisher.Open(d.Uri, Paths.ofUri d.Uri, d.Version, d.Text)
+            with ex ->
+                eprintfn "[ranvierautocomplete] didOpen failed: %O" ex
+
+            ignoreNotification
 
         member _.TextDocumentDidChange(p: DidChangeTextDocumentParams) =
-            async {
-                try
-                    let apply (text: string) (change: TextDocumentContentChangeEvent) =
-                        match change with
-                        | U2.C1 partial ->
-                            let position (x: Position) = { Rfs.Lsp.Line = int x.Line; Rfs.Lsp.Character = int x.Character }
+            try
+                let apply (text: string) (change: TextDocumentContentChangeEvent) =
+                    match change with
+                    | U2.C1 partial ->
+                        let position (x: Position) = { Rfs.Lsp.Line = int x.Line; Rfs.Lsp.Character = int x.Character }
 
-                            Rfs.Lsp.Document.apply
-                                text
-                                { Range = { Start = position partial.Range.Start; End = position partial.Range.End }
-                                  Text = partial.Text }
-                        | U2.C2 whole -> whole.Text
+                        Rfs.Lsp.Document.apply
+                            text
+                            { Range = { Start = position partial.Range.Start; End = position partial.Range.End }
+                              Text = partial.Text }
+                    | U2.C2 whole -> whole.Text
 
-                    let version = p.TextDocument.Version
-                    publisher.Change(Paths.ofUri p.TextDocument.Uri, version, (fun text -> p.ContentChanges |> Array.fold apply text))
-                with ex ->
-                    eprintfn "[ranvierautocomplete] didChange failed: %O" ex
-            }
+                let version = p.TextDocument.Version
+                publisher.Change(Paths.ofUri p.TextDocument.Uri, version, (fun text -> p.ContentChanges |> Array.fold apply text))
+            with ex ->
+                eprintfn "[ranvierautocomplete] didChange failed: %O" ex
+
+            ignoreNotification
 
         member _.TextDocumentDidClose(p: DidCloseTextDocumentParams) =
-            async {
-                try
-                    publisher.Close(Paths.ofUri p.TextDocument.Uri)
-                with ex ->
-                    eprintfn "[ranvierautocomplete] didClose failed: %O" ex
-            }
+            try
+                publisher.Close(Paths.ofUri p.TextDocument.Uri)
+            with ex ->
+                eprintfn "[ranvierautocomplete] didClose failed: %O" ex
+
+            ignoreNotification
 
         member _.TextDocumentDidSave(_) = ignoreNotification
         member _.WorkspaceDidChangeConfiguration(_) = ignoreNotification

@@ -12,23 +12,23 @@ open Rfs.Lsp
 open Rfs.Server
 open Rfs.Server.Tests
 
-let private within (task: Task<'T>) = task.WaitAsync(TimeSpan.FromSeconds 120.)
+let internal within (task: Task<'T>) = task.WaitAsync(TimeSpan.FromSeconds 120.)
 
-let private depsDir =
+let internal depsDir =
     let rec up (d: DirectoryInfo) =
         let candidate = Path.Combine(d.FullName, "tests", "fixtures", "Deps")
         if Directory.Exists candidate then candidate else up d.Parent
 
     up (DirectoryInfo AppContext.BaseDirectory)
 
-let private depsProject = Path.Combine(depsDir, "Deps.fsproj")
-let private file (name: string) = Path.Combine(depsDir, name)
-let private a = file "A.fs"
-let private b = file "B.fs"
-let private c = file "C.fs"
+let internal depsProject = Path.Combine(depsDir, "Deps.fsproj")
+let internal file (name: string) = Path.Combine(depsDir, name)
+let internal a = file "A.fs"
+let internal b = file "B.fs"
+let internal c = file "C.fs"
 
 /// A running server with Deps loaded, and everything it published
-type private Session =
+type internal Session =
     { Lsp: LspClient
       Server: RanvierServer
       Oracle: OracleClient
@@ -38,14 +38,18 @@ type private Session =
       Uris: ConcurrentQueue<string>
       /// the count of each rfs/declarationsChecked
       Counts: ConcurrentQueue<int>
-      Owner: IDisposable }
+      Owner: IDisposable
+      /// the first project
+      Project: string
+      /// loads the projects
+      Load: unit -> Task }
 
     interface IAsyncDisposable with
         member s.DisposeAsync() =
             s.Owner.Dispose()
             (s.Oracle :> IAsyncDisposable).DisposeAsync()
 
-let private startSession () : Task<Session> =
+let internal startSessionWith (root: string) (projects: string list) (loadNow: bool) (prepare: RanvierServer -> unit) : Task<Session> =
     task {
         let! lsp, owner, server = TestServer.startCapturing ()
         let published = ConcurrentQueue()
@@ -71,14 +75,30 @@ let private startSession () : Task<Session> =
                 member _.OnCompleted() = () }
         |> ignore
 
-        let! _ = lsp.Initialize(Paths.toUri depsDir, JsonNode.Parse "{}") |> within
+        let! _ = lsp.Initialize(Paths.toUri root, JsonNode.Parse "{}") |> within
 
-        let load =
-            JsonNode.Parse($$"""{"TextDocuments":[{"Uri":{{JsonValue.Create(Paths.toUri depsProject).ToJsonString()}}}]}""")
+        let load () : Task =
+            let documents = JsonArray()
 
-        let! _ = lsp.Request("fsharp/workspaceLoad", load) |> within
-        let! oracle = OracleClient.start ()
+            for p in projects do
+                let d = JsonObject()
+                d["Uri"] <- JsonValue.Create(Paths.toUri p)
+                documents.Add d
+
+            let parameters = JsonObject()
+            parameters["TextDocuments"] <- documents
+            task {
+                let! _ = lsp.Request("fsharp/workspaceLoad", parameters) |> within
+                ()
+            }
+
         let! running = server
+        prepare running
+
+        if loadNow then
+            do! load ()
+
+        let! oracle = OracleClient.start ()
 
         return
             { Lsp = lsp
@@ -87,10 +107,14 @@ let private startSession () : Task<Session> =
               Published = published
               Uris = uris
               Counts = counts
-              Owner = owner }
+              Owner = owner
+              Project = projects.Head
+              Load = load }
     }
 
-let private eventually (what: string) (check: unit -> bool) : Task =
+let internal startSession () = startSessionWith depsDir [ depsProject ] true ignore
+
+let internal eventually (what: string) (check: unit -> bool) : Task =
     task {
         let deadline = DateTime.UtcNow.AddSeconds 60.
 
@@ -101,21 +125,21 @@ let private eventually (what: string) (check: unit -> bool) : Task =
             do! Task.Delay 25
     }
 
-let private publishesOf (s: Session) (path: string) =
+let internal publishesOf (s: Session) (path: string) =
     s.Published.ToArray()
     |> Array.filter (fun (p, _, _) -> String.Equals(p, LspClient.NormalizePath path, StringComparison.OrdinalIgnoreCase))
 
-let private openAll (s: Session) (paths: string list) =
+let internal openAll (s: Session) (paths: string list) =
     task {
         for p in paths do
             do! s.Lsp.DidOpen(p, File.ReadAllText p)
     }
 
-let private hasVersion (s: Session) (path: string) (version: int) =
+let internal hasVersion (s: Session) (path: string) (version: int) =
     publishesOf s path |> Array.exists (fun (_, v, _) -> v = Some version)
 
 /// The edit that replaces the first `find` in the client's text of `path`
-let private replace (s: Session) (path: string) (find: string) (text: string) : Edit =
+let internal replace (s: Session) (path: string) (find: string) (text: string) : Edit =
     let current = s.Lsp.Text path
     let index = current.IndexOf(find, StringComparison.Ordinal)
     Expect.isGreaterThanOrEqual index 0 $"%s{find} is in %s{path}"
@@ -128,15 +152,15 @@ let private replace (s: Session) (path: string) (find: string) (text: string) : 
     { Range = { Start = position index; End = position (index + find.Length) }; Text = text }
 
 /// The oracle's diagnostics for `path` when the client's texts of `paths` are the project's
-let private oracleFor (s: Session) (paths: string list) (path: string) =
+let internal oracleFor (s: Session) (paths: string list) (path: string) =
     task {
         let overrides = paths |> List.map (fun p -> p, s.Lsp.Text p) |> Map.ofList
-        let! all = s.Oracle.Check depsProject overrides
+        let! all = s.Oracle.Check s.Project overrides
         let own = LspClient.NormalizePath path
         return all |> List.filter (fun d -> String.Equals(d.File, own, StringComparison.OrdinalIgnoreCase))
     }
 
-let private expectEqualOracle (s: Session) (paths: string list) (path: string) (version: int) =
+let internal expectEqualOracle (s: Session) (paths: string list) (path: string) (version: int) =
     task {
         let! expected = oracleFor s paths path
 
@@ -148,7 +172,7 @@ let private expectEqualOracle (s: Session) (paths: string list) (path: string) (
     }
 
 /// `{ "textDocument": { ... } }`, with the given members
-let private textDocument (members: (string * JsonValue) list) : JsonNode =
+let internal textDocument (members: (string * JsonValue) list) : JsonNode =
     let inner = JsonObject()
 
     for k, v in members do
@@ -158,7 +182,7 @@ let private textDocument (members: (string * JsonValue) list) : JsonNode =
     outer["textDocument"] <- inner
     outer :> JsonNode
 
-let private disposing (s: Session) =
+let internal disposing (s: Session) =
     { new IAsyncDisposable with
         member _.DisposeAsync() = (s :> IAsyncDisposable).DisposeAsync() }
 
