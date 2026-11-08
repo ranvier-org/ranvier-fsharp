@@ -248,18 +248,17 @@ module Engines =
         task {
             let host = GraphHost.Start "checkpoint"
 
-            // Diagnosis: why the checker refused shifts (W1), one line each, appended to the file the variable names
-            match Environment.GetEnvironmentVariable "RFS_SHIFT_REFUSALS" with
-            | null
-            | "" -> ()
-            | path ->
-                let sync = obj ()
-
-                FSharp.Compiler.Declarations.DeclarationChecker.ShiftRefusedHook <-
-                    fun reason -> lock sync (fun () -> IO.File.AppendAllText(path, reason + Environment.NewLine))
-
             try
                 let! graph = create host spec
+
+                // Diagnosis: why the checker refused shifts (W1), one line each, appended to the file the variable names
+                match Environment.GetEnvironmentVariable "RFS_SHIFT_REFUSALS" with
+                | null
+                | "" -> ()
+                | path ->
+                    let sync = obj ()
+                    graph.OnShiftRefused(fun reason -> lock sync (fun () -> IO.File.AppendAllText(path, reason + Environment.NewLine)))
+
                 return new DeclEngine(host, graph, spec, everyFile) :> IEngine
             with e ->
                 host.Dispose()

@@ -106,6 +106,7 @@ let tests =
                           Expect.isEmpty r.Ran "none ran"
                           Expect.equal shifted 3L "area, doubled and grouped, the rows below the blank line, are shifted"
                           do! expectOracle s r.Diagnostics "after the blank line"
+                          do! expectLocations s a "after the blank line"
 
                           let! r, shifted = shifting s a (s.Texts[a].Replace("\nlet area", "let area"))
                           Expect.equal r.Delta 0L "taking it out again adopts no check"
@@ -125,29 +126,54 @@ let tests =
                           Expect.equal r.Delta 0L "no CheckDeclaration adopted: the file is not set up again"
                           Expect.equal shifted (int64 rows) "every row is shifted"
                           do! expectOracle s r.Diagnostics "after the blank line under the header"
+                          do! expectLocations s a "after the blank line under the header"
                       })
           }
 
           // large-lineinsert's shape: a line inside a documented generic type, which a module of the same name's
-          // inline functions use. Their checks run again while their shifts are in flight, and a superseded flight's
-          // shift must not move what the result it was shifted to already moved.
-          testTask "a line inside a type re-checks only it, while the rows using it are shifted" {
+          // inline functions use. The type is checked again, with new items, so the values using it cannot keep the
+          // old ones at their old lines (Task 7 review I1): they are checked again too, and only the module's header,
+          // which does not use the type, is shifted. Their flights also run again while shifts are in flight, and a
+          // superseded flight's shift must not move what the result it was shifted to already moved.
+          testTask "a line inside a type re-checks it and the rows using it, and shifts the rest" {
               let! s = start ()
               use _ = (s :> IAsyncDisposable)
               let! _ = edit s a bagFile
               s.Graph.Promote a
               let! _ = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+              let users = [ "Bag"; "add"; "count"; "empty"; "head"; "isEmpty"; "items"; "ofList"; "toSeq" ]
 
               for round in 1..3 do
                   let! (r: Edit), shifted = shifting s a (bagFile.Replace("type Bag<'T>(items", "\ntype Bag<'T>(items"))
-                  Expect.equal (r.NamesIn a) [ "Bag" ] $"round %d{round}: only the type is checked again"
-                  Expect.equal shifted 9L $"round %d{round}: the module's header and its eight values are shifted"
+                  Expect.equal (r.NamesIn a) users $"round %d{round}: the type and the values using it are checked again"
+                  Expect.equal shifted 1L $"round %d{round}: the module's header is shifted"
                   do! expectOracle s r.Diagnostics $"round %d{round}: after the line inside Bag"
+                  do! expectLocations s a $"round %d{round}: after the line inside Bag"
                   let! (r: Edit), shifted = shifting s a bagFile
-                  Expect.equal (r.NamesIn a) [ "Bag" ] $"round %d{round}: the type is checked again once the line goes"
-                  Expect.equal shifted 9L $"round %d{round}: and the rest shifted back"
+                  Expect.equal (r.NamesIn a) users $"round %d{round}: and again once the line goes"
+                  Expect.equal shifted 1L $"round %d{round}: and the header shifted back"
                   do! expectOracle s r.Diagnostics $"round %d{round}: after the line goes"
+                  do! expectLocations s a $"round %d{round}: after the line goes"
           }
+
+          // I2 of the Task 7 review: only blank lines after the header keep the setup
+          yield! [ for what, edit in
+              [ "above the header", (fun (t: string) -> "\n" + t)
+                "inside the header", (fun (t: string) -> t.Replace("[<AutoOpen>]\nmodule", "[<AutoOpen>]\n\nmodule")) ] ->
+              testTask $"a blank line %s{what} sets the file up again" {
+                  let! s = start ()
+                  use _ = (s :> IAsyncDisposable)
+                  let text = "[<AutoOpen>]\nmodule Deps.A\n\nlet baseValue = 10\n\nlet unusedWarn () =\n    let unused = 5\n    1\n\nlet bad : string = 1\n"
+                  let! _ = Deps.edit s a text
+                  s.Graph.Promote a
+                  let! _ = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                  let! r, shifted = shifting s a (edit text)
+                  Expect.equal shifted 0L "nothing is shifted"
+                  Expect.equal r.Delta 3L "every declaration is checked again"
+                  Expect.isNonEmpty r.Diagnostics[a] "the warning and the error are reported"
+                  do! expectOracle s r.Diagnostics $"after the blank line %s{what}"
+                  do! expectLocations s a $"after the blank line %s{what}"
+              } ]
 
           testTask "line inside a declaration re-checks only it" {
               do!
@@ -158,6 +184,7 @@ let tests =
                           Expect.equal (r.NamesIn a) [ "area" ] "the declaration the line is in"
                           Expect.equal shifted 2L "doubled and grouped are shifted"
                           do! expectOracle s r.Diagnostics "after the line inside area"
+                          do! expectLocations s a "after the line inside area"
                       })
           }
 
@@ -175,7 +202,7 @@ let tests =
                       })
           }
 
-          testTask "a refused shift checks the row again where it was checked" {
+          testTask "a refused shift checks the row again against the current results" {
               do!
                   withPromoted [ a; d ] (fun s ->
                       task {

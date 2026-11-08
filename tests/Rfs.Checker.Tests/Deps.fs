@@ -248,3 +248,49 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
         Expect.isEmpty fingerprints $"%s{what}: fingerprints equal a check from scratch:\n%s{String.concat Environment.NewLine fingerprints}"
         Expect.equal s.Graph.PremiseBreaks 0L $"%s{what}: no final fingerprint differed from its check's (D1)"
     }
+
+/// Every symbol use of the file's results, with where its symbol is declared, in the signature and in the
+/// implementation: what go to definition and find references read. A namespace is left out: it is declared by every
+/// file that opens a fragment of it, and which of those its location names depends on the order checks combined them.
+/// So is a symbol another file declares: a later file sees an earlier file's items through its signature, which is
+/// reused while its fingerprint is the same, whatever lines its items moved to (a known gap since Task 2, as true of
+/// files checked whole as of files checked by declaration).
+let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+    results.GetAllUsesOfAllSymbolsInFile()
+    |> Seq.filter (fun u ->
+        match u.Symbol with
+        | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> false
+        | symbol ->
+            match symbol.DeclarationLocation with
+            | Some m -> String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase)
+            | None -> true)
+    |> Seq.map (fun u ->
+        $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
+    |> Set.ofSeq
+
+/// The lines by which the symbol locations of the graph's published results for `file` differ from the interactive
+/// checker's for the current texts (Task 7 review I1: a shifted row must not point at another declaration's old items).
+let locationDiff (s: Session) (file: string) : Task<string list> =
+    task {
+        let! graph = s.Graph.AllFileResults() |> settle
+        let actual = locationsOf file graph[file].CheckResults
+        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions s.Spec)
+        let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
+        let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
+
+        let! _, reference, _ =
+            checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
+            |> Async.StartAsTask
+
+        let expected = locationsOf file reference
+
+        return
+            [ for l in Set.difference expected actual -> "expected only: " + l
+              for l in Set.difference actual expected -> "actual only: " + l ]
+    }
+
+let expectLocations (s: Session) (file: string) (what: string) =
+    task {
+        let! diff = locationDiff s file
+        Expect.isEmpty diff $"%s{what}: every symbol's declaration equals a full check's:\n%s{String.concat Environment.NewLine diff}"
+    }

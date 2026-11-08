@@ -267,14 +267,13 @@ module internal Nodes =
         && a.Range.StartColumn = b.Range.StartColumn
         && a.Within = b.Within
 
-    /// Whether two prologues are the same header but for blank lines and trailing whitespace (W1): a line inserted or
-    /// removed between the header and the first declaration moves the declarations, which are shifted, and nothing
-    /// the setup reads. The setup's own ranges (the header's) are above the line.
+    /// Whether two prologues are the same header but for the blank lines after it (W1): a line inserted or removed
+    /// between the header and the first declaration moves the declarations, which are shifted, and nothing the setup
+    /// reads, whose own ranges (the header's) are all above the line. A blank line anywhere above the header's last
+    /// line moves part of the header, and sets the file up again.
     let sameHeader (a: string) (b: string) =
-        let lines (s: string) =
-            s.Replace("\r\n", "\n").Split('\n') |> Array.map _.TrimEnd() |> Array.filter (fun l -> l <> "")
-
-        String.Equals(a, b, StringComparison.Ordinal) || lines a = lines b
+        let header (s: string) = s.Replace("\r\n", "\n").TrimEnd(' ', '\t', '\n', '\r')
+        String.Equals(a, b, StringComparison.Ordinal) || String.Equals(header a, header b, StringComparison.Ordinal)
 
     /// The text before the first declaration.
     let prologueOf (text: string) (declarations: ParsedDeclaration[]) =

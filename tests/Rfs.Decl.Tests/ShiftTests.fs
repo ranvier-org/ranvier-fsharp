@@ -237,7 +237,7 @@ let tests =
               DeclarationChecker.FinishFile(start, results, parse) |> ignore
               let mutable text = richFile
               let refusals = Collections.Concurrent.ConcurrentQueue<string>()
-              DeclarationChecker.ShiftRefusedHook <- refusals.Enqueue
+              p.Context.ShiftRefusedHook <- refusals.Enqueue
 
               try
                   for step, (anchor, insert) in List.indexed blankLineSteps do
@@ -274,7 +274,7 @@ let tests =
                       decls <- decls2
                       results <- Array.map fst next
               finally
-                  DeclarationChecker.ShiftRefusedHook <- ignore
+                  p.Context.ShiftRefusedHook <- ignore
           }
 
           // Fuzz Declarations seed 1515: a lambda left to the file-end defaults, whose message shows the default
@@ -309,6 +309,48 @@ let tests =
               do! expectDiagnostics p file edited second "after the shift"
               let! reference = interactive p file edited
               expectLocations second.CheckResults reference "every symbol's declaration"
+          }
+
+          // C1 of the Task 7 review: declarations on adjacent lines, each using the one before, shifted in file order in
+          // one edit. Positions alone would let a later declaration claim an item the earlier one's shift moved into its
+          // old range (il.fs's `codeLabelCount`)
+          testTask "adjacent declarations shifted in one edit move each item once" {
+              let text =
+                  "module Deps.A\n\nlet first = 0\nlet c = ref 0\nlet g () = c.Value <- 1\nlet idf (x: 'a) : 'a = x\nlet k = idf 2\ntype T() =\n    static member M(x: int, y: int) = x - y\nlet m = T.M(y = 1, x = 2)\nlet n = m + k\n"
+
+              let edited = text.Replace("let c = ref 0", "\nlet c = ref 0")
+              let! p = load [ a, text ]
+              let refusals = Collections.Concurrent.ConcurrentQueue<string>()
+              p.Context.ShiftRefusedHook <- refusals.Enqueue
+
+              try
+                  let parse = DeclarationChecker.Parse(p.Context, a, text)
+                  let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+                  let mutable results = checkAll start env0 (DeclarationChecker.Split parse)
+                  DeclarationChecker.FinishFile(start, results, parse) |> ignore
+
+                  for step, target in List.indexed [ edited; text; edited ] do
+                      let parse2 = DeclarationChecker.Parse(p.Context, a, target)
+                      let decls2 = DeclarationChecker.Split parse2
+
+                      let next =
+                          Array.map2
+                              (fun (d: ParsedDeclaration) (r: DeclarationResult) ->
+                                  match DeclarationChecker.Shift(r, d) with
+                                  | ValueSome s -> s
+                                  | ValueNone -> r)
+                              decls2
+                              results
+
+                      Expect.isEmpty refusals $"step %d{step}: no shift is refused: %A{List.ofSeq refusals}"
+                      Expect.equal (next |> Array.filter (fun r -> not (Array.contains r results)) |> Array.length) 7 $"step %d{step}: c and the six rows below it are shifted"
+                      let finished = DeclarationChecker.FinishFile(start, next, parse2)
+                      do! expectDiagnostics p a target finished $"step %d{step}"
+                      let! reference = interactive p a target
+                      expectLocations finished.CheckResults reference $"step %d{step}: every symbol's declaration, type parameters and named arguments included"
+                      results <- next
+              finally
+                  p.Context.ShiftRefusedHook <- ignore
           }
 
           // A superseded graph flight shifts the result it read again, after another flight shifted it
@@ -380,8 +422,8 @@ let tests =
                           sigs @ [ finished.Signature ])
 
               let refusals = Collections.Concurrent.ConcurrentQueue<string>()
-              DeclarationChecker.ShiftRefusedHook <- refusals.Enqueue
-              let _, shifted, second = try shiftAndFinish p.Context signatures e text edited finally DeclarationChecker.ShiftRefusedHook <- ignore
+              p.Context.ShiftRefusedHook <- refusals.Enqueue
+              let _, shifted, second = try shiftAndFinish p.Context signatures e text edited finally p.Context.ShiftRefusedHook <- ignore
 
               Expect.equal
                   (shifted |> Array.map (fun (s, moved) -> s.Key.Name, moved))

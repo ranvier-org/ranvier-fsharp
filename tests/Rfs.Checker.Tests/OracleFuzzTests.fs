@@ -341,7 +341,7 @@ let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
 
     attempt 0
 
-/// `refuse`: the checker refuses every shift (W1), so the graph checks each moved declaration again where it was checked
+/// `refuse`: the checker refuses every shift (W1), so the graph checks each moved declaration again as it checks a changed one
 let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let! s = startOn project mode
@@ -480,6 +480,12 @@ let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int
             if what.StartsWith "blank line " then
                 blankLineEdits <- blankLineEdits + 1
 
+                // A shifted row must point where a full check does (Task 7 review I1), which no diagnostic shows
+                let! locations = locationDiff s file
+
+                if not locations.IsEmpty then
+                    fail ("symbol locations differ from a full check:\n" + String.concat Environment.NewLine locations)
+
         printfn
             $"%A{mode} seed %d{seed}: %d{steps} edits (%d{conformedEdits} conformed-shape edits, %d{blankLineEdits} blank-line edits), %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{s.Graph.ShiftedRows} shifted, %d{published} results published"
 
@@ -487,6 +493,11 @@ let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int
             Expect.isGreaterThan conformedEdits 0 $"%A{mode} seed %d{seed}: the run toggles what the signature file overwrites"
 
         Expect.isGreaterThan blankLineEdits 0 $"%A{mode} seed %d{seed}: the run inserts or removes a blank line"
+
+        Expect.equal
+            FSharp.Compiler.Declarations.ProjectContext.ShiftFinishMisses
+            0L
+            "no check the finish ran for a shifted result reported at a range it could not move"
 
     }
 
@@ -499,7 +510,7 @@ let private fuzz (name: string) (mode: FileMode) =
         [ for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
               testTask $"seed %d{seed}: 200 random edits equal the oracle after each" { do! run depsProject mode seed 200 }
 
-          // A refused shift checks the declaration again in the environment it was checked in
+          // A refused shift is checked again as a changed declaration is, against the current results
           yield testTask "seed 1515, every shift refused: 200 random edits equal the oracle after each" { do! runWith true depsProject mode 1515 200 }
 
           // Two independent chains, where a file's dependencies are fewer than the files before it

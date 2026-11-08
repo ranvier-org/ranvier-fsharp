@@ -103,18 +103,6 @@ type internal EnvNode(previous: EnvNode, check: RowCheck, env: DeclEnv) =
 
         found
 
-    /// Whether a result this environment holds depends on later declarations: a check in it must run alone (R12).
-    member this.HoldsDependsOnLater: bool =
-        let mutable node = this
-        let mutable found = false
-
-        while not found && not (isNull node) && not (isNull node.Check) do
-            let c: RowCheck = node.Check
-            found <- c.Result.DependsOnLaterDeclarations
-            node <- node.Previous
-
-        found
-
 /// A declaration's result, with what its check read.
 and [<Sealed; AllowNullLiteral>] internal RowCheck
     (
@@ -352,6 +340,16 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
                 && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
 
+            // A shifted result holds the items of the declarations it depends on as they were when it was checked. When
+            // one of them was checked again since, its new items replaced those, which kept their old lines: go to
+            // definition and find references from the shifted result would miss. So a shift, and a shifted result,
+            // stands only while every declaration it depends on is the result it was checked against, or a shift of it.
+            let shiftable () =
+                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)) identities
+                |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
+
+            let current = current && (not (moved || previous.IsShift) || shiftable ())
+
             if current && not moved then
                 Task.FromResult previous
             elif current then
@@ -467,6 +465,16 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                     members |> Array.filter (fun (r, decl, _) -> not (Nodes.same (previousOf r).Decl decl))
                 else
                     [||]
+
+            // As for a row on its own: shifted members stand only while what they depend on outside the segment is
+            // the result they were checked against, or a shift of it
+            let shiftable () =
+                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)) identities
+                |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
+
+            let anyShifted = current && previous.Rows.Values |> Seq.exists _.IsShift
+            let current = current && (moved.Length = 0 && not anyShifted || shiftable ())
+            let moved = if current then moved else [||]
 
             if current && moved.Length = 0 then
                 Task.FromResult previous

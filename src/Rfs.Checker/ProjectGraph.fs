@@ -348,6 +348,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// checked again: each once, when a finish of the current text that holds it is published.
     member _.ShiftedRows: int64 = project.ShiftedCount
 
+    /// Runs `hook`, off the graph thread, with the reason each time the checker refuses to shift one of the project's
+    /// declarations (W1). For diagnosis.
+    member _.OnShiftRefused(hook: string -> unit) : unit = project.Context.ShiftRefusedHook <- hook
+
     /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
     member _.FinishTicks: int64 = project.FinishTicks
 
