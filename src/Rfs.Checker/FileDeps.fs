@@ -95,6 +95,8 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
+    let mutable measuresStarted = 0L
+    let mutable measuresEnded = 0L
     let mutable chainFallbacks = 0L
     let mutable finishReused = 0L
     let mutable directiveRetries = 0L
@@ -194,11 +196,20 @@ type internal ProjectShared(ctx: ProjectContext) =
 
     /// Runs `work` on this thread and adds its time and allocations to `phase`.
     member this.Measure(phase: string, work: unit -> 'T) : 'T =
-        let allocated = GC.GetAllocatedBytesForCurrentThread()
-        let started = Diagnostics.Stopwatch.GetTimestamp()
-        let result = work ()
-        this.AddPhase(phase, Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetAllocatedBytesForCurrentThread() - allocated)
-        result
+        Interlocked.Increment &measuresStarted |> ignore
+
+        try
+            let allocated = GC.GetAllocatedBytesForCurrentThread()
+            let started = Diagnostics.Stopwatch.GetTimestamp()
+            let result = work ()
+            this.AddPhase(phase, Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetAllocatedBytesForCurrentThread() - allocated)
+            result
+        finally
+            Interlocked.Increment &measuresEnded |> ignore
+
+    /// How many Measure calls have started, and how many of them are running. For tests.
+    member _.MeasuresStarted = Interlocked.Read &measuresStarted
+    member _.MeasuresInFlight = Interlocked.Read &measuresStarted - Interlocked.Read &measuresEnded
 
     member _.CountPremiseBreak(premiseBreak: PremiseBreak) =
         Interlocked.Increment &premiseBreaks |> ignore
@@ -566,8 +577,7 @@ module internal Setup =
     /// A file's result, checked off the graph thread from the setup its dependencies give (`scopedKey`, as `key`
     /// makes it), and from every earlier file when the checker refuses that setup (its dependency snapshot went stale)
     /// or the check reports an unresolved name. Each async memo reads its key before its check starts and returns its
-    /// last value while the key is the same, so a wake that changed nothing runs no check. Also gives what the node's
-    /// effect must call to keep the check running.
+    /// last value while the key is the same, so a wake that changed nothing runs no check.
     let build
         (project: ProjectShared)
         (path: string)
@@ -626,13 +636,10 @@ module internal Setup =
                 else
                     Task.Run<SetupKey * 'R>(fun () -> key, runWhileDirectivesCurrent project ct (fun () -> run key)))
 
-        let result =
-            createMemo (fun _ ->
-                match scoped.Value.Value with
-                | Done(key, result) -> key, result
-                | _ -> chained.Value.Value)
-
-        result
+        createMemo (fun _ ->
+            match scoped.Value.Value with
+            | Done(key, result) -> key, result
+            | _ -> chained.Value.Value)
 
 /// What a file checked by declaration is set up from (BeginFile): its setup from its dependencies, and its header.
 /// Kept as the same object while both are unchanged, whatever its parse, so the file is set up again only then.

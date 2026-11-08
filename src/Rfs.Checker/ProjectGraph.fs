@@ -352,6 +352,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Each newly published declaration result, with its file, on the graph thread.
     member _.Checked: IObservable<DeclarationKey * string> = project.Checked
 
+    /// How many parses, dependency computations and whole-file checks have started. Read without touching the graph.
+    /// For tests.
+    member internal _.MeasuresStarted: int64 = project.MeasuresStarted
+
+    /// How many of those are running. Read without touching the graph. For tests.
+    member internal _.MeasuresInFlight: int64 = project.MeasuresInFlight
+
     /// The project's checker context. For tests.
     member internal _.Context: ProjectContext = project.Context
 

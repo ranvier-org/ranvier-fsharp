@@ -505,12 +505,43 @@ let private runWith = runIn (fun _ _ -> Task.CompletedTask)
 
 let private run = runWith false
 
-/// How much checking the graph has done, read without touching the graph.
+/// How much work the graph has done, read without touching the graph: every parse, dependency computation and
+/// whole-file check as it starts, every declaration check and finish as it ends.
 let private activity (s: Session) =
-    s.Graph.FileLevelChecks + s.Graph.CheckedCount + s.Graph.FinishTicks
+    s.Graph.MeasuresStarted + s.Graph.CheckedCount + s.Graph.FinishTicks
 
-/// m6: every edit's checks must finish with nothing waiting and nothing reading. After an edit the test only watches the
-/// counters until they rest, then reads: a read that finds work left to do found a check that had stalled.
+/// Watches the counters, reading nothing, until they have rested for a second with no measured work running. Returns
+/// the activity at rest.
+let private atRest (s: Session) =
+    task {
+        let mutable last = activity s
+        let resting = Diagnostics.Stopwatch.StartNew()
+        let waited = Diagnostics.Stopwatch.StartNew()
+
+        while resting.Elapsed < TimeSpan.FromSeconds 1. do
+            do! Task.Delay 25
+
+            if waited.Elapsed > TimeSpan.FromMinutes 2. then
+                failtest "work was still running 2 minutes after an edit, with nothing reading"
+
+            let now = activity s
+
+            if now <> last || s.Graph.MeasuresInFlight > 0L then
+                last <- now
+                resting.Restart()
+
+        return last
+    }
+
+/// m6: every edit's work must finish with nothing waiting and nothing reading. Rests, then reads, and returns the
+/// activity at rest and whether the read found work left to do: a stall. A stall a read does not end fails `settle`.
+let private readAfterRest (s: Session) =
+    task {
+        let! rested = atRest s
+        let! _ = s.Graph.AllDiagnostics() |> settle
+        return struct (rested, activity s <> rested)
+    }
+
 let private runUnread (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let stalled = ResizeArray<string>()
@@ -519,25 +550,37 @@ let private runUnread (project: string) (mode: FileMode) (seed: int) (steps: int
         let unread (s: Session) () : Task =
             task {
                 step.Value <- step.Value + 1
-                let mutable last = activity s
-                let resting = Diagnostics.Stopwatch.StartNew()
+                let! struct (_, found) = readAfterRest s
 
-                while resting.Elapsed < TimeSpan.FromSeconds 1. do
-                    do! Task.Delay 25
-                    let now = activity s
-
-                    if now <> last then
-                        last <- now
-                        resting.Restart()
-
-                let! _ = s.Graph.AllDiagnostics() |> settle
-
-                if activity s <> last then
+                if found then
                     stalled.Add $"edit %d{step.Value}"
             }
 
         do! runIn unread false project mode seed steps
-        Expect.isEmpty stalled $"%A{mode} seed %d{seed}: the checks of these edits ran only once a read asked"
+        Expect.isEmpty stalled $"%A{mode} seed %d{seed}: the work of these edits ran only once a read asked"
+    }
+
+/// The fuzz edits only implementation files. A comment in a signature file parses it, computes the dependencies and
+/// checks it again, and leaves its fingerprint as it was, so no file after it is checked: nothing but this work shows.
+let private runUnreadSignatures (mode: FileMode) =
+    task {
+        let! s = startOn sigChain2Project mode
+        use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
+
+        for round in 1..5 do
+            for file in s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fsi") do
+                let what = $"%A{mode} round %d{round}: %s{Path.GetFileName file}"
+                let before = s.Graph.MeasuresStarted
+
+                let unread () : Task =
+                    task {
+                        let! struct (_, found) = readAfterRest s
+                        Expect.isFalse found $"%s{what}: the work ran only once a read asked"
+                    }
+
+                let! r = editAfter unread true s file (s.Texts[file] + $"\n// round %d{round}\n")
+                Expect.isGreaterThanOrEqual (s.Graph.MeasuresStarted - before) 3L $"%s{what}: parse, dependencies and check all ran"
+                do! expectOracle s r.Diagnostics what
     }
 
 let private fuzz (name: string) (mode: FileMode) =
@@ -580,5 +623,5 @@ let unreadTests =
     <| testList
         "OracleFuzzUnread"
         [ for mode in [ FileLevel; Declarations ] do
-              for project, label in [ sigChain2Project, "SigChain2" ] ->
-                  testTask $"%A{mode} %s{label} seed 1515: checks finish with no reader" { do! runUnread project mode 1515 200 } ]
+              yield testTask $"%A{mode} SigChain2 seed 1515: work finishes with no reader" { do! runUnread sigChain2Project mode 1515 200 }
+              yield testTask $"%A{mode} SigChain2: a signature file's comment finishes with no reader" { do! runUnreadSignatures mode } ]
