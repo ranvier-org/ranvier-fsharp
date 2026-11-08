@@ -577,7 +577,7 @@ module internal Setup =
         (scopedKey: Memo<SetupKey>)
         (run: SetupKey -> 'R)
         (diagnosticsOf: 'R -> FSharpDiagnostic[] option)
-        : struct (Memo<SetupKey * 'R> * (unit -> unit)) =
+        : Memo<SetupKey * 'R> =
         let chainKey = key project index deps signatureOf true
         let scoped = ref Unchecked.defaultof<AsyncMemo<Attempt<'R>>>
         let chained = ref Unchecked.defaultof<AsyncMemo<SetupKey * 'R>>
@@ -632,21 +632,7 @@ module internal Setup =
                 | Done(key, result) -> key, result
                 | _ -> chained.Value.Value)
 
-        // Reads the keys and the checks that give the result, as `result` does. SigChain2's fuzz (at R 96d957c too) left a
-        // key Pending and Dirty on a source that had settled, with none of its readers (the checks, the declaration
-        // setup, the node's effect) run again: a Ranvier lost wake-up. Any read of the key itself runs it again. The
-        // node's effect calls this.
-        let observe () =
-            scopedKey.TryValue |> ignore
-
-            match scoped.Value.TryValue with
-            | Ready(Done _) -> ()
-            | Ready _ ->
-                chainKey.TryValue |> ignore
-                chained.Value.TryValue |> ignore
-            | _ -> ()
-
-        struct (result, observe)
+        result
 
 /// What a file checked by declaration is set up from (BeginFile): its setup from its dependencies, and its header.
 /// Kept as the same object while both are unchanged, whatever its parse, so the file is set up again only then.

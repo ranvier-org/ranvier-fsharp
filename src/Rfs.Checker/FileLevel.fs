@@ -110,7 +110,7 @@ module internal WholeFile =
         // The scope the declaration nodes' roots attach to: the graph's, not an effect's
         let graphOwner = getOwner ()
 
-        let struct (whole, observeWhole) =
+        let whole =
             Setup.build
                 project
                 path
@@ -289,7 +289,6 @@ module internal WholeFile =
                 match published.Value with
                 | Whole ->
                     whole.TryValue |> ignore
-                    observeWhole ()
 
                     if untrack (fun () -> not wanted.Value && kept.Value.IsSome) then
                         untrack (fun () -> kept.Value <- ValueNone)
@@ -476,7 +475,7 @@ module internal WholeFile =
         : IFileNode =
         let ctx = project.Context
 
-        let struct (result, observe) =
+        let result =
             Setup.build
                 project
                 file.Path
@@ -510,6 +509,4 @@ module internal WholeFile =
             member _.MayBuild = false
             member _.DeclarationObjects() = []
             member _.Activate() =
-                createEffect (fun () ->
-                    result.TryValue |> ignore
-                    observe ()) }
+                createEffect (fun () -> result.TryValue |> ignore) }
