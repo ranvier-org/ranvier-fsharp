@@ -286,13 +286,12 @@ let private exact =
       named "Plain",
       { none with Defines = [| "Plain" |] }
 
-      "a type abbreviation affects all later",
+      "a type abbreviation does not affect all later: its fingerprint shows its target",
       "type Id = int",
       named "Id",
       { none with
           Defines = [| "Id" |]
-          Uses = [| "int" |]
-          AffectsAllLater = true }
+          Uses = [| "int" |] }
 
       "a module abbreviation affects all later",
       "module L = List",

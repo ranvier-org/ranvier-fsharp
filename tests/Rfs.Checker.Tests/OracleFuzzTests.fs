@@ -406,6 +406,28 @@ let private windowSolver (counter: int ref) : Mutation =
                 | 3 -> Some(text.Replace(before.Value, $"let before%s{n} = 1"), $"win%s{n} not solved earlier")
                 | _ -> Some(text.Replace(solver.Value, $"let solve%s{n} () = ()"), $"win%s{n} solver gone")
 
+/// Toggles the target of an abbreviation, with a chain of values over it.
+let private abbreviationTarget (counter: int ref) : Mutation =
+    fun _ text ->
+        let m = Regex.Match(text, @"type Abbr(\d+) = (int|int64|string)")
+
+        if m.Success then
+            let next =
+                match m.Groups[2].Value with
+                | "int" -> "int64"
+                | "int64" -> "string"
+                | _ -> "int"
+
+            Some(replaceMatch text m $"type Abbr%s{m.Groups[1].Value} = %s{next}", $"Abbr%s{m.Groups[1].Value} -> %s{next}")
+        else
+            counter.Value <- counter.Value + 1
+            let n = counter.Value
+
+            appended
+                text
+                $"type Abbr%d{n} = int\n\nlet x%d{n}: Abbr%d{n} = Unchecked.defaultof<Abbr%d{n}>\n\nlet y%d{n} = x%d{n}\n\nlet z%d{n} = y%d{n} + y%d{n}"
+            |> Option.map (fun t -> t, $"add Abbr%d{n}")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -461,7 +483,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                implicitThroughAugmentation counter
                implicitThroughAugmentation counter
                windowSolver counter
-               windowSolver counter |]
+               windowSolver counter
+               abbreviationTarget counter
+               abbreviationTarget counter |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]

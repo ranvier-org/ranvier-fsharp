@@ -27,6 +27,21 @@ let private lines (rows: string list) = "module Deps.D\n\n" + String.Join("\n\n"
 let private x1 (literal: int) (k: string) =
     lines [ $"type T() =\n    member _.A = %d{literal}"; "let useT (t: T) = t.A"; k ]
 
+/// Re-checks after editing `type A = int` to `string`, and back, with the rows `rest` gives over it.
+let private abbreviationBattery (name: string) (abbreviation: string -> string) (rest: string list) =
+    inBothModes name (fun s ->
+        task {
+            let source (target: string) = lines (abbreviation target :: rest)
+            let! r = edit s d (source "int")
+            do! expectOracle s r.Diagnostics "int"
+            let! r = edit s d (source "string")
+            do! expectOracle s r.Diagnostics "string"
+            let! r = edit s d (source "int")
+            do! expectOracle s r.Diagnostics "int again"
+            let! r = edit s d (source "int64")
+            do! expectOracle s r.Diagnostics "int64"
+        })
+
 let private x9 (member': string) =
     lines [ "type T() =\n    member _.A = 1"; "let f (x: int) = x"; $"type T with\n    %s{member'}"; "let y = f (T())" ]
 
@@ -353,6 +368,99 @@ let tests =
                   let! r = edit s d (source 2)
                   Expect.equal (r.NamesIn d) [ "a"; "last"; "r" ] "everything from r"
                   do! expectOracle s r.Diagnostics "last edited"
+              })
+
+          abbreviationBattery "abbreviation: a value chain" (sprintf "type A = %s") [ "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let z = y + y" ]
+          abbreviationBattery "abbreviation: a function result" (sprintf "type A = %s") [ "let g () : A = Unchecked.defaultof<A>"; "g () |> ignore"; "let h = g () + g ()" ]
+          abbreviationBattery "abbreviation: member lookup through it" (sprintf "type A = %s") [ "let x: A = Unchecked.defaultof<A>"; "let n = x.ToString().Length"; "let m = x.Length" ]
+          abbreviationBattery "abbreviation of an abbreviation" (sprintf "type A = %s") [ "type B = A"; "let x: B = Unchecked.defaultof<B>"; "let y = x + x" ]
+          abbreviationBattery "abbreviation: generic" (fun t -> $"type L<'x> = list<'x * %s{t}>") [ "let e: L<int> = []"; "let h = e.Head"; "let s = snd h + snd h" ]
+          abbreviationBattery "abbreviation: an attribute through it" (fun t -> "type Attr = System." + (if t = "int" then "ObsoleteAttribute" elif t = "string" then "SerializableAttribute" else "FlagsAttribute")) [ "[<Attr>]\ntype U() = class end"; "let u = U()" ]
+          abbreviationBattery "abbreviation: a union through it" (fun t -> $"type Un = | Case of %s{t}\n\ntype A = Un") [ "let a = A.Case Unchecked.defaultof<_>"; "let f (x: A) = match x with Case v -> v"; "let b = f a" ]
+          abbreviationBattery "abbreviation: a measure" (fun t -> "[<Measure>] type m\n\n[<Measure>] type q = " + (if t = "int" then "m" elif t = "string" then "m m" else "m m m")) [ "let x = 1.0<q>"; "let y: float<m> = x" ]
+          abbreviationBattery "abbreviation: a measure attribute by another name" (fun t -> "type MA = MeasureAttribute\n\n[<MA>] type m\n\n[<MA>] type q = " + (if t = "int" then "m" elif t = "string" then "m m" else "m m m")) [ "let x = 1.0<q>"; "let y: float<m> = x" ]
+          abbreviationBattery "abbreviation shadowing an earlier type's name" (fun t -> $"type T() =\n    member _.A = 1\n\nlet early = T()\n\ntype T = %s{t}") [ "let t: T = Unchecked.defaultof<T>"; "let n = early.A"; "let z = t + t" ]
+          abbreviationBattery "abbreviation of a project type" (fun t -> $"type R = {{ V: %s{t} }}\n\ntype A = R") [ "let mk (v: A) = v"; "let w = (mk { V = Unchecked.defaultof<_> }).V"; "let j = w" ]
+
+          testTask "abbreviation named in a signature file" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let e = fileOf "E.fs"
+              let sigFile = fileOf "E.fsi"
+              let source (target: string) =
+                  $"module Deps.E\n\ntype A = %s{target}\n\nlet user: A = Unchecked.defaultof<A>\n\nlet compute () = 1\n\nlet unrelated = 7\n"
+
+              let! _ = edit s e (source "int")
+              let! (r: Edit) = edit s sigFile "module Deps.E\n\ntype A = int\n\nval user: A\n\nval compute: unit -> int\n\nval unrelated: int\n"
+              do! expectOracle s r.Diagnostics "the source"
+              let! (r: Edit) = edit s e (source "string")
+              do! expectOracle s r.Diagnostics "the implementation's target differs"
+              let! (r: Edit) = edit s e (source "int")
+              do! expectOracle s r.Diagnostics "and agrees again"
+              let! (r: Edit) = edit s e (source "int ")
+              do! expectOracle s r.Diagnostics "the same target re-checked"
+          }
+
+          inBothModes "a unit of measure re-checked gives its users one unit" (fun s ->
+              task {
+                  let source (gap: string) (y: string) =
+                      lines [ $"[<Measure>] type m%s{gap}"; "let x = 1.0<m>"; y ]
+
+                  let! r = edit s d (source "" "let y: float<m> = x")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "  " "let y: float<m> = x")
+                  do! expectOracle s r.Diagnostics "the unit re-checked"
+                  let! r = edit s d (source "  " "let y: float<m> = x + x")
+                  do! expectOracle s r.Diagnostics "a row meets the unit again"
+              })
+
+          testTask "rows re-checking with kept rows between them stay linear" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let n = 400
+
+              let rows =
+                  String.Join(
+                      "\n\n",
+                      [ for i in 1..n ->
+                            if i % 2 = 0 then $"let v%d{i} (x: A) = x" else $"let v%d{i} (x: int) = (x + %d{i}) * List.length [ x; x ]" ]
+                  )
+
+              let source (target: string) = $"module Deps.D\n\ntype A = %s{target}\n\n%s{rows}\n"
+              let! _ = edit s d (source "int")
+              let! _ = edit s d (source "int64")
+              let extends = s.Graph.EnvExtends
+              let! (r: Edit) = edit s d (source "string")
+              Expect.isGreaterThanOrEqual r.Delta (int64 (n / 2)) "the rows naming A re-check"
+              Expect.isLessThan r.Delta (int64 n) "the others are kept"
+              Expect.isLessThanOrEqual (s.Graph.EnvExtends - extends) (int64 (2 * n)) "environments are assembled in file order"
+          }
+
+          inBothModes "an abbreviation edit re-checks only its users" (fun s ->
+              task {
+                  let source (target: string) =
+                      lines [ $"type A = %s{target}"; "let x: A = Unchecked.defaultof<A>"; "let y = x"; "let unrelated = 1" ]
+
+                  let! r = edit s d (source "int")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "int64")
+                  Expect.isFalse (List.contains "unrelated" (r.NamesIn d)) "a row that holds no A is kept"
+                  Expect.contains (r.NamesIn d) "y" "y's type is A"
+                  do! expectOracle s r.Diagnostics "the target changed"
+              })
+
+          inBothModes "an unchanged-print abbreviation re-check keeps later rows" (fun s ->
+              task {
+                  let source (gap: string) =
+                      lines [ $"type A = int%s{gap}"; "let x: A = Unchecked.defaultof<A>"; "let y = x + 1" ]
+
+                  let! r = edit s d (source "")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "  ")
+                  Expect.isFalse (List.contains "y" (r.NamesIn d)) "A's print is the same, and A's entity is looked through"
+                  do! expectOracle s r.Diagnostics "same print"
+                  let! r = edit s d (lines [ "type A = int  "; "let x: A = Unchecked.defaultof<A>"; "let y = x + 2" ])
+                  do! expectOracle s r.Diagnostics "a row mixing the old A and the new"
               })
 
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->

@@ -310,15 +310,26 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
         for k in keys do
             (file.RowOf k).Check.Value |> ignore
 
-    /// Waits for the declaration just before this one, so rows that re-check together run in file order. Run out of order,
-    /// each reads earlier results that differ from the last row's, and assembles most of its environment again: quadratic
-    /// in the rows. Checks of a file take its lock in turn anyway, so this costs no parallelism.
+    /// Waits for the nearest earlier declaration whose check is running, so rows that re-check together run in file order
+    /// even with kept rows between them. Run out of order, each reads earlier results that differ from the last row's, and
+    /// assembles most of its environment again: quadratic in the rows. Checks of a file take its lock in turn anyway, so
+    /// this costs no parallelism.
     member private _.AwaitPrevious() =
         let order = untrack (fun () -> file.Order.Value)
 
         match order.TryPosition key with
-        | ValueSome position when position > 0 -> (file.RowOf order.Keys[position - 1]).Check.Value |> ignore
-        | _ -> ()
+        | ValueSome position ->
+            let mutable i = position - 1
+
+            while i >= 0 do
+                let row = file.RowOf order.Keys[i]
+
+                match untrack (fun () -> row.Check.TryValue) with
+                | Ready _ -> i <- i - 1
+                | _ ->
+                    row.Check.Value |> ignore
+                    i <- -1
+        | ValueNone -> ()
 
     /// The declarations of the file a result depends on through types, as of its latest finish (R13).
     member private _.TypedOf(c: RowCheck) =
