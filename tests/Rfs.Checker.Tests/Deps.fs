@@ -253,8 +253,8 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
 /// implementation: what go to definition and find references read. A namespace is left out: it is declared by every
 /// file that opens a fragment of it, and which of those its location names depends on the order checks combined them.
 /// So is a symbol another file declares: a later file sees an earlier file's items through its signature, which is
-/// reused while its fingerprint is the same, whatever lines its items moved to (a known gap since Task 2, as true of
-/// files checked whole as of files checked by declaration).
+/// reused while its fingerprint is the same, whatever lines its items moved to. That is an open gap this check does
+/// not cover: the fuzz saw C.fs point one line off into B.fs (task-7-report.md, fix round 1).
 let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
     |> Seq.filter (fun u ->
