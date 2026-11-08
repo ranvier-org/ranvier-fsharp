@@ -1,6 +1,7 @@
-/// A minimal shape of the lost wake-up Task 3 met (fix round 1, I2), fixed in Ranvier by #303: a memo with a cutoff
+/// A minimal shape of the lost wake-up Task 3 met (fix round 1, I2), which Ranvier #303 fixed: a memo with a cutoff
 /// comparer that reads an async memo directly, a key memo that keeps its previous value while equal, and an async
-/// consumer of the key that returns its last value while the key is the same.
+/// consumer of the key that returns its last value while the key is the same. It does not reproduce the bug: it passes
+/// without #303 too, so it does not guard the fix.
 module Rfs.Checker.Tests.RanvierWakeTests
 
 open System

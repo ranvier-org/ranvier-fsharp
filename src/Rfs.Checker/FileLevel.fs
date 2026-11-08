@@ -45,7 +45,7 @@ module internal WholeFile =
     /// Whether every file the key read is current (IFileNode.Current): the files whose signatures it holds, and the
     /// implementation files whose failed status it read (SetupKey.Consulted). While a file is checked again its status
     /// is its last answer (S1-R), and a ready signature may have been computed from such an answer further up, so being
-    /// ready is not enough (S1-R2). Tracked reads, so a waiter wakes when one becomes current.
+    /// ready is not enough (S1-R2). Tracked reads when run inside a memo; a settle wait re-reads after each pump.
     let readsCurrent (project: ProjectShared) (key: SetupKey) =
         let current i =
             match (project.CurrentOf i).TryValue with
@@ -94,9 +94,8 @@ module internal WholeFile =
     /// build that fails is not tried again until the file's setup or text changes; and the result of a build whose
     /// setup from dependencies reports an unresolved name (C3/R17) is never published.
     ///
-    /// The build state is computed where it is read (`stateOf`), never read through a memo of its own: a memo pending
-    /// on such a memo, which other nodes read with TryValue, was seen not to be woken when it settled (a Ranvier lost
-    /// wake-up, Task 4).
+    /// The build state is computed where it is read (`stateOf`). It moved off a memo of its own at Task 4, for a lost
+    /// wake-up since fixed in Ranvier (#303). A memo would now be allowed, but nothing has measured one in its favour.
     let impl
         (project: ProjectShared)
         (index: int)

@@ -36,14 +36,17 @@ let tests =
                       })
           }
 
-          testTask "one settle wait per file settles" {
+          testTask "one settle wait per file gives each file the oracle's diagnostics" {
               do!
                   withDeps (fun s ->
                       task {
-                          s.Graph.SetText(a, s.Texts[a] + "\nlet waited = 0\n") |> ignore
+                          let text = s.Texts[a] + "\nlet waited = 0\n"
+                          s.Texts[a] <- text
+                          s.Graph.SetText(a, text) |> ignore
+                          let files = Array.ofList s.Spec.SourceFiles
                           // One wait per file, as an LSP layer would park one per open file
-                          let! _ = Task.WhenAll [ for f in s.Spec.SourceFiles -> s.Graph.Diagnostics f ] |> settle
-                          ()
+                          let! each = Task.WhenAll [ for f in files -> s.Graph.Diagnostics f ] |> settle
+                          do! expectOracle s (Array.zip files each |> readOnlyDict) "one wait per file"
                       })
           }
 

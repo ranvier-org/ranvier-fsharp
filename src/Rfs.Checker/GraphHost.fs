@@ -149,7 +149,6 @@ type GraphHost private (name: string) =
     /// The graph. Touch it only on the host thread, from inside <c>Post</c>, <c>Read</c> or a <c>WhenSettled</c> read.
     member _.Graph = graph
 
-
     /// Runs <c>work</c> on the host thread, after earlier posts from the same caller. Throws if the host is disposed.
     /// A failure of <c>work</c> is kept for <c>TakePostErrors</c>.
     member _.Post(work: unit -> unit) : unit =
