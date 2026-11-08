@@ -3,24 +3,34 @@
 Milestone A retired the six risks that `docs/checkpoint.md` found in the declaration graph. This document measures
 the result on every scenario and reports each risk against its acceptance.
 
-**Verdict.** Risks 2, 3, 4 and 5 are met. Risks 1 and 6 are met on latency but each has an acceptance line missed by
-a small margin (three in all), so **two risks are not met to the letter.** They are listed first so nobody has to
-read the tables to find them:
+**Verdict.** Risks 2, 3 and 4 are met. Risk 5 is met on the evidence of Task 6, not on a counter measured here (see
+"The cold counters read zero by construction" below). Risks 1 and 6 each have acceptance lines that are missed, **four
+lines in all**, so **two risks are not met to the letter.** The controller has ruled on all four (they stand as
+accepted). They are listed first so nobody has to read the tables to find them:
 
 1. **Risk 1, allocation, small-signature.** decl allocates 744.8 MB per edit against file-slim's 735.8 MB (+1.2%).
    The acceptance is "edit allocations <= file-slim's". Unmet by 9 MB. It is the same in every run (747.5, 746.7,
    747.7, 747.6 MB). The latency half of risk 1 is met: decl p50 is 614.9 ms against 620.2 ms, a tie.
 2. **Body p50 within 10% of the checkpoint's decl** (Task 4's line). mid-body is 31.4 ms against a limit of
    30.8 ms (28.0 x 1.1): +12.1%, unmet by 0.6 ms. small-body is 31.8 ms (+9.3%, met) and large-body 30.8 ms (+2.0%).
-3. **Risk 6, large-lineinsert.** It adopts 12 declarations per edit, not <= 1. The controller has accepted this.
-   Its p50 (35.7 ms) is also 0.7 ms over 1.2 x Task 5's large-body p50 (29.2 ms = 35.0 ms).
+3. **Risk 6, large-lineinsert, adopted declarations.** It adopts 12 declarations per edit, not <= 1.
+4. **Risk 6, large-lineinsert, latency.** Its p50 (35.7 ms) is 0.7 ms over 1.2 x Task 5's large-body p50
+   (29.2 ms = 35.0 ms). So risk 6's latency line is **not met** on large; it is met on mid (37.1 against 44.2).
+
+A fifth reading depends on the comparator. `t5` has no huge scenario, so risk 6's huge rows have no stated limit.
+Read against `huge-cx-top` (the nearest body edit in the same file), huge-cx-lineinsert is 868 / 626 = **1.39x on the
+gate sample (a miss of the 1.2x line)** and 825 / 692 = 1.19x in the second clean sample (inside it). Against
+`huge-cx-rec` it is 0.62x, and huge-il-lineinsert is 0.59x huge-il-body. Verdict: not met on the gate sample, borderline
+on the second; it is not counted among the four because the plan names no comparator.
 
 Carried, not decided here (controller rulings in `progress.md`):
 - Body p95 and allocation per edit are worse than the checkpoint's and unattributed (below). That attribution
   belongs to the final review.
-- GO stands with a narrowed claim. This run adds a data point against one part of that claim: **large-body is not
-  "no slower" than file-slim here.** decl is 30.8 ms against 28.0 ms in the clean run (1.10x), and slower in 5 of 6
-  runs (see "Body repeats"). The margin is 2 to 5 ms.
+- GO stands with a narrowed claim (the controller's rulings after this task): **decl wins on small-body (0.62x) and
+  mid-body (0.43x); on large-body it is about 1.10x file-slim, not "no slower"** (30.8 ms against 28.0 ms in the clean
+  run, slower in 5 of 6 runs; the margin is 2 to 5 ms; see "Body repeats"). **Files with an early free inference
+  variable, or a `type T with` far from `T`, lose the declaration benefit** until the stopgap lands (see "huge-il:
+  why one literal re-checks 476 declarations").
 
 ## How this was measured
 
@@ -55,7 +65,8 @@ not show it at the time.
 - **Repeats of signature, bigfile and lineinsert (`repeat1` to `repeat3`) and of the five edited huge scenarios
   (`repeat1`)**: 22:19 onward. The job had exited, so these are clean.
 - **Pass 2 (`results/server-a/final/`, the tables below)**: all 20 scenarios again, 23:43 to 00:49, with the job
-  gone. Foreign load was 3 to 34% CPU (browsers and editors); no foreign dotnet process above 7 CPU-s.
+  gone. Foreign load was up to about 45% CPU (sampled only at scenario boundaries; browsers and editors); no foreign dotnet
+  process above 7 CPU-s.
 
 The controller asked for the body scenarios to be re-run for timing once the job had exited. Pass 2 is that re-run
 (one sample per scenario). A planned set of four more clean body repeats was cancelled at the controller's request,
@@ -78,22 +89,34 @@ Measured values are from pass 2 (clean) unless stated. "ratio" is decl over file
 
 | risk | acceptance | measured | |
 |---|---|---|---|
-| **1 Signature edits** (checkpoint 2.7x to 5.8x slower, up to 3.1 GB per edit) | decl p50 <= file-slim p50 on small, mid and large signature; edit allocations <= file-slim's | p50 ms decl / file-slim: small 614.9 / 620.2 (0.99), mid 331.2 / 406.5 (0.81), large 241.8 / 272.3 (0.89). Allocation MB per edit: small **744.8 / 735.8**, mid 441.0 / 461.5, large 311.1 / 315.5. Four clean runs of small-signature give ratios 0.99, 0.99, 1.03, 1.04 (median p50 591 vs 596 ms) | **latency met (small is a tie); small-signature allocation unmet by 1.2%** |
+| **1 Signature edits** (checkpoint 2.7x to 5.8x slower, up to 3.1 GB per edit) | decl p50 <= file-slim p50 on small, mid and large signature; edit allocations <= file-slim's | p50 ms decl / file-slim: small 614.9 / 620.2 (0.99), mid 331.2 / 406.5 (0.81), large 241.8 / 272.3 (0.89). Allocation MB per edit: small **744.8 / 735.8**, mid 441.0 / 461.5, large 311.1 / 315.5. Four clean runs of small-signature give ratios 0.99, 0.99, 1.03, 1.04 (median p50 591 vs 596 ms) | **latency met on the gate sample (small is a tie: 2 of 4 clean runs are above 1.0); small-signature allocation unmet by 1.2%** |
 | 1 (Task 4 line) | body p50 no more than 10% above the checkpoint's decl (29.1 / 28.0 / 30.2 ms) | 31.8 (+9.3%) / **31.4 (+12.1%)** / 30.8 (+2.0%) | small and large met; **mid unmet by 0.6 ms** |
-| 1 memory | peak working set <= 1.25 x file-slim's on body and signature | worst ratio 1.04 (mid-signature 509 vs 490 MB); body and signature peaks 260 to 509 MB, against 416 to 1010 MB at the checkpoint | met |
-| **2 FinishFile** (49 to 72% of a body edit) | finish ms p50 <= 50% of the checkpoint's: small <= 9.9, mid <= 9.1, large <= 7.9 | 3.2 / 8.5 / 2.5 ms (checkpoint 19.7 / 18.2 / 15.8). Finish share of the edit: 11.0% / 25.8% / 9.3% | met (mid uses 93% of its allowance) |
+| 1 memory | peak working set <= 1.25 x file-slim's on body and signature | worst ratio 1.04 (mid-signature 509 vs 490 MB); body and signature peaks 260 to 509 MB, against 364 to 1010 MB at the checkpoint | met |
+| **2 FinishFile** (49 to 72% of a body edit) | finish ms p50 <= 50% of the checkpoint's: small <= 9.9, mid <= 9.1, large <= 7.9 | 3.2 / 8.5 / 2.5 ms (checkpoint 19.7 / 18.2 / 15.8 as the plan quotes them; recomputed as p50 from its `extra/` files 18.7 / 17.6 / 15.6, which changes no verdict). Finish share of the edit: 11.0% / 25.8% / 9.3% | met (mid uses 93% of its allowance) |
 | **3 Cold start and memory** (2.2x to 3.0x file-slim) | decl cold ms <= 1.2 x file-slim's and cold allocations <= 1.5 x, on small, mid and large | cold ratio 1.10 / 1.02 / 0.99; allocation ratio 1.03 / 1.02 / 1.04. Huge: 1.15 and 1.05 | met |
-| **4 Rec-module fallback** (CodePrinter.fs, 1.5x slower) | decl p50 <= file-slim p50 on `large-bigfile-narrow` and `-wide` | narrow 185.5 / 187.9 (0.99), wide 180.4 / 185.1 (0.97). Three more clean runs: narrow 1.05, 0.99, 1.02; wide 0.99, 0.97, 0.95 | met (narrow is a tie) |
-| **5 D1 premise breaks** (5 / 32 / 1) | 0 breaks on small, mid and large | 0 / 0 / 0 at cold (and 0 on huge); segment rows at cold 0 / 0 / 0 (checkpoint 444 / 323 / 16) | met |
-| **6 W1 line insert** (27 and 13 declarations re-checked) | adopted decls/edit <= 1; p50 <= 1.2 x the same corpus's body p50 from `t5` | mid-lineinsert: 0 adopted, 27 rows shifted, p50 37.1 ms against a limit of 44.2 (1.2 x 36.8). large-lineinsert: **12 adopted**, 1 shifted, p50 35.7 against a limit of 35.0 (1.2 x 29.2). huge-cx: 0 adopted (243 shifted), 868 ms. huge-il: 0 adopted (491 shifted), 676 ms | mid met. **large: 12 adopted declarations, accepted by the controller; p50 0.7 ms over** |
+| **4 Rec-module fallback** (CodePrinter.fs, 1.5x slower) | decl p50 <= file-slim p50 on `large-bigfile-narrow` and `-wide` | narrow 185.5 / 187.9 (0.99), wide 180.4 / 185.1 (0.97). Three more clean runs: narrow 1.05, 0.99, 1.02; wide 0.99, 0.97, 0.95 | met on the gate sample (narrow is a tie: 2 of 4 clean runs are above 1.0, at 1.05 and 1.02) |
+| **5 D1 premise breaks** (5 / 32 / 1) | 0 breaks on small, mid and large | **not measured in this task.** The cold counters (`premiseBreaksAtCold`, `segmentRowsAtCold`) are 0 everywhere but are read before anything is checked by declaration, so they say nothing. Evidence that remains: Task 6's `--premise-report` (`results/premise/`: 0 / 0 / 0 breaks after the fix; segment rows 225 to 293 / 139 / 7), and, for the files each scenario edits, the per-edit segment rows after promotion (see below) | met on Task 6's evidence; not re-measured here |
+| **6 W1 line insert** (27 and 13 declarations re-checked) | adopted decls/edit <= 1; p50 <= 1.2 x the same corpus's body p50 from `t5` | mid-lineinsert: 0 adopted, 27 rows shifted, p50 37.1 ms against a limit of 44.2 (1.2 x 36.8). large-lineinsert: **12 adopted**, 1 shifted, p50 35.7 against a limit of 35.0 (1.2 x 29.2). huge-cx: 0 adopted (243 shifted), 868 ms. huge-il: 0 adopted (491 shifted), 676 ms | mid met. **large: 12 adopted declarations (accepted by the controller) and p50 0.7 ms over its line: both missed.** huge-cx: see the fifth reading above |
 
-On risk 6's huge rows: `t5` has no huge scenario, so the 1.2x line is read against this run's own body rows.
-huge-il-lineinsert is 0.59 x huge-il-body (676 / 1148). huge-cx-lineinsert is 0.62 x huge-cx-rec (868 / 1400) and
-**1.39 x huge-cx-top** (868 / 626); the clean repeat gave 825 / 692 = 1.19.
+On risk 6's huge rows: `t5` has no huge scenario, so the 1.2x line is read against this run's own body rows (see the
+fifth reading at the top). huge-il-lineinsert is 0.59 x huge-il-body (676 / 1148).
 
-Every numeric gate above is a single clean sample unless it says otherwise. The three misses are all within the
-run-to-run spread of the neighbouring scenarios (see "Repeats"), but the acceptances are strict, so they are
-reported as unmet.
+Every numeric gate above is a single clean sample unless it says otherwise. The four misses are small, and mostly
+within the run-to-run spread of the neighbouring scenarios (see "Other repeats"), but the acceptances are strict, so
+they are reported as unmet.
+
+### The cold counters read zero by construction
+
+`segmentRowsAtCold` and `premiseBreaksAtCold` are read before promotion (`Driver.fs:217`, while promotion happens at
+`:246`), so nothing has been checked by declaration yet and they are always 0, whatever the code does. **Every "0" in
+this document that rests on them is unmeasured:** risk 5's cell, the last two columns of "Memory and cold", and the
+"0 on huge" figure. Small, mid and large are still backed by Task 6's `--premise-report`. The huge project's figure is
+not backed by anything beyond il.fs, which `huge-il-diagnosis.md` measured directly after promotion. The code fix
+(read them after promotion) comes later.
+
+What the run does show is the per-edit `segmentRows` in `extra/`, which is read after the edited file was promoted: it
+is 0 on every step of every scenario except `huge-il-body` and `huge-il-lineinsert`, where it is 476 on every step.
+That covers only files a scenario edits, since only they are promoted.
 
 ## Full table per scenario
 
@@ -122,9 +145,9 @@ nearest-rank (with 10 edits it is the maximum).
 | mid-signature | file-slim | 406.5 | 1361.4 | 4837 | 490 | 1697 | 461.5 | - | - | - | - | - | 0 |
 | large-signature | decl | 241.8 | 728.2 | 2893 | 378 | 991 | 311.1 | 1.0 | 1.0 | 0.0 | 1.9 | 0.8% | 0 |
 | large-signature | file-slim | 272.3 | 769.5 | 3415 | 382 | 955 | 315.5 | - | - | - | - | - | 0 |
-| large-bigfile-narrow | decl | 185.5 | 438.5 | 3019 | 393 | 987 | 164.8 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0% | 0 |
+| large-bigfile-narrow | decl | 185.5 | 438.5 | 3019 | 393 | 987 | 164.8 | 0.0 | 0.0 | 0.0 | - | - | 0 |
 | large-bigfile-narrow | file-slim | 187.9 | 478.8 | 2780 | 411 | 949 | 168.1 | - | - | - | - | - | 0 |
-| large-bigfile-wide | decl | 180.4 | 444.9 | 2982 | 395 | 991 | 164.7 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0% | 0 |
+| large-bigfile-wide | decl | 180.4 | 444.9 | 2982 | 395 | 991 | 164.7 | 0.0 | 0.0 | 0.0 | - | - | 0 |
 | large-bigfile-wide | file-slim | 185.1 | 523.9 | 2955 | 405 | 952 | 168.2 | - | - | - | - | - | 0 |
 | mid-lineinsert | decl | 37.1 | 108.3 | 3933 | 383 | 1739 | 38.5 | 0.0 | 0.0 | 27.0 | 12.7 | 27.3% | 0 |
 | mid-lineinsert | file-slim | 71.0 | 230.8 | 4003 | 386 | 1700 | 72.6 | - | - | - | - | - | 0 |
@@ -179,8 +202,10 @@ Ranvier branch, a lighter machine); "baseline" is `results/server-a/baseline-unt
   16.6 / 14.5 / 18.0 (2.5x, 2.4x, 1.6x). The baseline already showed the same values, so this task did not move
   them. They are still below file-slim's allocation on all three (63.4, 72.0, 31.2 MB). The controller has assigned
   the attribution (dotnet-trace or a task-boundary bisect; allocation repeats to 0.04%) to the final review.
-- Baseline against pass 2 shows the same shape with 5 to 20% run-to-run movement in p50 and larger in p95, which is
-  the machine, not the code (nothing changed between them).
+- Baseline against pass 2: allocation per edit is unchanged (41.3 against 41.2 MB and so on), which holds because
+  allocation repeats to 0.04%. The p50 and p95 differences (mid-body p50 35.1 against 31.4, p95 99.2 against 82.5) are
+  not attributed: Ranvier moved from `ce3a8b64` to `d701e6c5` and R from the baseline's build to `d119e80` (including
+  the RV-1 workaround removal) between them, and the machine load differed.
 
 ## Body repeats: median and spread
 
@@ -227,7 +252,7 @@ are consistently at or below it, and large-lineinsert is consistently 22 to 44% 
 ## D2: the huge files
 
 CheckExpressions.fs (13,757 lines, a `let rec` group of about 9,388 lines from line 4,295 to the end, one row) and
-il.fs (6,284 lines, 488 declarations, not `rec`). Row sizes are in lines, from the `extra/` files: `edited` is the
+il.fs (6,284 lines, 516 rows by `Split`, not `rec`). Row sizes are in lines, from the `extra/` files: `edited` is the
 declaration the edit falls in, `largest` the largest declaration of the edited file.
 
 | scenario | edited row | largest row | decl p50 / p95 ms | file-slim p50 / p95 ms | ratio | decl / file-slim edit MB | decls/edit | shifted/edit | before (Task 1): decl / file-slim p50 |
@@ -246,29 +271,59 @@ the clean ones, which is the foreign job, and is why pass 2 is used.
 
 - **`huge-cx-rec` against file-slim is the rec-group floor.** With one 9,388-line row, an edit anywhere in the group
   re-checks all of it as one declaration plus a finish of 173 ms. decl takes 1400 ms against file-slim's 1224 ms
-  (1.14x; 1.06x in the second clean sample). Its edit allocation is 8% below file-slim's. Before Task 4 it was
-  1778 / 1275 ms (1.39x), so the floor moved from 1.4x to about 1.1x slower, not to parity.
+  (1.14x; 1.06x in the second clean sample). Its edit allocation is 8% below file-slim's. Since Task 1 (1778 / 1275
+  ms, 1.39x) the floor has fallen to about 1.1x slower, not to parity. At Task 4 (`t4`) it was still 1600 / 1178 ms
+  (1.36x), so Task 4 did not move it; the move came after `t4` and this task does not attribute it.
 - `huge-cx-top`, an edit to a one-line declaration in the same file, takes 626 ms against 1274 ms. The 9,388-line row
   is not re-checked, so the saving is the whole file's rec-group check. Its finish is 151 ms (24% of the edit).
 - **A rec group costs about what a whole-file check costs.** decl's 1400 ms for one row of 9,388 lines and
   file-slim's 1224 ms for the whole project are the same order, which is the point of the file-level fallback.
 - `huge-il-body` is the one loss that is not a rec group: 1.29x slower (1.37x in the second sample). The edit falls
-  in a 2-line declaration, yet **476 of the file's 488 declarations are re-checked per edit** (adopted decls/edit
-  = 476; the same in `before` and `t4`, so this is not a regression of Task 7). Why one literal reaches 476
-  declarations is not investigated here. It is the first thing to look at for a large non-rec file.
+  in a 2-line declaration, yet **476 of the file's 516 rows are re-checked per edit** (adopted decls/edit = 476; the
+  same in `before` and `t4`, so this is not a regression of Task 7). The cause is diagnosed in the next section.
 - Line inserts are the clearest win: shifting 243 and 491 rows leaves 0 declarations to re-check, 0.69x and 0.84x
-  file-slim (before Task 7: 2.0x and 2.0x slower).
+  file-slim. Since Task 1 they were 2.0x and 2.0x slower; at Task 4 (`t4`) 1.25x and 1.51x. The shifting itself is
+  Task 7's, but the gain shown is the whole path from Task 1.
 - Edit allocations on huge are about 1 GB per edit for both engines; decl's are lower except on huge-il-body.
 - Peak working set on huge: decl 1.8 to 2.1 GB, file-slim 1.7 to 1.9 GB (cx-rec 2062 vs 1858 MB, 1.11x).
 
+## huge-il: why one literal re-checks 476 declarations
+
+From `huge-il-diagnosis.md` (a read-only probe; R and F unchanged). The doc's earlier "488 declarations" was wrong:
+`Split` gives **516 rows** in il.fs, and the 476 is 476 of 516.
+
+- **Cause: one R12 segment, not a dependency cascade.** `SHA1.f` (il.fs:222, row 40) is not inline and has unannotated
+  operands, so its types stay a free inference variable until `sha1Hash` solves it 11 rows later. It is therefore
+  `LeavesFreeTypars` and `DependsOnLaterDeclarations`, and the first such row becomes the segment leader
+  (`FileGraph.fs:857`); `NameIndex.fs:185` runs the segment to the last row. 516 rows minus row 40 is 476.
+- **Underneath it, an R11 span.** `type ILFieldSpec with` (il.fs:4284) augments `ILFieldSpec` (il.fs:1132), so rows 77
+  to 342 re-check together, and the 10 type abbreviations inside that span re-check every later row with no
+  fingerprint cutoff (173 more rows). R11 alone gives 439 for the scenario's edit site; annotating `f` alone leaves 439.
+- **Every edit from row 40 on re-checks 476** (rows 40 to 515, 92% of the file), including the last declaration. An edit
+  before row 40 re-checks 1. No fingerprint changes; a `.fsi` makes no difference; there is no fallback to file level.
+- **It is general, not specific to il.fs.** Segment rows with every file promoted: small 173 of 1375 (12.6%), mid 139
+  of 1110 (12.5%), large 7 of 297 (2.4%). il.fs is extreme because the first flagged row is early in a long file.
+  Expect more such files in the rest of the huge project (not measured).
+- **It does not explain large-body's gap.** Every large-body step checks 1 declaration with 0 segment rows; the edit is
+  in a 108-line row. The 2.8 ms gap is not attributed (the finish is 2.5 ms; that is a guess, not a finding).
+- **A second finding:** editing a type abbreviation, an `open` or any other row that affects all later rows re-checks
+  the later rows one at a time. 320 single rows took 2.6 to 4.2 s in the probe, 3x to 5x file-slim on this file,
+  on a busy machine. No scenario covers it.
+- **Rulings (progress.md).** A stopgap goes in as an unplanned task after Task 10: when one segment or one edit's
+  re-check set holds most of a file's rows, route that file to file level. It is small and sound and caps the loss at
+  about file-slim, at the cost of the declaration win on those files. The stopgap task also fixes the cold counters and
+  adds a scenario for an abbreviation edit on a huge file, so Task 19 covers it. The real fixes (ending an R12 segment
+  when its variables are solved, 150 to 300 lines; narrowing R11, mostly in the fork) are parked past Task 19 as
+  open items in `docs/server-results.md`: both are unsound if done naively, and neither blocks the server.
+
 ## Memory and cold
 
-| corpus | decl cold ms | file-slim cold ms | ratio | decl cold alloc MB | file-slim cold alloc MB | ratio | decl peak MB | file-slim peak MB | premise breaks at cold | segment rows at cold |
+| corpus | decl cold ms | file-slim cold ms | ratio | decl cold alloc MB | file-slim cold alloc MB | ratio | decl peak MB | file-slim peak MB | premise breaks at cold (unmeasured) | segment rows at cold (unmeasured) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| small | 6241 | 5694 | 1.10 | 1896 | 1832 | 1.03 | 209 | 224 | 0 | 0 |
-| mid | 4095 | 4019 | 1.02 | 1736 | 1699 | 1.02 | 351 | 339 | 0 | 0 |
-| large | 3109 | 3132 | 0.99 | 992 | 955 | 1.04 | 286 | 287 | 0 | 0 |
-| huge | 23140 | 20110 | 1.15 | 16990 | 16110 | 1.05 | 1251 | 1209 | 0 | 0 |
+| small | 6241 | 5694 | 1.10 | 1896 | 1832 | 1.03 | 209 | 224 | (0) | (0) |
+| mid | 4095 | 4019 | 1.02 | 1736 | 1699 | 1.02 | 351 | 339 | (0) | (0) |
+| large | 3109 | 3132 | 0.99 | 992 | 955 | 1.04 | 286 | 287 | (0) | (0) |
+| huge | 23140 | 20110 | 1.15 | 16990 | 16110 | 1.05 | 1251 | 1209 | (0) | (0) |
 
 - Cold start is now 0.99x to 1.10x file-slim on small, mid and large (checkpoint 2.2x to 3.0x). The checkpoint's
   decl cold times were 16254, 11094 and 7433 ms; they are 6241, 4095 and 3109 ms. On huge it is 1.15x (23.1 s against
@@ -276,14 +331,15 @@ the clean ones, which is the foreign job, and is why pass 2 is used.
 - Cold allocations are at most 1.05x file-slim's (checkpoint 2.2x to 4.4x; small's was 8 GB and is now 1.9 GB).
 - Peak working set on body edits: decl 260 / 389 / 318 MB against file-slim's 284 / 435 / 316 MB (checkpoint decl
   416 / 454 / 364). On signature edits decl peaks at 318 / 509 / 378 MB (checkpoint 1010 / 911 / 670).
-- The premise breaks and segment rows the cold check reports are 0 on all four corpora.
+- The two cold counters in the table are shown as (0) because they are unmeasured (see "The cold counters read zero
+  by construction"): they are read before promotion.
 - These cold times include the project-load phases of the checkpoint driver, not LSP; they are not comparable with
   FSAC's.
 
 ## Caveats
 
 - **The machine was not quiet.** Pass 1 and the body repeats ran while another session's job used 1.2 to 2 cores
-  (20:42 to about 22:18). Pass 2 ran after it exited, with foreign load of 3 to 34% CPU from desktop applications
+  (20:42 to about 22:18). Pass 2 ran after it exited, with foreign load of up to about 45% CPU from desktop applications
   (browsers, editors, and four busy python processes of unknown origin). Timings are therefore
   indicative: on a quiet machine p50s may be a few ms lower and the ratios closer to 1.
 - **One clean sample per scenario** (pass 2), except the signature, bigfile and lineinsert scenarios (four clean
@@ -298,17 +354,17 @@ the clean ones, which is the foreign job, and is why pass 2 is used.
 - **Percentile definition.** p50 is the lower-middle element; with 10 edits p95 is the maximum.
 - **Idle dotnet servers.** The five idle build servers from earlier work used no CPU and had exited on their own by
   20:43; I stopped nothing. PID 10768 (older) also stayed idle.
-- **Not covered:** `*-openmany` and `*-requests` (the checkpoint driver cannot replay them), and the huge-scenario
-  premise-break and segment figures beyond the cold counters.
+- **Not covered:** `*-openmany` and `*-requests` (the checkpoint driver cannot replay them), and premise-break and
+  segment figures for any file a scenario does not edit (the cold counters are unmeasured, as above).
 
 ## Open items for the controller
 
-1. The three strict misses (small-signature allocation +1.2%, mid-body +12.1% over the checkpoint, large-lineinsert
-   12 adopted and +2% on p50) are listed at the top. Milestone B waits on the controller's ruling on them.
-2. large-body is slower than file-slim in this task's runs (1.10x clean; 5 of 6 runs). That is against the narrowed
-   claim.
+1. The four missed lines (small-signature allocation +1.2%, mid-body +12.1% over the checkpoint, large-lineinsert 12
+   adopted, and its p50 +2% over its line) are listed at the top and have been ruled accepted.
+2. large-body is slower than file-slim in this task's runs (1.10x clean; 5 of 6 runs); the claim is narrowed to match.
 3. Body p95 and allocation per edit: unattributed (final review).
-4. huge-il-body re-checks 476 declarations for one literal edit, and is 1.29x slower than file-slim.
+4. huge-il-body: diagnosed above; the stopgap and the parked fixes are in the rulings.
+5. The cold counters need reading after promotion (stopgap task).
 
 ## Files
 
