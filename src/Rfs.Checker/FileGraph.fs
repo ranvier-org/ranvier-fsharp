@@ -119,6 +119,23 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
     let seen = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
 
     member _.Key = key
+
+    /// The fingerprint later declarations are compared with: for a result in a closed window, the one the window's
+    /// close left, which shows what later rows of the window solved. Set before the result is published.
+    member val Print: string = result.Fingerprint with get, set
+    /// Whether it was checked in a window (R12): it saw the window's variables as they stood at its row, so it is never
+    /// a result for the row on its own
+    member val InWindow = false with get, set
+    /// Whether no variable of its window was open at the window's close: nothing later changes it in place
+    member val Closed = false with get, set
+
+    /// This result's window state, on a shift of it.
+    member this.KeepingWindowOf(other: RowCheck) =
+        this.Print <- other.Print
+        this.InWindow <- other.InWindow
+        this.Closed <- other.Closed
+        this
+
     /// The check this result came from: itself, or for a result shifted to another line (W1), the check it was
     /// shifted from. A shifted result holds the same values and entities, so what was checked against one was
     /// checked against the other.
@@ -230,6 +247,9 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     let segment =
         createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct -> this.RunSegment ct)
 
+    // What a flight of the segment left when it stopped short of its span: the run the role's change makes takes it
+    let mutable stash: SegmentCheck = null
+
     // The result as the role gives it: the declaration's own check, or its row of the segment it is in
     let mutable check = Unchecked.defaultof<Memo<RowCheck>>
 
@@ -244,7 +264,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     let latest = Nodes.latestOfMemo check
 
     let token =
-        createMemoWithComparer StringComparer.Ordinal (fun _ -> latest.Value.Result.Fingerprint)
+        createMemoWithComparer StringComparer.Ordinal (fun _ -> latest.Value.Print)
 
     let origin =
         createMemoWithComparer HashIdentity.Reference (fun _ -> latest.Value.Origin)
@@ -332,7 +352,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
             // Tracked only for a result that depends on later declarations, whose current check reads them
             let later =
-                if not (isNull previous) && previous.Result.DependsOnLaterDeclarations then
+                if not (isNull previous) && previous.Result.DependsOnLaterDeclarations && not previous.Closed then
                     file.KeysAfter key
                 else
                     untrack (fun () -> file.KeysAfter key)
@@ -368,10 +388,11 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                    |> Array.forall (fun (k, t) ->
                        match previous.Saw k with
                        | null -> false
-                       | seen -> seen.Result.Fingerprint = t)
+                       | seen -> seen.Print = t)
                 && identities |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
                 && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
+                && not previous.InWindow
 
             // A shifted result holds the items of the declarations it depends on as they were when it was checked. When
             // one of them was checked again since, its new items replaced those, which kept their old lines: go to
@@ -410,7 +431,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
                 // An earlier result with free inference variables whose segment has not formed yet: checks that solve
                 // them in place must not run together, so this one runs alone
-                let alone = earlier |> Array.exists (fun (_, c) -> c.Result.DependsOnLaterDeclarations)
+                let alone = earlier |> Array.exists (fun (_, c) -> c.Result.DependsOnLaterDeclarations && not c.Closed)
 
                 Task.Run<RowCheck>(
                     (fun () ->
@@ -433,7 +454,13 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
         | Role.Member _ -> Task.FromException<SegmentCheck>(InvalidOperationException $"%A{key} leads no segment")
         | Role.Leader span ->
             let start = file.StartLatest.Value
-            let previous = segment.Peek
+
+            let previous =
+                match stash with
+                | null -> segment.Peek
+                | stashed when stashed.Span = span -> stashed
+                | _ -> segment.Peek
+
             let inSpan = HashSet<DeclarationKey>(span, HashIdentity.Structural)
 
             let members =
@@ -501,7 +528,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                    |> Array.forall (fun (k, t) ->
                        match previous.Saw k with
                        | null -> false
-                       | seen -> seen.Result.Fingerprint = t)
+                       | seen -> seen.Print = t)
                 && identities |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
 
             // The members unchanged but for the line they start on (W1)
@@ -522,6 +549,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             let moved = if current then moved else [||]
 
             if current && moved.Length = 0 then
+                stash <- null
                 Task.FromResult previous
             elif current then
                 Task.Run<SegmentCheck>(
@@ -545,27 +573,122 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
                 this.AwaitPrevious()
                 let earlier = file.Earlier(key, start)
-                let laterOf = dict [ for r, _, _ in members -> r.Key, untrack (fun () -> file.KeysAfter r.Key) ]
+                let laterOf (k: DeclarationKey) = untrack (fun () -> file.KeysAfter k)
+                stash <- null
+                let order = untrack (fun () -> file.Order.Value)
+                let leaderAt = (order.TryPosition key).Value
+                let windows = untrack (fun () -> file.Windows.Value)
+                let forcedIn = untrack (fun () -> file.PremiseLeaders.Value) |> Set.exists inSpan.Contains
+
+                // The window this run may end early or go on past, when its leader is in the span
+                let window =
+                    if forcedIn then
+                        None
+                    else
+                        windows |> List.tryFind (fun w -> inSpan.Contains w.Leader)
+
+                // Rows after the span: untracked, since this run only reads them to find out where the window closes,
+                // and the run the new close makes reads them as members
+                let beyond =
+                    match window with
+                    | None -> [||]
+                    | Some _ ->
+                        untrack (fun () ->
+                            order.Keys[leaderAt + span.Length ..]
+                            |> Array.map (fun k -> let r = file.RowOf k in r, r.Decl.Value, r.Dependencies.Value))
+
+                let rows = Array.append members beyond
+                let laterKeys = rows |> Array.map (fun (r, _, _) -> laterOf r.Key)
+                let ends = NameIndex.augmentationEnds order file.Index.Value
 
                 Task.Run<SegmentCheck>(
                     (fun () ->
                         task {
-                            use! _ = start.Lock.ReadAsync()
-                            let envBefore = file.Walk(start, earlier, ct)
-                            let mutable env = envBefore
-                            let results = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
+                            let! (checkedRows: SegmentCheck) =
+                                task {
+                                    use! _ = start.Lock.ReadAsync()
+                                    let envBefore = file.Walk(start, earlier, ct)
+                                    let mutable env = envBefore
+                                    let results = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
+                                    let inOrder = ResizeArray<RowCheck>()
+                                    let leaderOfWindow = window |> Option.map (fun w -> (order.TryPosition w.Leader).Value)
+                                    let mutable required = leaderOfWindow |> Option.defaultValue (leaderAt + span.Length - 1)
+                                    let mutable stop = rows.Length - 1
+                                    let mutable i = 0
+                                    let mutable stillOpen = window.IsSome
 
-                            for r, decl, deps in members do
-                                ct.ThrowIfCancellationRequested()
-                                let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
-                                file.Project.CountCheck(r.Key, file.Path)
-                                let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterOf[r.Key], null)
-                                results[r.Key] <- c
-                                let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
-                                r.EnvCache <- next
-                                env <- next
+                                    while i <= stop do
+                                        ct.ThrowIfCancellationRequested()
+                                        let r, decl, deps = rows[i]
+                                        let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
+                                        file.Project.CountCheck(r.Key, file.Path)
+                                        let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterKeys[i], null)
+                                        c.InWindow <- window.IsSome
+                                        results[r.Key] <- c
+                                        inOrder.Add c
+                                        let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
+                                        r.EnvCache <- next
+                                        env <- next
 
-                            return SegmentCheck(span, start, results, envBefore)
+                                        match ends.TryGetValue(leaderAt + i) with
+                                        | true, e -> required <- max required e
+                                        | _ -> ()
+
+                                        if window.IsSome && leaderAt + i >= required then
+                                            let flagged =
+                                                inOrder |> Seq.map _.Result |> Seq.filter _.DependsOnLaterDeclarations |> Array.ofSeq
+
+                                            stillOpen <- DeclarationChecker.WindowOpen(start.Start, flagged, ct)
+
+                                            if not stillOpen then
+                                                stop <- i
+
+                                        i <- i + 1
+
+                                    if window.IsSome && not stillOpen then
+                                        let flagged = inOrder |> Seq.filter _.Result.DependsOnLaterDeclarations |> Array.ofSeq
+                                        let prints = DeclarationChecker.PrintsNow(start.Start, flagged |> Array.map _.Result)
+
+                                        for c, print in Array.zip flagged prints do
+                                            c.Print <- file.Project.ClosePrintHook c.Key print
+
+                                        for c in inOrder do
+                                            c.Closed <- true
+
+                                    let ran = inOrder |> Seq.map _.Key |> Array.ofSeq
+                                    return SegmentCheck(ran, start, results, envBefore)
+                                }
+
+                            match window with
+                            | None -> return checkedRows
+                            | Some w ->
+                                let last = checkedRows.Span[checkedRows.Span.Length - 1]
+                                let closed = (checkedRows.Rows[last]).Closed
+                                let close = if closed then Some last else None
+                                let same = checkedRows.Span = span
+
+                                if same && w.Close = close then
+                                    return checkedRows
+                                else
+                                    file.Project.Post(fun () ->
+                                        if not same then
+                                            stash <- checkedRows
+
+                                        let ran = HashSet<DeclarationKey>(checkedRows.Span, HashIdentity.Structural)
+
+                                        file.Windows.Value <-
+                                            untrack (fun () -> file.Windows.Value)
+                                            |> List.choose (fun other ->
+                                                if other.Leader = w.Leader then Some { other with Close = close }
+                                                elif ran.Contains other.Leader then None
+                                                else Some other))
+
+                                    if same then
+                                        return checkedRows
+                                    else
+                                        // Superseded by the run the role's change makes, which takes the stash
+                                        do! Task.Delay(Timeout.Infinite, ct)
+                                        return raise (OperationCanceledException ct)
                         }),
                     ct
                 )
@@ -581,6 +704,8 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
     member val Order: Memo<Order> = Unchecked.defaultof<_> with get, set
     member val Index: Memo<FileIndex> = Unchecked.defaultof<_> with get, set
     member val Roles: Memo<Map<DeclarationKey, Role>> = Unchecked.defaultof<_> with get, set
+    member val Windows: Signal<Window list> = Unchecked.defaultof<_> with get, set
+    member val PremiseLeaders: Signal<Set<DeclarationKey>> = Unchecked.defaultof<_> with get, set
     member val Start: AsyncMemo<StartInfo> = Unchecked.defaultof<_> with get, set
     member val StartLatest: Memo<StartInfo> = Unchecked.defaultof<_> with get, set
     member val FinishLatest: Memo<Finished> = Unchecked.defaultof<_> with get, set
@@ -644,7 +769,7 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
     member _.TryShift(previous: RowCheck, decl: ParsedDeclaration) : RowCheck option =
         match DeclarationChecker.Shift(previous.Result, decl) with
         | ValueSome result ->
-            Some(RowCheck(previous.Key, decl, previous.Start, result, previous.EnvBefore, previous.Named, previous.Identity, previous.Later, previous.Origin))
+            Some(RowCheck(previous.Key, decl, previous.Start, result, previous.EnvBefore, previous.Named, previous.Identity, previous.Later, previous.Origin).KeepingWindowOf previous)
         | ValueNone -> None
 
     /// `previous` with each member that starts on another line shifted (W1), or None when the checker refuses any of
@@ -661,7 +786,7 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                 Nodes.same c.Decl decl
                 || (match DeclarationChecker.Shift(c.Result, decl) with
                     | ValueSome result ->
-                        rows[r.Key] <- RowCheck(c.Key, decl, c.Start, result, c.EnvBefore, c.Named, c.Identity, c.Later, c.Origin)
+                        rows[r.Key] <- RowCheck(c.Key, decl, c.Start, result, c.EnvBefore, c.Named, c.Identity, c.Later, c.Origin).KeepingWindowOf c
                         true
                     | ValueNone -> false))
 
@@ -867,39 +992,53 @@ module internal FileNodes =
             createMemoWithComparer HashIdentity.Structural (fun _ ->
                 NameIndex.ofFile [| for k in shared.Order.Value.Keys -> k, (shared.RowOf k).Content.Value |])
 
-        // The first declaration whose latest result depends on later ones (R12), written as soon as that result settles,
-        // so its segment forms before the declarations after it are checked again on their own
-        let dependsOnLater = createSignalWithComparer HashIdentity.Structural (None: DeclarationKey option)
+        // The windows of the file as they stand (R12), each written as soon as its leader's result settles, so its segment
+        // forms before the declarations after it are checked again on their own
+        let windows = createSignalWithComparer HashIdentity.Structural ([]: Window list)
+        shared.Windows <- windows
 
         // Declarations checked on their own whose final fingerprint differed from the one their check left (the D1
         // premise broke): treated as leaders, so what depends on them is checked in order after them. Kept while present.
         let premiseLeaders = createSignalWithComparer HashIdentity.Structural (Set.empty: Set<DeclarationKey>)
+        shared.PremiseLeaders <- premiseLeaders
 
         shared.Roles <-
             createMemoWithComparer HashIdentity.Structural (fun _ ->
-                let order = shared.Order.Value
+                let forced = [ for k in premiseLeaders.Value -> { Leader = k; Close = None; Forced = true } ]
+                NameIndex.roles shared.Order.Value shared.Index.Value (forced @ windows.Value))
 
-                let leader =
-                    Seq.append (Option.toList dependsOnLater.Value) premiseLeaders.Value
-                    |> Seq.choose (fun k -> order.TryPosition k |> ValueOption.toOption |> Option.map (fun p -> p, k))
-                    |> Seq.sortBy fst
-                    |> Seq.tryHead
-                    |> Option.map snd
-
-                NameIndex.roles order shared.Index.Value leader)
-
+        // Walks the file: a closed window is passed over, a flagged row that leads none starts one, and nothing is known
+        // after a window that has not closed. A window whose leader is no longer flagged goes.
         createEffect (fun () ->
             if driven.Value then
                 let order = shared.Order.Value
+                let known = windows.Value
+                let keys = order.Keys
+                let found = ResizeArray<Window>()
+                let mutable i = 0
 
-                let first =
-                    order.Keys
-                    |> Array.tryFind (fun k ->
-                        match (shared.RowOf k).Latest.TryValue with
-                        | Ready c -> c.Result.DependsOnLaterDeclarations
-                        | _ -> false)
+                while i < keys.Length do
+                    let k = keys[i]
 
-                untrack (fun () -> dependsOnLater.Value <- first))
+                    match (shared.RowOf k).Latest.TryValue with
+                    | Ready c when c.Result.DependsOnLaterDeclarations ->
+                        let close =
+                            known
+                            |> List.tryFind (fun w -> w.Leader = k)
+                            |> Option.bind _.Close
+                            |> Option.filter (fun c -> order.Contains c && order.TryPosition c >= ValueSome i)
+
+                        found.Add { Leader = k; Close = close; Forced = false }
+
+                        match close with
+                        | Some c -> i <- (order.TryPosition c).Value + 1
+                        | None -> i <- keys.Length
+                    | _ -> i <- i + 1
+
+                let next = List.ofSeq found
+
+                if next <> known then
+                    untrack (fun () -> windows.Value <- next))
 
         // The file is set up once per setup: its dependencies' signatures (compared by fingerprint, never by
         // reference) and its header. Body edits, and edits behind a .fsi, change neither, so they stay
@@ -1030,16 +1169,21 @@ module internal FileNodes =
                         let order = shared.Order.Value
                         let mutable leaders = premiseLeaders.Peek |> Set.filter live.Contains
 
+                        // Rows in a closed window are compared with what its close left: a variable that moved after it
+                        // shows here, and the row then leads to the end of the file
                         let r12Start =
-                            Seq.append (Option.toList dependsOnLater.Peek) leaders
+                            windows.Peek
+                            |> Seq.filter (fun w -> w.Close.IsNone || not (order.Contains w.Close.Value))
+                            |> Seq.map _.Leader
+                            |> Seq.append leaders
                             |> Seq.choose (fun k -> order.TryPosition k |> ValueOption.toOption)
                             |> Seq.fold min Int32.MaxValue
 
                         for i in 0 .. min r12Start f.Checks.Length - 1 do
                             let row, c = f.Checks[i]
 
-                            if not c.Result.DependsOnLaterDeclarations && premiseChecked.Add c then
-                                let provisional = c.Result.Fingerprint
+                            if (not c.Result.DependsOnLaterDeclarations || c.Closed) && premiseChecked.Add c then
+                                let provisional = c.Print
                                 let final = f.FileResult.Fingerprints[row.Key]
 
                                 if not (provisional.StartsWith "?") && not (final.StartsWith "?") && provisional <> final then

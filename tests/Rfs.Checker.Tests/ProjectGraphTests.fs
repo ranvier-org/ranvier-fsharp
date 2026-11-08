@@ -63,7 +63,7 @@ let tests =
                   Expect.equal graph.PremiseBreaks 0L "no final fingerprint differs from its check's"
                   Expect.equal (graph.SegmentRows a) 0 "A.fs checks every declaration on its own"
                   Expect.equal (graph.SegmentRows b) 2 "Counter and its augmentation"
-                  Expect.equal (graph.SegmentRows d) 4 "r, fill, size, after"
+                  Expect.equal (graph.SegmentRows d) 2 "r and fill, which solves it"
               finally
                   host.Dispose()
           }
@@ -167,16 +167,13 @@ let tests =
               do!
                   withDeps (fun s ->
                       task {
-                          Expect.equal (s.Graph.SegmentRows d) 4 "r's segment: r, fill, size, after"
+                          Expect.equal (s.Graph.SegmentRows d) 2 "r's window: r and fill, which solves it in place"
                           let! r = replace s d "let after = 42" "let after = 43"
-
-                          Expect.equal
-                              (r.NamesIn d)
-                              [ "after"; "fill"; "r"; "size" ]
-                              "r, which fill and size use (fill solves it in place), and everything after it"
-
-                          Expect.equal r.Delta 4L "start is kept"
-                          do! expectOracle s r.Diagnostics "after r edited"
+                          Expect.equal (r.NamesIn d) [ "after" ] "after is past the window, so it re-checks alone"
+                          do! expectOracle s r.Diagnostics "after edited"
+                          let! r = replace s d "r.Value <- [ start ]" "r.Value <- [ start + 1 ]"
+                          Expect.equal (r.NamesIn d) [ "fill"; "r" ] "an edit in the window re-checks it, and start is kept"
+                          do! expectOracle s r.Diagnostics "fill edited"
                       })
           }
 
@@ -197,7 +194,7 @@ let tests =
                           for KeyValue(name, n) in runs do
                               Expect.isLessThanOrEqual n 3 $"%s{name} ran %d{n} times: %A{runs}"
 
-                          Expect.equal (s.Graph.SegmentRows d) 5 "start leads the segment to the end of D.fs"
+                          Expect.equal (s.Graph.SegmentRows d) 5 "start leads the window, to after, which solves it"
                           do! expectOracle s r.Diagnostics "start = ref []"
                           printfn $"runs per declaration after start became ref []: %A{runs}"
                       })

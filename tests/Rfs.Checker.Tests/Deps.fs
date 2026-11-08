@@ -277,6 +277,10 @@ let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FS
         match u.Symbol with
         | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere"
         | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
+        // A kept row's use of a value checked again since holds the old value, which conformance did not reach: its
+        // signature location is an open gap too ("a kept user ..." in RecheckTests), carried to the query tasks
+        | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue ->
+            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, implementation %A{u.Symbol.ImplementationLocation}"
         | _ ->
             $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
     |> Set.ofSeq

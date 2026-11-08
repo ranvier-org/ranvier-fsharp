@@ -43,6 +43,16 @@ type Role =
     | Leader of span: DeclarationKey[]
     | Member of leader: DeclarationKey
 
+/// Declarations checked in order from `Leader`, the first whose result left an inference variable open, to `Close`, the
+/// first after whose check none of theirs is. No check outside them can reach those variables, so what comes after is
+/// checked on its own against what the variables were solved to (R12). `Close = None`, or a key no longer after the
+/// leader, means through the end of the file, as does `Forced`: a declaration whose final fingerprint broke the D1
+/// premise, which leads what could have changed it.
+type Window =
+    { Leader: DeclarationKey
+      Close: DeclarationKey option
+      Forced: bool }
+
 /// What a declaration's check reads of the rest of its file. Other files are read per file (R16): a file begins again when
 /// an earlier file's signature fingerprint changes.
 type Dependencies =
@@ -153,13 +163,9 @@ module NameIndex =
           Identity = identity
           Typed = typed |> Array.filter earlier }
 
-    /// The role of every declaration. A segment starts at the first declaration whose result depends on later ones
-    /// (R12) and runs to the end of the file, or at a type an augmentation of the file may extend (R11) and runs to its
-    /// last augmentation; a segment that reaches the start of another one takes it in.
-    let roles (order: Order) (index: FileIndex) (dependsOnLater: DeclarationKey option) : Map<DeclarationKey, Role> =
-        let keys = order.Keys
-        let count = keys.Length
-        let lastAugmentation = Dictionary<int, int>()
+    /// For each declaration an augmentation extends, the position of its last augmentation.
+    let augmentationEnds (order: Order) (index: FileIndex) =
+        let ends = Dictionary<int, int>()
 
         for augmentation, targets in index.Augmentations do
             match order.TryPosition augmentation with
@@ -167,41 +173,58 @@ module NameIndex =
                 for target in targets do
                     match order.TryPosition target with
                     | ValueSome t when t < a ->
-                        lastAugmentation[t] <-
-                            match lastAugmentation.TryGetValue t with
+                        ends[t] <-
+                            match ends.TryGetValue t with
                             | true, known -> max known a
                             | _ -> a
                     | _ -> ()
             | ValueNone -> ()
 
-        let leader =
-            dependsOnLater |> Option.bind (fun k -> order.TryPosition k |> ValueOption.toOption)
+        ends
+
+    /// The position a window runs to in `order`.
+    let windowEnd (order: Order) (window: Window) =
+        let last = order.Keys.Length - 1
+
+        match order.TryPosition window.Leader, window.Close with
+        | ValueSome leader, Some close when not window.Forced ->
+            match order.TryPosition close with
+            | ValueSome c when c >= leader -> c
+            | _ -> last
+        | _ -> last
+
+    /// The role of every declaration. A segment starts at a window's leader (R12) and runs to its close, or at a type an
+    /// augmentation of the file may extend (R11) and runs to its last augmentation; a segment that reaches the start of
+    /// another one takes it in.
+    let roles (order: Order) (index: FileIndex) (windows: Window list) : Map<DeclarationKey, Role> =
+        let keys = order.Keys
+        let count = keys.Length
+        let ends = augmentationEnds order index
+
+        for window in windows do
+            match order.TryPosition window.Leader with
+            | ValueSome leader ->
+                let last = windowEnd order window
+
+                ends[leader] <-
+                    match ends.TryGetValue leader with
+                    | true, known -> max known last
+                    | _ -> last
+            | ValueNone -> ()
 
         let roles = Dictionary<DeclarationKey, Role>(HashIdentity.Structural)
         let mutable i = 0
 
         while i < count do
-            let last =
-                if leader = Some i then
-                    count - 1
-                else
-                    match lastAugmentation.TryGetValue i with
-                    | true, a ->
-                        let mutable last = a
-                        let mutable j = i + 1
+            let mutable last = i
+            let mutable j = i
 
-                        while j <= last do
-                            if leader = Some j then
-                                last <- count - 1
+            while j <= last do
+                match ends.TryGetValue j with
+                | true, e -> last <- max last e
+                | _ -> ()
 
-                            match lastAugmentation.TryGetValue j with
-                            | true, b -> last <- max last b
-                            | _ -> ()
-
-                            j <- j + 1
-
-                        last
-                    | _ -> i
+                j <- j + 1
 
             if last = i then
                 roles[keys[i]] <- Role.Single

@@ -381,6 +381,31 @@ let private implicitThroughAugmentation (counter: int ref) : Mutation =
                 $"type Implicit%d{n}() =\n    member _.A = 1\n\nlet takes%d{n} (x: int) = x\n\ntype Implicit%d{n} with\n    member _.Other%d{n} = 1\n\nlet row%d{n} = takes%d{n} (Implicit%d{n}())"
             |> Option.map (fun t -> t, $"add Implicit%d{n}")
 
+/// A variable a later row solves, with readers before and after the solver. Flips what solves it to another type, moves
+/// the solving to the row before the solver or back, deletes it, or adds a second variable linked to it (R12).
+let private windowSolver (counter: int ref) : Mutation =
+    fun random text ->
+        let m = Regex.Match(text, @"let win(\d+) = ref \[\]")
+
+        if not m.Success then
+            counter.Value <- counter.Value + 1
+            let n = counter.Value
+            appended text $"let win%d{n} = ref []\n\nlet before%d{n} = 1\n\nlet read%d{n} = win%d{n}.Value.Length\n\nlet solve%d{n} () = win%d{n}.Value <- [ 1 ]\n\nlet late%d{n} = win%d{n}.Value.Head + 1" |> Option.map (fun t -> t, $"add win%d{n}")
+        else
+            let n = m.Groups[1].Value
+            let solver = Regex.Match(text, $@"let solve%s{n} \(\) = [^\n]*")
+            let before = Regex.Match(text, $@"let before%s{n} = [^\n]*")
+
+            if not solver.Success || not before.Success then
+                None
+            else
+                match random.Next 5 with
+                | 0 -> Some(text.Replace(solver.Value, $"let solve%s{n} () = win%s{n}.Value <- [ \"s\" ]"), $"win%s{n} solved to string")
+                | 1 -> Some(text.Replace(solver.Value, $"let solve%s{n} () = win%s{n}.Value <- [ 1 ]"), $"win%s{n} solved to int")
+                | 2 -> Some(text.Replace(before.Value, $"let before%s{n} = (win%s{n}.Value <- [ 1 ])"), $"win%s{n} solved earlier")
+                | 3 -> Some(text.Replace(before.Value, $"let before%s{n} = 1"), $"win%s{n} not solved earlier")
+                | _ -> Some(text.Replace(solver.Value, $"let solve%s{n} () = ()"), $"win%s{n} solver gone")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -434,7 +459,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                typeBodyThenUser counter follow
                typeBodyThenUser counter follow
                implicitThroughAugmentation counter
-               implicitThroughAugmentation counter |]
+               implicitThroughAugmentation counter
+               windowSolver counter
+               windowSolver counter |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]

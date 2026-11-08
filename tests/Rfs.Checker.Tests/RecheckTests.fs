@@ -139,6 +139,222 @@ let tests =
               Expect.isLessThan singleAllocated (3L * segmentAllocated) "the same rows cost about what a segment does"
           }
 
+          inBothModes "a row after the solver re-checks alone" (fun s ->
+              task {
+                  let source (after: int) =
+                      lines [ "let r = ref []"; "let fill () = r.Value <- [ 1 ]"; "let size () = 1"; $"let after = %d{after}" ]
+
+                  let! r = edit s d (source 42)
+                  do! expectOracle s r.Diagnostics "the source"
+                  Expect.equal (s.Graph.SegmentRows d) 2 "r and fill"
+                  let! r = edit s d (source 43)
+                  Expect.equal (r.NamesIn d) [ "after" ] "only after"
+                  do! expectOracle s r.Diagnostics "after edited"
+              })
+
+          inBothModes "a line insert after the window shifts" (fun s ->
+              task {
+                  let source (gap: string) =
+                      "module Deps.D\n\nlet r = ref []\n\nlet fill () = r.Value <- [ 1 ]\n\n" + gap + "let after = 42\n"
+
+                  let! _ = edit s d (source "")
+                  let! r = edit s d (source "\n")
+                  Expect.equal r.Delta 0L "nothing re-checks"
+                  do! expectOracle s r.Diagnostics "line inserted"
+              })
+
+          inBothModes "three windows in one file are separate" (fun s ->
+              task {
+                  let source (second: int) =
+                      lines
+                          [ "let r1 = ref []"
+                            "let fill1 () = r1.Value <- [ 1 ]"
+                            "let r2 = ref []"
+                            $"let fill2 () = r2.Value <- [ %d{second} ]"
+                            "let r3 = ref []"
+                            "let fill3 () = r3.Value <- [ 3 ]" ]
+
+                  let! r = edit s d (source 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  Expect.equal (s.Graph.SegmentRows d) 6 "two rows each"
+                  let! r = edit s d (source 2)
+                  Expect.equal (r.NamesIn d) [ "fill2"; "r2" ] "only the second"
+                  do! expectOracle s r.Diagnostics "the second edited"
+              })
+
+          inBothModes "a row after the window sees a different solution" (fun s ->
+              task {
+                  let source (value: string) =
+                      lines [ "let r = ref []"; $"let fill () = r.Value <- [ %s{value} ]"; "let n = r.Value.Head + 1" ]
+
+                  let! r = edit s d (source "1")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "\"s\"")
+                  Expect.contains (r.NamesIn d) "n" "n re-checks"
+                  do! expectOracle s r.Diagnostics "solved to string"
+              })
+
+          inBothModes "a user through a window row sees it" (fun s ->
+              task {
+                  let source (value: string) =
+                      lines
+                          [ "let r = ref []"
+                            "let g () = r.Value"
+                            $"let fill () = r.Value <- [ %s{value} ]"
+                            "let h = g ()"
+                            "let j = h.Head + 1" ]
+
+                  let! r = edit s d (source "1")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "\"s\"")
+                  Expect.isTrue (Set.isSubset (set [ "h"; "j" ]) (set (r.NamesIn d))) "h and j re-check, by g's close print"
+                  do! expectOracle s r.Diagnostics "solved to string"
+              })
+
+          inBothModes "the solver moves earlier" (fun s ->
+              task {
+                  let source (m: string) =
+                      lines [ "let r = ref []"; m; "let n = r.Value.Length"; "let solve () = r.Value <- [ 1 ]"; "let z = 1" ]
+
+                  let! r = edit s d (source "let m = 1")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "let m = (r.Value <- [ 1 ])")
+                  do! expectOracle s r.Diagnostics "m solves it"
+                  let! r = edit s d (source "let m = 1")
+                  do! expectOracle s r.Diagnostics "solve solves it again"
+              })
+
+          inBothModes "the solver moves later" (fun s ->
+              task {
+                  let source (solve: string) (k: string) =
+                      lines [ "let r = ref []"; "let m = r.Value.Length"; solve; k; "let tail = 1" ]
+
+                  let! r = edit s d (source "let solve () = r.Value <- [ 1 ]" "let k = 1")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "let solve () = ()" "let k = (r.Value <- [ 1 ])")
+                  do! expectOracle s r.Diagnostics "k solves it"
+                  let! r = edit s d (source "let solve () = r.Value <- [ 1 ]" "let k = 1")
+                  do! expectOracle s r.Diagnostics "solve solves it again"
+              })
+
+          inBothModes "the solver is deleted" (fun s ->
+              task {
+                  let! r = edit s d (lines [ "let r = ref []"; "let solve () = r.Value <- [ 1 ]"; "let z = 1" ])
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (lines [ "let r = ref []"; "let z = 1" ])
+                  do! expectOracle s r.Diagnostics "solver gone"
+                  Expect.isTrue (r.Diagnostics[d] |> Array.exists (fun x -> x.ErrorNumber = 30)) "FS0030 at r"
+              })
+
+          inBothModes "solved to another open variable stays open" (fun s ->
+              task {
+                  let source (z: int) (after: int) =
+                      lines
+                          [ "let r = ref []"
+                            "let s = ref []"
+                            "let link () = r.Value <- s.Value"
+                            $"let z = %d{z}"
+                            "let fin () = s.Value <- [ 1 ]"
+                            $"let after = %d{after}" ]
+
+                  let! r = edit s d (source 1 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source 1 2)
+                  Expect.equal (r.NamesIn d) [ "after" ] "after is past fin"
+                  do! expectOracle s r.Diagnostics "after edited"
+                  let! r = edit s d (source 2 2)
+                  Expect.equal (r.NamesIn d) [ "fin"; "link"; "r"; "s"; "z" ] "z is in the window, which link's r keeps open"
+                  do! expectOracle s r.Diagnostics "z edited"
+              })
+
+          inBothModes "a nested module's variable keeps the window open" (fun s ->
+              task {
+                  let source (after: int) =
+                      lines [ "module M =\n    let r = ref []"; $"let after = %d{after}"; "let use1 () = M.r.Value <- [ 1 ]"; "let z = 2" ]
+
+                  let! r = edit s d (source 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source 2)
+                  Expect.contains (r.NamesIn d) "use1" "the window runs to its solver"
+                  Expect.isFalse (List.contains "z" (r.NamesIn d)) "z is past it"
+                  do! expectOracle s r.Diagnostics "after edited"
+              })
+
+          inBothModes "a member's variable closes at its use" (fun s ->
+              task {
+                  let source (literal: string) =
+                      lines [ "type T() =\n    member _.M() = 1L + 1"; $"let t: %s{literal} = T().M()"; "let z = 1" ]
+
+                  let! r = edit s d (source "int64")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "int")
+                  do! expectOracle s r.Diagnostics "the use changes"
+                  let! r = edit s d (source "int64")
+                  do! expectOracle s r.Diagnostics "and back"
+              })
+
+          inBothModes "a window's type's users re-check" (fun s ->
+              task {
+                  let source (value: string) =
+                      lines
+                          [ "let r = ref []"
+                            "type S() =\n    member _.R = r"
+                            $"let fill () = r.Value <- [ %s{value} ]"
+                            "let u (s: S) = s.R"
+                            "let z = 1" ]
+
+                  let! r = edit s d (source "1")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source "2")
+                  Expect.contains (r.NamesIn d) "u" "u holds S's entity"
+                  Expect.isFalse (List.contains "z" (r.NamesIn d)) "z does not"
+                  do! expectOracle s r.Diagnostics "fill edited"
+              })
+
+          testTask "a broken close print re-forms the segment to the end of the file" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let source (after: int) = lines [ "let r = ref []"; "let fill () = r.Value <- [ 1 ]"; "let size () = 1"; $"let after = %d{after}" ]
+              let mutable broken = true
+
+              s.Graph.OnClosePrint(fun k print ->
+                  if broken && k.Name = "r" then print + " broken" else print)
+
+              let! (r: Edit) = edit s d (source 1)
+              Expect.isGreaterThan s.Graph.PremiseBreaks 0L "the finish finds the print moved"
+              Expect.equal (s.Graph.SegmentRows d) 4 "r leads to the end of the file"
+              let! diff = oracleDiff s r.Diagnostics
+              Expect.isEmpty diff "the diagnostics equal a full check"
+              broken <- false
+              let! (r: Edit) = edit s d (source 2)
+              Expect.equal (r.NamesIn d) [ "after"; "fill"; "r"; "size" ] "the whole segment re-checks"
+              let! diff = oracleDiff s r.Diagnostics
+              Expect.isEmpty diff "the diagnostics equal a full check"
+          }
+
+          // Known gap: a re-check of a value keeps its users on the old value, which conformance does not reach, so a use
+          // in a kept row shows no signature location. No diagnostic depends on it. Carried to the query tasks.
+          ptestTask "a kept user of a re-checked value of a signed file shows its signature location" {
+              let project = IO.Path.Combine(IO.Path.GetDirectoryName depsDir, "SigConform", "SigConform.fsproj")
+              let! s = startOn project Declarations
+              use _ = (s :> IAsyncDisposable)
+              let a = s.Spec.SourceFiles |> List.find (fun f -> IO.Path.GetFileName f = "A.fs")
+              let! _ = edit s a (s.Texts[a].Replace("let f (x: int) y", "let f (x:  int) y"))
+              let! _ = edit s a (s.Texts[a].TrimEnd('\n') + "\n\nlet z = 1\n")
+              do! expectLocations s a "after f's re-check"
+          }
+
+          inBothModes "a window that never closes is today's segment" (fun s ->
+              task {
+                  let source (last: int) = lines [ "let r = ref []"; "let a = 1"; $"let last = %d{last}" ]
+                  let! r = edit s d (source 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  Expect.equal (s.Graph.SegmentRows d) 3 "everything from r"
+                  let! r = edit s d (source 2)
+                  Expect.equal (r.NamesIn d) [ "a"; "last"; "r" ] "everything from r"
+                  do! expectOracle s r.Diagnostics "last edited"
+              })
+
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->
               task {
                   let source (literal: int) = x1 literal "let k = useT (T())" + "

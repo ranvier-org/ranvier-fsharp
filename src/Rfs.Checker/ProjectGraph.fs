@@ -403,6 +403,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// tests.
     member internal _.OnBeginFile(hook: string -> unit) : unit = project.BeginFileHook <- hook
 
+    /// Replaces the print a window's close leaves for a declaration, as a variable moved after the close would. For
+    /// tests.
+    member internal _.OnClosePrint(hook: DeclarationKey -> string -> string) : unit = project.ClosePrintHook <- hook
+
     /// Runs `hook` on the graph thread, with the file's path, each time a promoted file's declaration setup is
     /// computed: a hook that throws fails that setup. For tests.
     member internal _.OnSetup(hook: string -> unit) : unit = project.SetupHook <- hook

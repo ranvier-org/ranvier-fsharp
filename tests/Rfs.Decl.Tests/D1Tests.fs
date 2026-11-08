@@ -402,6 +402,65 @@ let tests =
           // Each shape broke the premise on the corpora: FinishFile checks the file against its signature file, which
           // gives the implementation's items arities, argument names and attributes from the signature
           testList
+              "windows"
+              [ testAsync "a window's variables close at their solver, and the close print is the final fingerprint" {
+                    let! c = check tinyProject []
+                    let file = c.Spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "A.fs")
+                    let text = "module Tiny.A\n\nlet r = ref []\n\nlet s = ref []\n\nlet link () = r.Value <- s.Value\n\nlet fin () = s.Value <- [ 1 ]\n\nlet z = 1\n"
+                    let parse = DeclarationChecker.Parse(c.Context, file, text)
+                    let start, env0 = DeclarationChecker.BeginFile(c.Context, [], parse)
+                    let ct = System.Threading.CancellationToken.None
+
+                    let results, _ =
+                        DeclarationChecker.Split parse
+                        |> Array.mapFold
+                            (fun env decl ->
+                                let result = DeclarationChecker.CheckDeclaration(start, env, decl, ct)
+                                result, DeclarationChecker.ExtendEnv(env, result))
+                            env0
+
+                    for r in results do
+                        Expect.equal (r.DescribeOpenTypars().Length > 0) r.DependsOnLaterDeclarations $"%s{r.Key.Name}: open variables exactly when flagged"
+
+                    let upTo (name: string) =
+                        let last = results |> Array.findIndex (fun r -> r.Key.Name = name)
+                        results[0..last] |> Array.filter _.DependsOnLaterDeclarations
+
+                    // The checks above are done, so everything is solved: what they watch is what stayed open
+                    Expect.isFalse (DeclarationChecker.WindowOpen(start, upTo "fin", ct)) "fin solves s, and through it r"
+                    let flagged = results |> Array.filter _.DependsOnLaterDeclarations
+                    Expect.isNonEmpty flagged "r and s are open at their checks"
+                    let prints = DeclarationChecker.PrintsNow(start, flagged)
+                    let finished = DeclarationChecker.FinishFile(start, results, parse)
+
+                    for r, print in Array.zip flagged prints do
+                        Expect.equal finished.Fingerprints[r.Key] print $"%s{r.Key.Name}: the final fingerprint is the close print"
+
+                    Expect.isFalse (DeclarationChecker.WindowOpen(start, flagged, ct)) "still closed with the finish undone"
+                }
+
+                testAsync "the finish's defaults do not close a window" {
+                    let! c = check tinyProject []
+                    let file = c.Spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "A.fs")
+                    let parse = DeclarationChecker.Parse(c.Context, file, "module Tiny.A\n\nlet r = ref []\n\nlet z = 1\n")
+                    let start, env0 = DeclarationChecker.BeginFile(c.Context, [], parse)
+                    let ct = System.Threading.CancellationToken.None
+
+                    let results, _ =
+                        DeclarationChecker.Split parse
+                        |> Array.mapFold
+                            (fun env decl ->
+                                let result = DeclarationChecker.CheckDeclaration(start, env, decl, ct)
+                                result, DeclarationChecker.ExtendEnv(env, result))
+                            env0
+
+                    let flagged = results |> Array.filter _.DependsOnLaterDeclarations
+                    Expect.isTrue (DeclarationChecker.WindowOpen(start, flagged, ct)) "nothing solved r"
+                    DeclarationChecker.FinishFile(start, results, parse) |> ignore
+                    Expect.isTrue (DeclarationChecker.WindowOpen(start, flagged, ct)) "and the finish's defaults do not count"
+                } ]
+
+          testList
               "signature conformance"
               [ conforms
                     "a value bound to a lambda takes its arity from a signature without arguments (List.moreThanOne)"

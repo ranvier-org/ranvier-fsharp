@@ -149,6 +149,9 @@ type internal ProjectShared(ctx: ProjectContext) =
         with get () = Volatile.Read &beginFileHook
         and set (hook: string -> unit) = Volatile.Write(&beginFileHook, hook)
 
+    /// Gives the print a window's close leaves for a declaration. For tests.
+    member val ClosePrintHook: DeclarationKey -> string -> string = (fun _ print -> print) with get, set
+
     /// Runs on the graph thread, with the file's path, each time a promoted file's declaration setup is computed.
     /// For tests.
     member _.SetupHook
