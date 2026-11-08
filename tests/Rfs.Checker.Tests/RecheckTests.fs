@@ -78,6 +78,38 @@ let tests =
                   do! expectOracle s r.Diagnostics "w edited"
               })
 
+          testTask "a kept value of a signed file holding the old entity conforms" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let e = fileOf "E.fs"
+              let sigFile = fileOf "E.fsi"
+
+              let source (literal: int) =
+                  $"module Deps.E\n\ntype T() =\n    member _.A = %d{literal}\n\nlet useT (t: T) = t.A\n\nlet user = 1\n\nlet compute () = 1\n\nlet unrelated = 7\n"
+
+              let! _ = edit s e (source 1)
+              let! r = edit s sigFile "module Deps.E\n\ntype T =\n    new: unit -> T\n    member A: int\n\nval useT: T -> int\n\nval user: int\n\nval compute: unit -> int\n\nval unrelated: int\n"
+              do! expectOracle s r.Diagnostics "the source"
+              let! r = edit s e (source 2)
+              do! expectOracle s r.Diagnostics "T's body edited, useT kept"
+              let! r = edit s e (source 3)
+              do! expectOracle s r.Diagnostics "T's body edited again"
+          }
+
+          testTask "a later file set up from a kept user's signature sees one entity" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let later = fileOf "E.fs"
+              let! r = edit s d (x1 1 "let k = 0")
+              do! expectOracle s r.Diagnostics "the source"
+              let! r = edit s later (s.Texts[later] + "\nlet viaD = Deps.D.useT (Deps.D.T())\n")
+              do! expectOracle s r.Diagnostics "a later file uses both"
+              let! r = edit s d (x1 2 "let k = 0")
+              do! expectOracle s r.Diagnostics "T's body edited"
+              let! r = edit s d (x1 2 "let k = 0\n\nlet added = 1")
+              do! expectOracle s r.Diagnostics "D.fs's signature changed, so the later file begins again"
+          }
+
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->
               task {
                   let source (literal: int) = x1 literal "let k = useT (T())" + "
