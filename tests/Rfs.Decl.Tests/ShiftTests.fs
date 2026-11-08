@@ -290,6 +290,27 @@ let tests =
               do! expectDiagnostics p a edited second "after the shift"
           }
 
+          // huge-il-lineinsert's file is checked with nullness on (its deferred checks are not reproduced here)
+          testTask "a file checked with nullness on is shifted" {
+              let project = Path.Combine(Path.GetDirectoryName depsDir, "Nullness", "Nullness.fsproj")
+              let file = Path.Combine(Path.GetDirectoryName project, "A.fs")
+              let! spec = ProjectSpec.load project |> Async.AwaitTask
+              let spec = ProjectSpec.sequential spec
+              let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+              let p = { Spec = spec; Context = ctx; Texts = sources spec Map.empty }
+              let text = p.Texts[file]
+              let edited = text.Replace("type Keyed", "\ntype Keyed")
+              let _, shifted, second = shiftAndFinish ctx [] file text edited
+              Expect.contains spec.OtherOptions "--checknulls+" "nullness is checked"
+              let above = set [ "first"; "lazyMap"; "System.Collections.Generic" ]
+              let wrong = shifted |> Array.filter (fun (s, moved) -> moved = above.Contains s.Key.Name) |> Array.map (fun (s, _) -> s.Key.Name)
+              Expect.isEmpty wrong $"exactly the rows below the line are shifted: %A{wrong}"
+              Expect.isNonEmpty second.Diagnostics "the nullness warning is reported"
+              do! expectDiagnostics p file edited second "after the shift"
+              let! reference = interactive p file edited
+              expectLocations second.CheckResults reference "every symbol's declaration"
+          }
+
           // A superseded graph flight shifts the result it read again, after another flight shifted it
           testTask "a result shifted twice moves its items once" {
               let text = threeDecls area

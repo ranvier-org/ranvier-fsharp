@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Nullness checking defers checks to the end of the file's inference (Task 7: shifts move them as they run) -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>
