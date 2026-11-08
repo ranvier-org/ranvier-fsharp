@@ -46,6 +46,8 @@ type StepExtra =
       ChainFallbacks: int64 option
       /// Results the edit's finishes reused from the previous finish of their file.
       FinishReused: int64 option
+      /// Results the edit shifted to another line instead of checking them again (W1).
+      ShiftedRows: int64 option
       /// The fork's graph-check counts, when logged.
       GraphCheck: GraphCheckCounts option }
 
@@ -308,6 +310,7 @@ module Driver =
                               FileLevelChecks = delta _.FileLevelChecks
                               ChainFallbacks = delta _.ChainFallbacks
                               FinishReused = delta _.FinishReused
+                              ShiftedRows = delta _.ShiftedRows
                               GraphCheck = r.GraphCheck }
                             : StepExtra
                         )

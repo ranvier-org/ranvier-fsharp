@@ -103,6 +103,18 @@ type internal EnvNode(previous: EnvNode, check: RowCheck, env: DeclEnv) =
 
         found
 
+    /// Whether a result this environment holds depends on later declarations: a check in it must run alone (R12).
+    member this.HoldsDependsOnLater: bool =
+        let mutable node = this
+        let mutable found = false
+
+        while not found && not (isNull node) && not (isNull node.Check) do
+            let c: RowCheck = node.Check
+            found <- c.Result.DependsOnLaterDeclarations
+            node <- node.Previous
+
+        found
+
 /// A declaration's result, with what its check read.
 and [<Sealed; AllowNullLiteral>] internal RowCheck
     (
@@ -113,14 +125,24 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
         envBefore: EnvNode,
         named: DeclarationKey[],
         identity: DeclarationKey[],
-        later: DeclarationKey[]
+        later: DeclarationKey[],
+        origin: RowCheck
     ) =
     let seen = Dictionary<DeclarationKey, RowCheck>(HashIdentity.Structural)
 
     member _.Key = key
+    /// The check this result came from: itself, or for a result shifted to another line (W1), the check it was
+    /// shifted from. A shifted result holds the same values and entities, so what was checked against one was
+    /// checked against the other.
+    member this.Origin: RowCheck = if isNull origin then this else origin
+    member _.IsShift = not (isNull origin)
+
+    /// Whether the two are the same result, or shifts of it (W1)
+    static member SameCheck(a: RowCheck, b: RowCheck) =
+        Nodes.same a b || (not (isNull a) && not (isNull b) && Nodes.same a.Origin b.Origin)
     member _.Decl = decl
     member _.Start = start
-    member _.Result = result
+    member _.Result: DeclarationResult = result
     member _.EnvBefore = envBefore
     member _.Named = named
     member _.Identity = identity
@@ -211,6 +233,9 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
         createMemoWithComparer HashIdentity.Structural (fun _ ->
             file.Roles.Value |> Map.tryFind key |> Option.defaultValue Role.Single)
 
+    // Written when the checker refuses a shift of this row, or of the segment it leads
+    let refusals = createSignal 0
+
     let own =
         createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct -> this.RunCheck ct)
 
@@ -252,6 +277,21 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     /// costs an ExtendEnv.
     member val EnvCache: EnvNode = null with get, set
 
+    /// Records that the checker refused to shift these declarations and makes this row's check run again, which
+    /// then checks them as any changed declaration is checked: after the declarations they depend on settle, in the
+    /// environment of the current results. A check in the environment the shifted result was checked in would read
+    /// earlier results that a refused shift of their own replaced with new entities. The flight waits to be
+    /// superseded by that run. Off the graph thread.
+    member private _.Refused (decls: ParsedDeclaration list) (ct: CancellationToken) : Task<'T> =
+        task {
+            for d in decls do
+                file.Refuse d
+
+            file.Project.Post(fun () -> refusals.Value <- untrack (fun () -> refusals.Value) + 1)
+            do! Task.Delay(Timeout.Infinite, ct)
+            return raise (OperationCanceledException ct)
+        }
+
     /// Waits for a declaration whose check is running, so a re-check sees its new result.
     member private _.AwaitSettled(keys: seq<DeclarationKey>) =
         for k in keys do
@@ -292,10 +332,14 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
 
+            // Unchanged but for the line it starts on (W1): shifted, not checked again, unless the checker refused it
+            refusals.Value |> ignore
+            let moved = not (isNull previous) && Nodes.movedOnly previous.Decl decl && not (file.IsRefused decl)
+
             let current =
                 not (isNull previous)
                 && Nodes.same previous.Start start
-                && Nodes.same previous.Decl decl
+                && (Nodes.same previous.Decl decl || moved)
                 && previous.Named = deps.Named
                 && previous.Identity = deps.Identity
                 && not typedGone
@@ -304,12 +348,29 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                        match previous.Saw k with
                        | null -> false
                        | seen -> seen.Result.Fingerprint = t)
-                && identities |> Array.forall (fun (k, c) -> Nodes.same (previous.Saw k) c)
+                && identities |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
                 && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
 
-            if current then
+            if current && not moved then
                 Task.FromResult previous
+            elif current then
+                Task.Run<RowCheck>(
+                    (fun () ->
+                        task {
+                            let! shifted =
+                                task {
+                                    use! _ = start.Lock.ReadAsync()
+                                    ct.ThrowIfCancellationRequested()
+                                    return file.TryShift(previous, decl)
+                                }
+
+                            match shifted with
+                            | Some c -> return c
+                            | None -> return! this.Refused [ decl ] ct
+                        }),
+                    ct
+                )
             else
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys deps.Identity)
@@ -326,7 +387,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                             let env = file.Walk(start, earlier, ct)
                             let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
                             file.Project.CountCheck(key, file.Path)
-                            return RowCheck(key, decl, start, result, env, deps.Named, deps.Identity, later)
+                            return RowCheck(key, decl, start, result, env, deps.Named, deps.Identity, later, null)
                         }),
                     ct
                 )
@@ -377,6 +438,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             let identityKeys = outside (seq { for _, _, deps in members do yield! deps.Identity })
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
             let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
+            refusals.Value |> ignore
 
             let current =
                 not (isNull previous)
@@ -387,7 +449,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                        match previousOf r with
                        | null -> false
                        | c ->
-                           Nodes.same c.Decl decl
+                           (Nodes.same c.Decl decl || (Nodes.movedOnly c.Decl decl && not (file.IsRefused decl)))
                            && c.Named = deps.Named
                            && c.Identity = deps.Identity
                            && this.TypedOf c |> Array.forall file.Has
@@ -397,10 +459,34 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                        match previous.Saw k with
                        | null -> false
                        | seen -> seen.Result.Fingerprint = t)
-                && identities |> Array.forall (fun (k, c) -> Nodes.same (previous.Saw k) c)
+                && identities |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
 
-            if current then
+            // The members unchanged but for the line they start on (W1)
+            let moved =
+                if current then
+                    members |> Array.filter (fun (r, decl, _) -> not (Nodes.same (previousOf r).Decl decl))
+                else
+                    [||]
+
+            if current && moved.Length = 0 then
                 Task.FromResult previous
+            elif current then
+                Task.Run<SegmentCheck>(
+                    (fun () ->
+                        task {
+                            let! shifted =
+                                task {
+                                    use! _ = start.Lock.ReadAsync()
+                                    ct.ThrowIfCancellationRequested()
+                                    return file.ShiftSegment(previous, members |> Array.map (fun (r, decl, _) -> r, decl))
+                                }
+
+                            match shifted with
+                            | Some segment -> return segment
+                            | None -> return! this.Refused [ for _, decl, _ in moved -> decl ] ct
+                        }),
+                    ct
+                )
             else
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
@@ -419,7 +505,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                                 ct.ThrowIfCancellationRequested()
                                 let result = DeclarationChecker.CheckDeclaration(start.Start, env.Env, decl, ct)
                                 file.Project.CountCheck(r.Key, file.Path)
-                                let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterOf[r.Key])
+                                let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterOf[r.Key], null)
                                 results[r.Key] <- c
                                 let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
                                 r.EnvCache <- next
@@ -433,6 +519,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 /// The file-level nodes the rows of an implementation file read.
 and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: string) =
     let rows = Dictionary<DeclarationKey, Row>(HashIdentity.Structural)
+    let refused = System.Runtime.CompilerServices.ConditionalWeakTable<ParsedDeclaration, obj>()
 
     member _.Project: ProjectShared = project
     member _.Path: string = path
@@ -497,6 +584,40 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                         invalidOp $"%A{row.Key} was checked from another FileStart"
 
                     row, c)
+
+    /// `previous` shifted to `decl`, the same declaration at another line (W1), or None when the checker refuses the
+    /// shift. Off the graph thread, under the FileStart's lock.
+    member _.TryShift(previous: RowCheck, decl: ParsedDeclaration) : RowCheck option =
+        match DeclarationChecker.Shift(previous.Result, decl) with
+        | ValueSome result ->
+            Some(RowCheck(previous.Key, decl, previous.Start, result, previous.EnvBefore, previous.Named, previous.Identity, previous.Later, previous.Origin))
+        | ValueNone -> None
+
+    /// `previous` with each member that starts on another line shifted (W1), or None when the checker refuses any of
+    /// them: the members it shifted before that hold moved items, and the segment is checked again. Off the graph
+    /// thread, under the FileStart's lock.
+    member _.ShiftSegment(previous: SegmentCheck, members: (Row * ParsedDeclaration)[]) : SegmentCheck option =
+        let rows = Dictionary<DeclarationKey, RowCheck>(previous.Rows, HashIdentity.Structural)
+
+        let shifted =
+            members
+            |> Array.forall (fun (r, decl) ->
+                let c = previous.Rows[r.Key]
+
+                Nodes.same c.Decl decl
+                || (match DeclarationChecker.Shift(c.Result, decl) with
+                    | ValueSome result ->
+                        rows[r.Key] <- RowCheck(c.Key, decl, c.Start, result, c.EnvBefore, c.Named, c.Identity, c.Later, c.Origin)
+                        true
+                    | ValueNone -> false))
+
+        if shifted then Some(SegmentCheck(previous.Span, previous.Start, rows, previous.EnvBefore)) else None
+
+    /// Whether the checker refused to shift this declaration (W1): it is checked again instead.
+    member _.IsRefused(decl: ParsedDeclaration) = refused.TryGetValue(decl) |> fst
+
+    /// Off the graph thread.
+    member _.Refuse(decl: ParsedDeclaration) = refused.AddOrUpdate(decl, obj ())
 
     /// The environment after the given results: ExtendEnv folded over them from BeginFile's, reusing each
     /// declaration's last assembled environment while what it was assembled from is the same.
@@ -890,9 +1011,16 @@ module internal FileNodes =
             for row, c in f.Checks do
                 match published.TryGetValue row.Key with
                 | true, known when Nodes.same known c -> ()
-                | _ ->
+                | known ->
                     published[row.Key] <- c
-                    project.Publish(row.Key, path)
+
+                    // A shifted result is counted as a shift; the check it came from is adopted once
+                    if c.IsShift then
+                        project.CountShift()
+
+                    match known with
+                    | true, known when Nodes.same known.Origin c.Origin -> ()
+                    | _ -> project.Publish(row.Key, path)
 
             let live = HashSet<DeclarationKey>(f.Checks |> Seq.map (fun (row, _) -> row.Key), HashIdentity.Structural)
 

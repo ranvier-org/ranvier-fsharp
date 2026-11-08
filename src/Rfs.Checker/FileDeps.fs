@@ -91,6 +91,7 @@ type internal Subject<'T>() =
 type internal ProjectShared(ctx: ProjectContext) =
     let mutable checkedCount = 0L
     let mutable adoptedCount = 0L
+    let mutable shiftedCount = 0L
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
@@ -210,6 +211,10 @@ type internal ProjectShared(ctx: ProjectContext) =
         published.Next((key, file))
 
     member _.AdoptedCount = Interlocked.Read &adoptedCount
+
+    /// Counts a published result shifted to another line instead of checked again (W1).
+    member _.CountShift() = Interlocked.Increment &shiftedCount |> ignore
+    member _.ShiftedCount = Interlocked.Read &shiftedCount
     member _.Checked = published :> IObservable<_>
     member _.Ran = ran :> IObservable<_>
 
@@ -253,6 +258,14 @@ module internal Nodes =
 
             member _.GetHashCode d =
                 hash (d.Text, d.Range.StartLine, d.Range.StartColumn) }
+
+    /// Whether `b` is `a` at another line: the same syntax at the same column in the same module (W1). The checker
+    /// shifts such a result (DeclarationChecker.Shift) instead of checking it again.
+    let movedOnly (a: ParsedDeclaration) (b: ParsedDeclaration) =
+        a.IsUnchangedFrom b
+        && a.Range.StartLine <> b.Range.StartLine
+        && a.Range.StartColumn = b.Range.StartColumn
+        && a.Within = b.Within
 
     /// The text before the first declaration.
     let prologueOf (text: string) (declarations: ParsedDeclaration[]) =

@@ -8,6 +8,7 @@
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="FileModeTests.fs" />
     <Compile Include="ConformanceTests.fs" />
+    <Compile Include="ShiftGraphTests.fs" />
     <Compile Include="RanvierWakeTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="Program.fs" />

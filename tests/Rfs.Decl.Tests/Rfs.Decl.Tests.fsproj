@@ -13,6 +13,7 @@
     <Compile Include="D1Tests.fs" />
     <Compile Include="FileLevelTests.fs" />
     <Compile Include="FinishCacheTests.fs" />
+    <Compile Include="ShiftTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

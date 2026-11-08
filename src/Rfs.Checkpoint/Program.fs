@@ -170,6 +170,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
             o["fileLevelChecks"] <- opt e.FileLevelChecks
             o["chainFallbacks"] <- opt e.ChainFallbacks
             o["finishReused"] <- opt e.FinishReused
+            o["shiftedRows"] <- opt e.ShiftedRows
 
             o["graphCheck"] <-
                 match e.GraphCheck with

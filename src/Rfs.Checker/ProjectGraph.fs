@@ -344,6 +344,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// holds it is published.
     member _.AdoptedChecks: int64 = project.AdoptedCount
 
+    /// How many published results were shifted to the line their unchanged declaration moved to (W1) instead of
+    /// checked again: each once, when a finish of the current text that holds it is published.
+    member _.ShiftedRows: int64 = project.ShiftedCount
+
     /// Stopwatch ticks spent inside DeclarationChecker.FinishFile, summed over every call.
     member _.FinishTicks: int64 = project.FinishTicks
 

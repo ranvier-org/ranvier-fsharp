@@ -275,9 +275,12 @@ let tests =
                           let warnedAt (r: Edit) =
                               r.Diagnostics[e] |> Array.filter (fun x -> x.ErrorNumber = 1182) |> Array.map _.StartLine
 
+                          let shiftedBefore = s.Graph.ShiftedRows
                           let! r = replace s e "let other () =" "// a comment\nlet other () ="
                           Expect.equal (warnedAt r) [| 12 |] "other's unused-value warning, one line lower"
-                          Expect.equal (r.NamesIn e) [ "other"; "unrelated" ] "the declarations that moved"
+                          // Task 7: the declarations that moved are shifted, not checked again
+                          Expect.equal (r.NamesIn e) [] "no declaration is checked again"
+                          Expect.equal (s.Graph.ShiftedRows - shiftedBefore) 2L "other and unrelated, which moved, are shifted"
                           do! expectOracle s r.Diagnostics "line inserted above other"
                       })
           }

@@ -45,7 +45,9 @@ type EngineCounters =
       /// file instead.
       ChainFallbacks: int64
       /// Results FinishFile reused from a file's previous finish.
-      FinishReused: int64 }
+      FinishReused: int64
+      /// Published results shifted to another line instead of checked again (W1).
+      ShiftedRows: int64 }
 
 /// Which files a promotion left checked by declaration, and which it could not promote (checked whole).
 type Promotion =
@@ -120,7 +122,8 @@ type private DeclEngine(host: GraphHost, graph: ProjectGraph, spec: ProjectSpec,
                   PhaseAllocated = graph.PhaseAllocated |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
                   FileLevelChecks = graph.FileLevelChecks
                   ChainFallbacks = graph.ChainFallbacks
-                  FinishReused = graph.FinishReused }
+                  FinishReused = graph.FinishReused
+                  ShiftedRows = graph.ShiftedRows }
 
         member _.DeclarationLines(file, text) = Some(graph.DeclarationLines(file, text))
 

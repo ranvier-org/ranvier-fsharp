@@ -316,6 +316,20 @@ let private conformedShape: Mutation =
             let from, into = pick random toggles
             Some(text.Replace(from, into), $"conformed shape `%s{from}` -> `%s{into}`")
 
+/// Inserts a blank line after the first line, or takes a blank line out: every declaration below it moves by a line
+/// and keeps its text (W1), unless the line is inside it.
+let private blankLine: Mutation =
+    fun random text ->
+        let ls = linesOf text
+        let blanks = [| for i in 1 .. ls.Length - 1 do if ls[i].Trim() = "" then i |]
+
+        if blanks.Length > 0 && random.Next 2 = 0 then
+            let i = pick random blanks
+            Some(unlines (Array.removeAt i ls), $"blank line %d{i + 1} removed")
+        else
+            let i = 1 + random.Next(ls.Length - 1)
+            Some(unlines (Array.insertAt i "" ls), $"blank line inserted at %d{i + 1}")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -327,9 +341,11 @@ let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
 
     attempt 0
 
-let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
+/// `refuse`: the checker refuses every shift (W1), so the graph checks each moved declaration again where it was checked
+let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let! s = startOn project mode
+        s.Graph.Context.RefuseShifts <- refuse
         let openTargets =
             if project = chainsProject then chainsOpenTargets
             elif project = sigShadowProject then sigShadowOpenTargets
@@ -359,7 +375,8 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
                autoOpen
                augmentationMember counter
                sameLine
-               conformedShape |]
+               conformedShape
+               blankLine |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
@@ -374,6 +391,8 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
         let mutable published = 0
         // Edits conformedShape made: on SigConform every run must make some
         let mutable conformedEdits = 0
+        // Edits blankLine made: every run must make some
+        let mutable blankLineEdits = 0
 
         // Declarations mode starts with every implementation file wanted
         let wanted = Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -458,13 +477,20 @@ let private run (project: string) (mode: FileMode) (seed: int) (steps: int) =
             if what.StartsWith "conformed shape " then
                 conformedEdits <- conformedEdits + 1
 
+            if what.StartsWith "blank line " then
+                blankLineEdits <- blankLineEdits + 1
+
         printfn
-            $"%A{mode} seed %d{seed}: %d{steps} edits (%d{conformedEdits} conformed-shape edits), %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{published} results published"
+            $"%A{mode} seed %d{seed}: %d{steps} edits (%d{conformedEdits} conformed-shape edits, %d{blankLineEdits} blank-line edits), %d{withErrors} left errors (%d{errorFiles} files with errors in all), %d{s.Graph.CheckedCount} declaration checks run, %d{checks} adopted after load, %d{s.Graph.ShiftedRows} shifted, %d{published} results published"
 
         if project = sigConformProject then
             Expect.isGreaterThan conformedEdits 0 $"%A{mode} seed %d{seed}: the run toggles what the signature file overwrites"
 
+        Expect.isGreaterThan blankLineEdits 0 $"%A{mode} seed %d{seed}: the run inserts or removes a blank line"
+
     }
+
+let private run = runWith false
 
 let private fuzz (name: string) (mode: FileMode) =
     testSequenced
@@ -472,6 +498,9 @@ let private fuzz (name: string) (mode: FileMode) =
         name
         [ for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
               testTask $"seed %d{seed}: 200 random edits equal the oracle after each" { do! run depsProject mode seed 200 }
+
+          // A refused shift checks the declaration again in the environment it was checked in
+          yield testTask "seed 1515, every shift refused: 200 random edits equal the oracle after each" { do! runWith true depsProject mode 1515 200 }
 
           // Two independent chains, where a file's dependencies are fewer than the files before it
           for seed in [ 1515; 4242 ] ->
