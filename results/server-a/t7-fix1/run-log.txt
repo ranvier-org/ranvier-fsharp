@@ -1,0 +1,108 @@
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+mid: 0 errors, 3 other diagnostics
+mid-lineinsert: file-slim checks in graph mode
+running file-slim on mid-lineinsert (process 58148)
+  file-slim: cold 4678.1 ms, edit p50 90.8 ms, p95 292.5 ms, decls/edit -, allocated 2426.0 MB (cold 1699.8, edits 726.3), peak 400.8 MB
+running decl on mid-lineinsert (process 25696)
+  decl: cold 4580.7 ms, edit p50 44.7 ms, p95 129.1 ms, decls/edit 0.0, allocated 2098.7 MB (cold 1711.5, edits 387.2), peak 367.1 MB
+  decl: adopted/edit 0.0, runs/edit 0.0, finish share p50 31.4%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 37 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 285.1 ms; not promoted: 
+== scenarios/mid-lineinsert.json exit 0 in 81 s
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+large: 0 errors, 16 other diagnostics
+large-lineinsert: file-slim checks in graph mode
+running file-slim on large-lineinsert (process 52644)
+  file-slim: cold 3502.7 ms, edit p50 30.7 ms, p95 103.9 ms, decls/edit -, allocated 1269.4 MB (cold 956.4, edits 313.0), peak 305.8 MB
+running decl on large-lineinsert (process 8212)
+  decl: cold 3338.2 ms, edit p50 36.2 ms, p95 96.8 ms, decls/edit 12.0, allocated 1365.7 MB (cold 995.0, edits 370.7), peak 318.1 MB
+  decl: adopted/edit 12.0, runs/edit 12.0, finish share p50 7.3%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 23 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 117.8 ms; not promoted: 
+== scenarios/large-lineinsert.json exit 0 in 95 s
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+huge: 0 errors, 64 other diagnostics
+huge-cx-lineinsert: file-slim checks in graph mode
+running file-slim on huge-cx-lineinsert (process 51112)
+  file-slim: cold 24556.4 ms, edit p50 1423.2 ms, p95 2213.7 ms, decls/edit -, allocated 27165.4 MB (cold 16118.4, edits 11047.0), peak 1767.4 MB
+running decl on huge-cx-lineinsert (process 56060)
+  decl: cold 22439.3 ms, edit p50 834.0 ms, p95 1549.6 ms, decls/edit 0.0, allocated 23849.0 MB (cold 16937.7, edits 6911.3), peak 2008.7 MB
+  decl: adopted/edit 0.0, runs/edit 0.0, finish share p50 21.1%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 236 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 2116.2 ms; not promoted: 
+== scenarios/huge-cx-lineinsert.json exit 0 in 547 s
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+huge: 0 errors, 64 other diagnostics
+huge-il-lineinsert: file-slim checks in graph mode
+running file-slim on huge-il-lineinsert (process 53256)
+  file-slim: cold 23556.8 ms, edit p50 1055.1 ms, p95 2154.4 ms, decls/edit -, allocated 25363.8 MB (cold 16114.9, edits 9249.0), peak 1602.0 MB
+running decl on huge-il-lineinsert (process 19044)
+  decl: cold 22324.4 ms, edit p50 652.9 ms, p95 1470.8 ms, decls/edit 0.0, allocated 23460.6 MB (cold 16938.1, edits 6522.5), peak 1772.4 MB
+  decl: adopted/edit 0.0, runs/edit 0.0, finish share p50 22.2%, segment rows 0 cold, 476 after the last edit
+  decl: file checks 236 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 1441.2 ms; not promoted: 
+== scenarios/huge-il-lineinsert.json exit 0 in 554 s

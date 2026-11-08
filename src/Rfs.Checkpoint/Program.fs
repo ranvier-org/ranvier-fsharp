@@ -39,11 +39,17 @@ logged. It sits in a subdirectory so `rfs-harness compare` reads only results.
 process, and writes premise-<corpus>.md with one line per D1 premise break (a declaration whose final fingerprint
 differs from its check's): file:line, key, kind, and the first differing part of the two fingerprints."""
 
-    /// Whether the Ranvier loaded is a traced build (RANVIER_TRACE, a Debug build's default), which a stale copy in a
-    /// Release output can be: the Task 7 fix round found one.
+    /// Whether the Ranvier loaded is a traced build (RANVIER_TRACE, a Debug build's default). A solution build used to
+    /// give one to Release outputs (Task 7 fix round 1; see ShouldUnsetParentConfigurationAndPlatform in Directory.Build.props).
     let private ranvierTraced () =
         let assembly = typeof<Ranvier.Graph>.Assembly
-        [ "Ranvier.TraceModule"; "Ranvier.Trace" ] |> List.exists (fun name -> not (isNull (assembly.GetType name)))
+
+        // The log's queries exist only in a traced build; the Trace type itself exists in both
+        [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+        |> List.exists (fun name ->
+            match assembly.GetType name with
+            | null -> false
+            | t -> not (isNull (t.GetMethod "lastSeq")))
 
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
