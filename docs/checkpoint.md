@@ -407,3 +407,120 @@ Tests:
 No break remains, so there is no inherent break to pin. Type parameter names are not part of the fingerprint at
 all. What later declarations report shows type parameters by position (`'a`), so a rename the signature imposes
 changes nothing they see.
+
+## Traced Ranvier
+
+Ranvier's Debug configuration compiles in a per-graph event log (`RANVIER_TRACE`). During Task 7 we found that a
+solution build of R gives the out-of-solution Ranvier project its default configuration, Debug, even with `-c Release`.
+Some earlier results therefore measured a traced Ranvier. `Directory.Build.props` now builds Ranvier in the build's own
+configuration (`371e711`), and `rfs-checkpoint` prints `ranvier: untraced` in its header.
+
+**GO still holds as the rule is written, but only mid-body shows a real win. On large-body, decl is not shown to be
+faster than file-slim.**
+
+### Numbers
+
+Untraced runs are in `results/server-a/baseline-untraced`, on the final Task 7 tree (R `4fb29d0`, fork `06d54b778`).
+The header of every run says `ranvier: untraced`. Other dotnet work used about 1 CPU second per scenario, so nothing
+overlapped. That check covers dotnet-family processes, not the whole machine. All 340 edit steps, on both engines
+and including the four large-body repeats, had no oracle diff and no failed step.
+
+Each cell is checkpoint → untraced final tree. Allocations are MB per edit, over 20 edits for body and 10 for signature.
+
+| scenario | engine | edit p50 ms | edit p95 ms | edit alloc MB/edit | peak MB | cold ms |
+|---|---|---|---|---|---|---|
+| small-body | decl | 29.1 → 34.9 | 35.2 → 54.0 | 16.6 → 41.3 | 415.7 → 259.6 | 16253.6 → 7604.3 |
+| small-body | file-slim | 68.1 → 56.3 | 162.5 → 74.9 | 71.9 → 63.4 | 285.8 → 282.6 | 6325.2 → 7786.2 |
+| mid-body | decl | 28.0 → 35.1 | 61.7 → 99.2 | 14.5 → 34.6 | 453.9 → 380.0 | 11094.2 → 4469.3 |
+| mid-body | file-slim | 81.9 → 85.0 | 308.6 → 262.3 | 76.1 → 71.9 | 415.8 → 418.5 | 3751.4 → 4503.4 |
+| large-body | decl | 30.2 → 30.3 | 47.7 → 72.0 | 18.0 → 28.1 | 364.3 → 317.7 | 7433.4 → 3749.3 |
+| large-body | file-slim | 35.2 → 31.9 | 77.1 → 76.5 | 35.4 → 31.2 | 306.5 → 310.6 | 3340.5 → 3453.5 |
+| small-signature | decl | 3127.2 → 525.3 | 4009.6 → 1373.8 | 3121.0 → 747.5 | 1009.9 → 307.4 | 16578.4 → 5980.0 |
+| small-signature | file-slim | 540.6 → 522.9 | 1500.1 → 1403.4 | 753.0 → 735.8 | 357.4 → 357.1 | 6342.7 → 6147.9 |
+| mid-signature | decl | 1410.1 → 325.9 | 3600.9 → 911.8 | 1180.7 → 443.3 | 911.1 → 496.8 | 10137.0 → 4293.6 |
+| mid-signature | file-slim | 393.1 → 357.8 | 981.0 → 951.5 | 471.7 → 463.8 | 490.6 → 485.1 | 3877.8 → 4151.1 |
+| large-signature | decl | 863.6 → 249.0 | 2285.9 → 927.7 | 651.8 → 311.4 | 670.0 → 356.2 | 7032.1 → 3063.9 |
+| large-signature | file-slim | 319.9 → 265.3 | 765.9 → 756.8 | 325.5 → 316.1 | 384.7 → 387.5 | 3304.7 → 3378.3 |
+
+This is a re-baseline, not a re-run of the checkpoint's code, which has had Tasks 3 to 7 built on top of it since. The
+arrows therefore mix tracing, design changes and machine state, and do not measure tracing alone.
+
+**Worse for decl than at the checkpoint:**
+- Body p50: small 29.1 → 34.9, mid 28.0 → 35.1. Large is unchanged.
+- Body p95: small 35.2 → 54.0, mid 61.7 → 99.2, large 47.7 → 72.0.
+- Body allocations per edit: small 16.6 → 41.3, mid 14.5 → 34.6, large 18.0 → 28.1.
+
+Tracing cannot explain these. It adds cost, so a traced checkpoint would have hidden an even larger increase. I did not
+attribute the increases to a particular task.
+
+**Better for decl than at the checkpoint:** every signature number, cold start and peak memory.
+- The checkpoint's signature risk is gone. decl was 2.7x to 5.8x slower than file-slim at p50 and is now 0.9x to 1.0x.
+- Cold start is now 0.9x to 1.1x of file-slim, where it was 2.2x to 3.0x.
+- Peak is now 0.86x to 1.02x of file-slim.
+- large-signature is the one signature scenario where decl's p95 trails file-slim's: 927.7 against 756.8 ms, the
+  maximum of 10 edits.
+
+### Run-to-run spread
+
+large-body, five runs of the final tree, one after another (`baseline-untraced`, then `repeat` to `repeat4`):
+
+| run | file-slim p50 | decl p50 | decl lead ms | file-slim p95 | decl p95 | decl edit MB |
+|---|---|---|---|---|---|---|
+| 1 | 31.9 | 30.3 | 1.6 | 76.5 | 72.0 | 561.5 |
+| 2 | 29.7 | 28.7 | 1.0 | 68.8 | 69.0 | 561.3 |
+| 3 | 30.7 | 27.3 | 3.4 | 91.5 | 62.9 | 561.3 |
+| 4 | 27.7 | 27.8 | -0.1 | 83.7 | 63.1 | 561.4 |
+| 5 | 28.6 | 27.7 | 0.9 | 73.6 | 67.1 | 561.4 |
+| median | 29.7 | 27.8 | 1.0 | 76.5 | 67.1 | 561.4 |
+
+- p50 ranges over 4.2 ms for file-slim and 3.0 ms for decl. The medians differ by 1.9 ms, less than either range.
+- Allocation is stable to 0.04%, so allocation differences of a few MB are real where timing differences of a few ms
+  are not.
+- decl's p95 was lower in four runs of five and 0.2 ms higher in the other.
+- The t7-fix1 tree, one round earlier and with the same allocations, once measured decl *slower*: 31.7 against 26.9 ms
+  (`results/server-a/t7-fix1/variance/1`).
+
+### Does GO hold?
+
+The rule: decl has a lower p50 than file-slim on the body scenarios of mid and large, with zero oracle diffs.
+
+- **mid-body: yes, clearly.** 35.1 against 85.0 ms, 2.4x. There is one final-tree run, but the t7-fix1 run agrees (36.8
+  against 88.5) and the gap is far outside the spread above.
+- **large-body: yes on the median, not in every run.** 27.8 against 29.7 ms. decl was lower in four runs of five and
+  0.1 ms higher in the other. The checkpoint's 1.17x margin is now about 1.07x, inside the noise.
+- **Oracle diffs: zero.**
+
+So a single run would usually pass the rule and sometimes fail it on large-body. What large-body supports is "no slower
+than file-slim", at slightly lower allocation and p95. The case for the declaration graph now rests on mid-body, small-body
+and the line-insert scenarios (mid 39.0 against 71.8 ms, in `results/server-a/t7-fix2`), and on signature edits and cold
+start no longer costing more.
+
+### Which results were traced
+
+No result folder stores the `Ranvier.dll` it ran on or a build record, and the header line is new. So apart from `t7`,
+this is inferred from what the runs allocated. For the same code, a traced run shows a distinct signature:
+
+| | traced | untraced |
+|---|---|---|
+| large-body decl edit MB | about 631 | about 561 |
+| mid-signature decl edit MB | about 4475 | about 4410 |
+| mid-signature decl peak MB | about 565 | about 490 |
+
+| verdict | results | basis |
+|---|---|---|
+| traced, confirmed | `server-a/t7`, `t7/variance` | heap dump held trace records; R's Debug `Ranvier.dll` was 975,360 bytes against 537,088 |
+| traced, inferred | `server-a/t5-fix4`, `t6-fix1`, `t6-fix2` | signature above |
+| untraced, inferred | `server-a/t4`, `t4-fix1`, `t5`, `t5-fix1`, `t5-fix2`, `t5-fix3`, `t5-fix5` | signature above |
+| untraced, confirmed | `server-a/t7-fix1` | dll size. Its run-logs' `TRACED BUILD` line is false (see the folder's README) |
+| untraced, header | `server-a/t7-fix2`, `baseline-untraced` | `ranvier: untraced` |
+| cannot tell | **`checkpoint`**, `server-a/before`, `t2`, `t3`, `t3-fix1`, `t3b`, `t3b-fix*` | no untraced run of the same code to compare with |
+
+**This section's "checkpoint" column cannot be called traced or untraced.** The evidence points both ways:
+- For traced: the Setup table's build is `dotnet build RanvierFSharp.slnx -c Release`. At that commit Ranvier was a plain
+  `ProjectReference` outside the solution, and Ranvier's commit `b0a70d3f` already defaulted Debug to traced.
+- For untraced: the Setup table's command is `dotnet run --project src/Rfs.Checkpoint -c Release` without `--no-build`.
+  That builds the project itself, and a project build passes Release on to Ranvier, which should replace the traced dll
+  in the output. I did not reproduce this.
+
+The likely explanation for the variance Task 5 recorded on large-body (631.8 against 561.3 MB) is that those runs were
+traced. It fits the table above but was not tested directly.

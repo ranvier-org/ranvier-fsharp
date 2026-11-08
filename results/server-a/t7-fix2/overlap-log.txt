@@ -1,0 +1,3 @@
+2026-11-08T17:15:59 scenarios/mid-lineinsert.json foreign-cpu-s=0 elapsed-s=67
+2026-11-08T17:17:46 scenarios/large-lineinsert.json foreign-cpu-s=0 elapsed-s=91
+2026-11-08T17:27:28 scenarios/huge-il-lineinsert.json foreign-cpu-s=3 elapsed-s=567

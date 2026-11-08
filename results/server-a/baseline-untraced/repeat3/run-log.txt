@@ -1,0 +1,27 @@
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: untraced
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+large: 0 errors, 16 other diagnostics
+large-body: file-slim checks in graph mode
+running file-slim on large-body (process 50044)
+  file-slim: cold 3508.5 ms, edit p50 27.7 ms, p95 83.7 ms, decls/edit -, allocated 1576.3 MB (cold 952.8, edits 623.5), peak 319.5 MB
+running decl on large-body (process 26392)
+  decl: cold 3174.6 ms, edit p50 27.8 ms, p95 63.1 ms, decls/edit 1.0, allocated 1552.7 MB (cold 991.3, edits 561.4), peak 321.9 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 7.7%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 23 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 125.6 ms; not promoted: 
+== scenarios/large-body.json exit 0 in 145 s; other dotnet cpu during it: 1 s

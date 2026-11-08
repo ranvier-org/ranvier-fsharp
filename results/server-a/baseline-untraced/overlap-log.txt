@@ -1,0 +1,6 @@
+2026-11-08T17:29:50 scenarios/small-body.json foreign-cpu-s=1 elapsed-s=127
+2026-11-08T17:32:03 scenarios/mid-body.json foreign-cpu-s=1 elapsed-s=118
+2026-11-08T17:34:57 scenarios/large-body.json foreign-cpu-s=1 elapsed-s=159
+2026-11-08T17:36:32 scenarios/small-signature.json foreign-cpu-s=1 elapsed-s=80
+2026-11-08T17:38:02 scenarios/mid-signature.json foreign-cpu-s=1 elapsed-s=75
+2026-11-08T17:39:55 scenarios/large-signature.json foreign-cpu-s=1 elapsed-s=98
