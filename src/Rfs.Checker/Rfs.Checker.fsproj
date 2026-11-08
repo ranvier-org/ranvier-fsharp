@@ -10,6 +10,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Rfs.Checker.Tests" />
     <InternalsVisibleTo Include="rfs-checkpoint" />
+    <InternalsVisibleTo Include="Rfs.Server.Tests" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">

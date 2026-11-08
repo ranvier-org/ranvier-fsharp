@@ -262,6 +262,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let openTexts = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     let mutations = new SemaphoreSlim(1)
     let lifetime = new CancellationTokenSource()
+    let mutable onGraphCreated: ProjectGraph -> unit = ignore
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -294,8 +295,19 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             try
                 let! graph = ProjectGraph.Create(host, spec)
                 created.Value <- Some graph
+                onGraphCreated graph
 
-                let texts = lock gate (fun () -> spec.SourceFiles |> List.choose (fun f -> match openTexts.TryGetValue f with | true, t -> Some(f, t) | _ -> None))
+                // Registered before the settle wait, in the same critical section that reads the open texts: an `Open`
+                // either lands in `openTexts` first and is read here, or finds the entry and goes to the graph.
+                let texts =
+                    lock gate (fun () ->
+                        entries[spec.ProjectFile] <- { Spec = spec; Graph = graph }
+
+                        spec.SourceFiles
+                        |> List.choose (fun f ->
+                            match openTexts.TryGetValue f with
+                            | true, t -> Some(f, t)
+                            | _ -> None))
 
                 for f, t in texts do
                     graph.SetText(f, t) |> ignore
@@ -311,10 +323,10 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                         )
                     )
 
-                lock gate (fun () -> entries[spec.ProjectFile] <- { Spec = spec; Graph = graph })
                 do! notifyWorkspace (Responses.project spec)
                 return Loaded spec.ProjectFile
             with ex ->
+                remove spec.ProjectFile |> ignore
                 created.Value |> Option.iter (fun g -> (g :> IDisposable).Dispose())
                 return Failed(spec.ProjectFile, ex.Message)
         }
@@ -423,8 +435,8 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
     member _.Projects: ProjectGraph list = snapshot () |> Array.map _.Graph |> List.ofArray
 
-    /// The project files loaded now
-    member _.ProjectFiles: string list = snapshot () |> Array.map _.Spec.ProjectFile |> List.ofArray
+    /// Runs `hook` for each new graph before its cold check is asked for. For tests.
+    member internal _.OnGraphCreated(hook: ProjectGraph -> unit) : unit = onGraphCreated <- hook
 
     /// Disposes the project's graph, evaluates the project again and creates a new graph with the open texts applied
     member _.Reload(project: string) : Task<unit> = exclusively (fun () -> reload project)

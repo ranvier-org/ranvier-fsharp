@@ -355,4 +355,65 @@ let tests =
               graph.SetText(depsA, File.ReadAllText depsA + "\nlet afterDispose = 1\n") |> ignore
               do! Task.Delay 1500
               Expect.equal graph.FileLevelChecks before "no CheckFile after Dispose"
+          }
+
+          testTask "a check held when its graph is disposed starts no more checks" {
+              let host = GraphHost.Start "dispose-held"
+              use _ = disposing host
+              let! (spec: ProjectSpec) = ProjectSpec.load depsProject
+              let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec) |> within
+              let! _ = graph.AllDiagnostics() |> within
+              let gate = new ManualResetEventSlim(false)
+              let reached = TaskCompletionSource()
+
+              // The first file's check is held; the files after it would be checked once it returns
+              graph.OnScopedCheck(fun _ ->
+                  reached.TrySetResult() |> ignore
+                  gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+              try
+                  graph.SetText(depsA, File.ReadAllText depsA + "\nlet inFlight = 1\n") |> ignore
+                  do! reached.Task.WaitAsync(TimeSpan.FromSeconds 60.)
+                  let checksBefore = graph.FileLevelChecks
+                  (graph :> IDisposable).Dispose()
+                  do! host.Read(fun () -> ()) |> within
+                  gate.Set()
+                  do! Task.Delay 3000
+                  Expect.isLessThanOrEqual (graph.FileLevelChecks - checksBefore) 1L "at most the check already running finishes"
+              finally
+                  gate.Set()
+          }
+
+          testTask "an Open during a load's cold check reaches the graph" {
+              let dir = copyFixture "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let a = Path.Combine(dir, "A.fs")
+              let e = Path.Combine(dir, "E.fs")
+              let gate = new ManualResetEventSlim(false)
+              let reached = TaskCompletionSource()
+
+              do!
+                  withWorkspace None (fun workspace _ ->
+                      task {
+                          let hold (graph: ProjectGraph) =
+                              graph.OnScopedCheck(fun path ->
+                                  if String.Equals(path, e, StringComparison.OrdinalIgnoreCase) then
+                                      reached.TrySetResult() |> ignore
+                                      gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+                          workspace.OnGraphCreated hold
+
+                          try
+                              let load = workspace.Load [ project ]
+                              do! reached.Task.WaitAsync(TimeSpan.FromSeconds 120.)
+                              Expect.isFalse load.IsCompleted "the cold check is held"
+                              workspace.Open(a, File.ReadAllText a + "\nlet broken : int = \"text\"\n")
+                              gate.Set()
+                              let! _ = load |> within
+                              let graph = (workspace.ProjectOf a).Value
+                              let! diagnostics = graph.Diagnostics a |> within
+                              Expect.isTrue (diagnostics |> Array.exists (fun d -> d.Message.Contains "string")) "the text opened during the load is checked"
+                          finally
+                              gate.Set()
+                      })
           } ]

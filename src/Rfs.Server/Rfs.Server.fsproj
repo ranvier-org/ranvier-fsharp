@@ -11,6 +11,9 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Rfs.Server.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Ionide.LanguageServerProtocol" />
     <!-- Its StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
     <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />

@@ -272,13 +272,14 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// and it is then checked whole), and at once for a file that is not wanted.
     member _.WhenPromoted(file: string, ct: CancellationToken) : Task<Rfs.Checker.FileMode> =
         let i = indexOf file
-        let token =
-            if ct.CanBeCanceled then
-                CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token).Token
-            else
-                lifetime.Token
 
-        host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), token)
+        if ct.CanBeCanceled then
+            let linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            let wait = host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), linked.Token)
+            wait.ContinueWith((fun (_: Task) -> linked.Dispose()), TaskScheduler.Default) |> ignore
+            wait
+        else
+            host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), lifetime.Token)
 
     /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
     /// is checked whole) once all files are settled on their latest texts.
