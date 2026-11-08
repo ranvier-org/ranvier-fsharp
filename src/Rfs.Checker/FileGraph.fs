@@ -246,6 +246,9 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     let token =
         createMemoWithComparer StringComparer.Ordinal (fun _ -> latest.Value.Result.Fingerprint)
 
+    let origin =
+        createMemoWithComparer HashIdentity.Reference (fun _ -> latest.Value.Origin)
+
     member _.Key = key
     member _.Decl = decl
     member _.Content = content
@@ -260,6 +263,8 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
     member _.Latest = latest
     /// The fingerprint the check left: the cutoff for the file's declarations that depend on this one
     member _.Token = token
+    /// The check the latest result came from: unchanged by a shift, so what reads it does not run again for one
+    member _.OriginOf: Memo<RowCheck> = origin
     /// The environment after this declaration, as last assembled. Concurrent checks may write it with different
     /// chains; a reader takes it only when its previous node and result are the ones it has, so a lost write only
     /// costs an ExtendEnv.
@@ -318,7 +323,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 |> Array.distinct
 
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
-            let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
+            let identities = deps.Identity |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)
 
             // Unchanged but for the line it starts on (W1): shifted, not checked again, unless the checker refused it
             refusals.Value |> ignore
@@ -345,7 +350,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             // definition and find references from the shifted result would miss. So a shift, and a shifted result,
             // stands only while every declaration it depends on is the result it was checked against, or a shift of it.
             let shiftable () =
-                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)) identities
+                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)) identities
                 |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
 
             let current = current && (not (moved || previous.IsShift) || shiftable ())
@@ -435,7 +440,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
             let identityKeys = outside (seq { for _, _, deps in members do yield! deps.Identity })
             let tokens = tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Token.Value)
-            let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)
+            let identities = identityKeys |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)
             refusals.Value |> ignore
 
             let current =
@@ -469,7 +474,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             // As for a row on its own: shifted members stand only while what they depend on outside the segment is
             // the result they were checked against, or a shift of it
             let shiftable () =
-                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).Latest.Value)) identities
+                Array.append (tokenKeys |> Array.map (fun k -> k, (file.RowOf k).OriginOf.Value)) identities
                 |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
 
             let anyShifted = current && previous.Rows.Values |> Seq.exists _.IsShift

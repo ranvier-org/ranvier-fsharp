@@ -8,6 +8,8 @@
     <RanvierDir>$(MSBuildThisFileDirectory)..\Ranvier\src\Ranvier\</RanvierDir>
     <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <!-- A solution build otherwise gives Ranvier, outside the solution, its default Configuration: a Debug Ranvier is a traced one, whose event log keeps every value it published alive -->
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
   </PropertyGroup>
   <ItemGroup>
     <!-- Overrides the FSharp.Core that packages like Ionide.ProjInfo and Expecto depend on, with no assets, so only the fork one is loaded. -->

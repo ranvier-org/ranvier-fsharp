@@ -39,6 +39,12 @@ logged. It sits in a subdirectory so `rfs-harness compare` reads only results.
 process, and writes premise-<corpus>.md with one line per D1 premise break (a declaration whose final fingerprint
 differs from its check's): file:line, key, kind, and the first differing part of the two fingerprints."""
 
+    /// Whether the Ranvier loaded is a traced build (RANVIER_TRACE, a Debug build's default), which a stale copy in a
+    /// Release output can be: the Task 7 fix round found one.
+    let private ranvierTraced () =
+        let assembly = typeof<Ranvier.Graph>.Assembly
+        [ "Ranvier.TraceModule"; "Ranvier.Trace" ] |> List.exists (fun name -> not (isNull (assembly.GetType name)))
+
     let private header (logCutoff: bool) =
         $"""rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
   decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
@@ -49,6 +55,7 @@ differs from its check's): file:line, key, kind, and the first differing part of
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
   cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
+  ranvier: %s{if ranvierTraced () then "TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable" else "untraced"}
   decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
     extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
     segment rows.
