@@ -12,6 +12,9 @@ type RanvierClient(sendServerNotification: ClientNotificationSender, sendServerR
     override _.TextDocumentPublishDiagnostics(p: PublishDiagnosticsParams) =
         sendServerNotification "textDocument/publishDiagnostics" (box p) |> Async.Ignore
 
+    override _.WindowShowMessage(p: ShowMessageParams) =
+        sendServerNotification "window/showMessage" (box p) |> Async.Ignore
+
     /// A custom `fsharp/*` or `rfs/*` notification
     member _.Notify(method: string, payload: obj) =
         sendServerNotification method payload |> Async.Ignore

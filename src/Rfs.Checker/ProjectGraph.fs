@@ -40,8 +40,13 @@ open Rfs.Projects
 /// </para>
 /// </remarks>
 [<Sealed>]
-type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, files: IFileNode[]) =
+type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, files: IFileNode[], owner: Owner) =
     let requested = Array.zeroCreate<int64> files.Length
+    let lifetime = new CancellationTokenSource()
+    let mutable disposed = 0
+
+    // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle
+    let settled (read: unit -> 'T voption) = host.WhenSettled(read, lifetime.Token)
 
     let byPath =
         let d = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
@@ -105,8 +110,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
             let texts = spec.SourceFiles |> List.map (fun f -> f, File.ReadAllText f) |> Array.ofList
 
-            let! files =
-                host.Read(fun () ->
+            // The nodes belong to a root of their own, so disposing the root takes the whole graph of the project
+            let build () =
                     let isSignature (path: string) =
                         path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
 
@@ -159,9 +164,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                         for node in nodes do
                             node.Promote()
 
-                    nodes.ToArray())
+                    nodes.ToArray()
 
-            return ProjectGraph(host, project, spec, files)
+            let! owner, files = host.Read(fun () -> createRoot (fun owner -> owner, build ()))
+            return ProjectGraph(host, project, spec, files, owner)
         }
 
     /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Call it when the
@@ -198,7 +204,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         let i = indexOf file
         let version = Interlocked.Increment &requested[i]
         let node = files[i]
-        host.Post(fun () -> node.Text.SetText(text, version))
+
+        // A disposed graph checks nothing
+        if Volatile.Read &disposed = 0 then
+            host.Post(fun () -> node.Text.SetText(text, version))
+
         version
 
     /// The file's diagnostics, with the version of its text they are for, once its result is for its latest text and
@@ -206,17 +216,17 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     member _.SettledDiagnostics(file: string) : Task<struct (int64 * FSharpDiagnostic[])> =
         let i = indexOf file
 
-        host.WhenSettled(fun () ->
+        settled (fun () ->
             readSettled i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d))))
 
     /// The file's diagnostics once its result is for its latest text and the files it depends on are settled.
     member _.Diagnostics(file: string) : Task<FSharpDiagnostic[]> =
         let i = indexOf file
-        host.WhenSettled(fun () -> readSettled i (fun f version -> f.Settled version))
+        settled (fun () -> readSettled i (fun f version -> f.Settled version))
 
     /// Every file's diagnostics once all of them are settled on their latest texts.
     member _.AllDiagnostics() : Task<IReadOnlyDictionary<string, FSharpDiagnostic[]>> =
-        host.WhenSettled(fun () ->
+        settled (fun () ->
             settledAll (fun f version -> f.Settled version)
             |> ValueOption.map (fun all ->
                 let d = Dictionary<string, FSharpDiagnostic[]>()
@@ -234,7 +244,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         if isSignatureFile files[i] then
             invalidArg (nameof file) $"%s{file} is a signature file"
 
-        host.WhenSettled(fun () -> readSettled i (fun f version -> f.Results version))
+        settled (fun () -> readSettled i (fun f version -> f.Results version))
 
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
@@ -262,12 +272,18 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// and it is then checked whole), and at once for a file that is not wanted.
     member _.WhenPromoted(file: string, ct: CancellationToken) : Task<Rfs.Checker.FileMode> =
         let i = indexOf file
-        host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), ct)
+        let token =
+            if ct.CanBeCanceled then
+                CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token).Token
+            else
+                lifetime.Token
+
+        host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), token)
 
     /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
     /// is checked whole) once all files are settled on their latest texts.
     member _.AllFileResults() : Task<IReadOnlyDictionary<string, FileResult>> =
-        host.WhenSettled(fun () ->
+        settled (fun () ->
             settledAll (fun f version ->
                 if isSignatureFile f then
                     f.Settled version |> ValueOption.map (fun _ -> None)
@@ -358,6 +374,20 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// How many of those are running. Read without touching the graph. For tests.
     member internal _.MeasuresInFlight: int64 = project.MeasuresInFlight
+
+    /// Ends every wait in flight (they are canceled) and disposes the graph's nodes on the graph thread. Idempotent,
+    /// and safe once the host is disposed, which has disposed the graph already.
+    member _.Dispose() =
+        if Interlocked.Exchange(&disposed, 1) = 0 then
+            lifetime.Cancel()
+
+            try
+                host.Post(fun () -> owner.Dispose())
+            with :? ObjectDisposedException ->
+                ()
+
+    interface IDisposable with
+        member this.Dispose() = this.Dispose()
 
     /// The project's checker context. For tests.
     member internal _.Context: ProjectContext = project.Context

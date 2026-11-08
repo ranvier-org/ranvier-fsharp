@@ -5,11 +5,20 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Client.fs" />
+    <Compile Include="Paths.fs" />
+    <Compile Include="Workspace.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Ionide.LanguageServerProtocol" />
+    <!-- Its StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Rfs.Checker\Rfs.Checker.fsproj" />

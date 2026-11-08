@@ -82,8 +82,13 @@ module ProjectSpec =
         let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
         let loader = WorkspaceLoader.Create(toolsPath.Value, [])
 
+        let notes = System.Collections.Concurrent.ConcurrentQueue<string>()
+        loader.Notifications.Add(fun n -> notes.Enqueue(sprintf "%A" n))
+
         match loader.LoadProjects([ fsproj ]) |> Seq.tryHead with
-        | None -> failwith $"Ionide.ProjInfo returned no project for {fsproj}"
+        | None ->
+            let details = String.Join("; ", notes)
+            failwith $"Ionide.ProjInfo returned no project for {fsproj}: {details}"
         | Some p ->
             { ProjectFile = fsproj
               SourceFiles =
@@ -107,6 +112,16 @@ module ProjectSpec =
 
             failwith
                 $"{spec.ProjectFile}: {missing.Length} referenced assemblies are not on disk (build the referenced projects, build/fetch-corpus.ps1 does it for the corpus):\n{listed}"
+
+    /// Drops the cached spec, so the next `load` evaluates the project again: a change to a props or targets file the
+    /// project imports does not touch the project file, which the cache's freshness check looks at.
+    let invalidate (fsproj: string) : unit =
+        try
+            File.Delete(cachePath (Path.GetFullPath fsproj))
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException ->
+            ()
 
     let load (fsproj: string) : Task<ProjectSpec> =
         task {

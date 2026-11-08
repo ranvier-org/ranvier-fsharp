@@ -17,17 +17,76 @@ open Helpers
 
 type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable disposed = 0
+    let workspace = new Workspace(host, client)
+    let mutable rootPath: string option = None
+    let mutable automaticInit = false
+    let mutable peekDepth = 2
+    let mutable excludedDirs: string list = [ ".git"; "node_modules"; ".ionide" ]
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
+            workspace.Dispose()
             host.Dispose()
+
+    let plain (content: string) : LspResult<PlainNotification> = Ok { Content = content }
+
+    /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
+    let automaticLoad (root: string) =
+        task {
+            try
+                let found = WorkspacePeek.peek root peekDepth excludedDirs
+                let! _ = workspace.Load(WorkspacePeek.projectsOf found)
+                ()
+            with ex ->
+                eprintfn "[ranvierautocomplete] automatic workspace load failed: %O" ex
+        }
 
     member _.Client = client
     member _.Host = host
+    member _.Workspace = workspace
+
+    member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
+        async {
+            try
+                let found = WorkspacePeek.peek p.Directory p.Deep (List.ofArray p.ExcludedDirs)
+                return plain (Responses.workspacePeek found)
+            with ex ->
+                return LspResult.internalError ex.Message
+        }
+
+    member _.FSharpWorkspaceLoad(p: WorkspaceLoadParms) : Async<LspResult<PlainNotification>> =
+        async {
+            try
+                let projects = p.TextDocuments |> Array.map (fun t -> Paths.ofUri t.Uri) |> List.ofArray
+                let! _ = workspace.Load projects |> Async.AwaitTask
+                return plain (Responses.workspaceLoad true)
+            with ex ->
+                return LspResult.internalError ex.Message
+        }
 
     interface ILspServer with
-        member _.Initialize(_: InitializeParams) =
+        member _.Initialize(p: InitializeParams) =
             async {
+                rootPath <-
+                    match p.RootUri with
+                    | Some uri -> Some(Paths.ofUri uri)
+                    | None -> p.RootPath |> Option.map Path.GetFullPath
+
+                match p.InitializationOptions with
+                | Some options when options.HasValues ->
+                    match options["AutomaticWorkspaceInit"] with
+                    | null -> ()
+                    | v -> automaticInit <- v.ToObject<bool>()
+
+                    match options["WorkspaceModePeekDeepLevel"] with
+                    | null -> ()
+                    | v -> peekDepth <- v.ToObject<int>()
+
+                    match options["ExcludeProjectDirectories"] with
+                    | null -> ()
+                    | v -> excludedDirs <- [ for d in v -> d.ToObject<string>() ]
+                | _ -> ()
+
                 let capabilities =
                     { ServerCapabilities.Default with
                         TextDocumentSync =
@@ -43,7 +102,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                           ServerInfo = Some { Name = "ranvierautocomplete"; Version = None } }
             }
 
-        member _.Initialized(_) = ignoreNotification
+        member _.Initialized(_) =
+            async {
+                match rootPath, automaticInit with
+                | Some root, true ->
+                    // The load takes as long as the cold checks; the connection keeps serving meanwhile
+                    automaticLoad root |> ignore
+                | _ -> ()
+            }
 
         member _.Shutdown() =
             async {
@@ -58,7 +124,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentDidClose(_) = ignoreNotification
         member _.TextDocumentDidSave(_) = ignoreNotification
         member _.WorkspaceDidChangeConfiguration(_) = ignoreNotification
-        member _.WorkspaceDidChangeWatchedFiles(_) = ignoreNotification
+        member _.WorkspaceDidChangeWatchedFiles(p: DidChangeWatchedFilesParams) =
+            async {
+                try
+                    let changes =
+                        [ for c in p.Changes -> Paths.ofUri c.Uri, (c.Type = FileChangeType.Deleted) ]
+
+                    do! workspace.FilesChanged changes |> Async.AwaitTask
+                with ex ->
+                    eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
+            }
 
         member _.CallHierarchyIncomingCalls(_) = notImplemented
         member _.CallHierarchyOutgoingCalls(_) = notImplemented
@@ -142,7 +217,10 @@ module Server =
               "workspace/didChangeWatchedFiles" ]
 
     let private handlings () =
-        defaultRequestHandlings () |> Map.filter (fun name _ -> implemented.Contains name)
+        defaultRequestHandlings ()
+        |> Map.filter (fun name _ -> implemented.Contains name)
+        |> Map.add "fsharp/workspacePeek" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspacePeek p))
+        |> Map.add "fsharp/workspaceLoad" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspaceLoad p))
 
     let run (input: Stream) (output: Stream) : int =
         let reason =
