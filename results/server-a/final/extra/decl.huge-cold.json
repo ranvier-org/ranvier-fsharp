@@ -1,0 +1,48 @@
+{
+  "server": "decl",
+  "scenario": "huge-cold",
+  "coldAllocatedMb": 16990.467697143555,
+  "editAllocatedMb": 0,
+  "promoteMs": null,
+  "notPromoted": [],
+  "coldCounters": {
+    "checked": 0,
+    "adopted": 0,
+    "finishMs": 0,
+    "segmentRows": 0,
+    "premiseBreaks": 0,
+    "finishPhaseMs": {
+      "checkFile": 384518.2547,
+      "checkSignatureFile": 31934.0323,
+      "createProject": 524.1194,
+      "definitions": 31.029,
+      "fileDependencies": 661.9654,
+      "fingerprint": 971.0801,
+      "parse": 39691.9549,
+      "render": 29.3869,
+      "setup": 6836.4141,
+      "tail": 376645.0597
+    },
+    "phaseAllocatedMb": {
+      "checkFile": 13151.757301330566,
+      "checkFile.definitions": 1.2016067504882812,
+      "checkFile.fingerprint": 54.33959197998047,
+      "checkFile.render": 0.5802154541015625,
+      "checkFile.setup": 210.90213012695312,
+      "checkFile.tail": 12883.81216430664,
+      "checkSignatureFile": 1671.309425354004,
+      "createProject": 86.21378326416016,
+      "fileDependencies": 30.350067138671875,
+      "parse": 850.3714294433594
+    },
+    "fileLevelChecks": 236,
+    "chainFallbacks": 0
+  },
+  "premiseBreaksAtCold": 0,
+  "segmentRowsAtCold": 0,
+  "largestRowLines": null,
+  "editedRowLines": null,
+  "finishShareP50": null,
+  "stopped": null,
+  "steps": []
+}

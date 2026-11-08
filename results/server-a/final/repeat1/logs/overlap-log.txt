@@ -1,0 +1,33 @@
+21:45:37 small-body before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.00 | load%: 28 | other-dotnet(id:cpu): 57280:1.1,60464:4,947.9,35336:8.7,48204:7.5,60292:6.6
+21:47:39 small-body exit 0 elapsed 121s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.02 | load%: 60 | other-dotnet(id:cpu): 57280:1.1,60464:5,269.4,35336:8.7,48204:7.5,60292:6.6
+21:47:41 mid-body before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.02 | load%: 48 | other-dotnet(id:cpu): 57280:1.1,60464:5,271.1,35336:8.7,48204:7.5,60292:6.6
+21:49:55 mid-body exit 0 elapsed 133s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.02 | load%: 32 | other-dotnet(id:cpu): 57280:1.1,60464:5,544.0,48204:7.5,60292:6.6
+21:49:57 large-body before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.02 | load%: 54 | other-dotnet(id:cpu): 57280:1.1,60464:5,545.7,48204:7.5,60292:6.6
+21:53:28 large-body exit 0 elapsed 210s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.08 | load%: 65 | other-dotnet(id:cpu): 57280:1.2,60464:6,169.7,48204:7.6,60292:6.8
+DONE
+22:18:19 small-signature before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 33 | other-dotnet(id:cpu): 48204:7.8,60292:7.2
+22:19:52 small-signature exit 0 elapsed 91s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 4 | other-dotnet(id:cpu): 48204:7.8,60292:7.2
+22:19:53 mid-signature before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 13 | other-dotnet(id:cpu): 48204:7.8,60292:7.2
+22:21:12 mid-signature exit 0 elapsed 77s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 5 | other-dotnet(id:cpu): 48204:7.8,60292:7.2
+22:21:14 large-signature before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 17 | other-dotnet(id:cpu): 48204:7.8,60292:7.2
+22:22:56 large-signature exit 0 elapsed 101s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 3 | other-dotnet(id:cpu): 48204:7.8,60292:7.3
+22:22:58 large-bigfile-narrow before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 6 | other-dotnet(id:cpu): 48204:7.8,60292:7.3
+22:25:22 large-bigfile-narrow exit 0 elapsed 142s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 24 | other-dotnet(id:cpu): 43480:39.2,50808:0.3,48204:7.8,60292:7.3
+22:25:24 large-bigfile-wide before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 11 | other-dotnet(id:cpu): 43480:40.2,50808:0.3,48204:7.8,60292:7.3
+22:27:52 large-bigfile-wide exit 0 elapsed 147s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 26 | other-dotnet(id:cpu): 27572:0.2,35336:48.8,48204:7.8,60292:7.3
+22:27:54 mid-lineinsert before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 24 | other-dotnet(id:cpu): 27572:0.2,35336:49.8,48204:7.8,60292:7.3
+22:29:01 mid-lineinsert exit 0 elapsed 65s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 10 | other-dotnet(id:cpu): 48204:7.8,60292:7.3
+22:29:02 large-lineinsert before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 6 | other-dotnet(id:cpu): 48204:7.8,60292:7.3
+22:30:34 large-lineinsert exit 0 elapsed 90s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 8 | other-dotnet(id:cpu): 48204:7.8,60292:7.3
+DONE
+22:56:04 huge-il-body before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 6 | other-dotnet(id:cpu): 48204:7.9,60292:7.3
+23:04:32 huge-il-body exit 0 elapsed 506s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 46 | other-dotnet(id:cpu): 4040:0.2,37340:12.3,48204:7.9,60292:7.3
+23:04:34 huge-il-lineinsert before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 40 | other-dotnet(id:cpu): 4040:0.2,37340:22.1,48204:7.9,60292:7.3
+23:13:19 huge-il-lineinsert exit 0 elapsed 523s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 24 | other-dotnet(id:cpu): 48204:7.9,60292:7.3
+23:13:21 huge-cx-lineinsert before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 19 | other-dotnet(id:cpu): 23976:1.1,48204:7.9,60292:7.3
+23:22:43 huge-cx-lineinsert exit 0 elapsed 561s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 6 | other-dotnet(id:cpu): 48204:7.9,60292:7.3
+23:22:44 huge-cx-top before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 5 | other-dotnet(id:cpu): 48204:7.9,60292:7.3
+23:31:43 huge-cx-top exit 0 elapsed 537s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 25 | other-dotnet(id:cpu): 48204:7.9,60292:7.4
+23:31:45 huge-cx-rec before: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 12 | other-dotnet(id:cpu): 48204:7.9,60292:7.4
+23:40:32 huge-cx-rec exit 0 elapsed 526s after: idle: 20416=gone 48424=gone 60928=gone 61920=gone 62276=gone 10768=2.55 | load%: 23 | other-dotnet(id:cpu): 51152:0.1,48204:7.9,60292:7.4
+DONE

@@ -1,0 +1,26 @@
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: untraced
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+small: 0 errors, 6 other diagnostics
+small-body: file-slim checks in graph mode
+running file-slim on small-body (process 5796)
+  file-slim: cold 8610.6 ms, edit p50 77.9 ms, p95 197.1 ms, decls/edit -, allocated 3104.6 MB (cold 1837.6, edits 1267.0), peak 267.0 MB
+running decl on small-body (process 57184)
+  decl: cold 8587.0 ms, edit p50 36.9 ms, p95 70.0 ms, decls/edit 1.0, allocated 2719.9 MB (cold 1896.0, edits 823.8), peak 252.3 MB
+  decl: adopted/edit 1.0, runs/edit 1.0, finish share p50 11.1%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 41 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 215.0 ms; not promoted: 

@@ -1,0 +1,26 @@
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: untraced
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+mid: 0 errors, 3 other diagnostics
+mid-cold: file-slim checks in graph mode
+running file-slim on mid-cold (process 44100)
+  file-slim: cold 4019.3 ms, edit p50 - ms, p95 - ms, decls/edit -, allocated 1699.5 MB (cold 1699.5, edits 0.0), peak 338.7 MB
+running decl on mid-cold (process 60976)
+  decl: cold 4094.6 ms, edit p50 - ms, p95 - ms, decls/edit -, allocated 1735.6 MB (cold 1735.6, edits 0.0), peak 350.8 MB
+  decl: adopted/edit -, runs/edit -, finish share p50 -%, segment rows 0 cold, 0 after the last edit
+  decl: file checks 37 cold, -/edit; chain fallbacks 0 cold, -/edit
+  decl: promoted the edited files in - ms; not promoted: 

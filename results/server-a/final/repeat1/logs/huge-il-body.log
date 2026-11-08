@@ -1,0 +1,26 @@
+rfs-checkpoint: the same edits and texts on each engine, one engine after the other.
+  decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
+    depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
+    declaration, outside the timed edits (promoteMs).
+  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+    the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
+    file-level configuration: the baseline decl must beat.
+  oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
+  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): off
+  ranvier: untraced
+  decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
+    extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
+    segment rows.
+Layer caveat: both engines check the whole project on every edit, in their own process. FSAC's baseline also pays for
+LSP and publishing and re-checks only open files, so these latencies are not directly comparable with it.
+engine order: file-slim, decl, one child process each
+
+huge: 0 errors, 64 other diagnostics
+huge-il-body: file-slim checks in graph mode
+running file-slim on huge-il-body (process 29992)
+  file-slim: cold 20154.0 ms, edit p50 847.0 ms, p95 1540.2 ms, decls/edit -, allocated 25370.5 MB (cold 16124.1, edits 9246.4), peak 1784.6 MB
+running decl on huge-il-body (process 15428)
+  decl: cold 24044.7 ms, edit p50 1161.9 ms, p95 1983.5 ms, decls/edit 476.0, allocated 27599.4 MB (cold 16988.8, edits 10610.6), peak 1814.6 MB
+  decl: adopted/edit 476.0, runs/edit 476.0, finish share p50 17.1%, segment rows 0 cold, 476 after the last edit
+  decl: file checks 236 cold, 0.0/edit; chain fallbacks 0 cold, 0.0/edit
+  decl: promoted the edited files in 1481.7 ms; not promoted: 
