@@ -250,22 +250,29 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
     }
 
 /// Every symbol use of the file's results, with where its symbol is declared, in the signature and in the
-/// implementation: what go to definition and find references read. A namespace is left out: it is declared by every
-/// file that opens a fragment of it, and which of those its location names depends on the order checks combined them.
-/// So is a symbol another file declares: a later file sees an earlier file's items through its signature, which is
-/// reused while its fingerprint is the same, whatever lines its items moved to. That is an open gap this check does
-/// not cover: the fuzz saw C.fs point one line off into B.fs (task-7-report.md, fix round 1).
+/// implementation: what go to definition and find references read. An active pattern case's declaration is its tag's
+/// (the subclass's DeclarationLocation, which the base property does not reach). For a namespace, only the use is
+/// compared: it is declared by every file that opens a fragment of it, and which of those its location names depends
+/// on the order checks combined them. So for a symbol another file declares: a later file sees an earlier file's items
+/// through its signature, which is reused while its fingerprint is the same, whatever lines its items moved to. That
+/// is an open gap this check does not cover: the fuzz saw C.fs point one line off into B.fs (task-7-report.md, fix
+/// round 1), and Task 16 carries it.
 let private locationsOf (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
-    |> Seq.filter (fun u ->
-        match u.Symbol with
-        | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> false
-        | symbol ->
-            match symbol.DeclarationLocation with
-            | Some m -> String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase)
-            | None -> true)
     |> Seq.map (fun u ->
-        $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
+        let elsewhere =
+            match u.Symbol with
+            | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> true
+            | symbol ->
+                match symbol.DeclarationLocation with
+                | Some m -> not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
+                | None -> false
+
+        match u.Symbol with
+        | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere"
+        | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
+        | _ ->
+            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
     |> Set.ofSeq
 
 /// The lines by which the symbol locations of the graph's published results for `file` differ from the interactive
@@ -274,7 +281,7 @@ let locationDiff (s: Session) (file: string) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
         let actual = locationsOf file graph[file].CheckResults
-        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions s.Spec)
+        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
 

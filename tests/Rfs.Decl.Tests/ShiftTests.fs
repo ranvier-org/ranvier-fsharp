@@ -165,7 +165,11 @@ let private interactive (p: Project) (file: string) (text: string) =
 let private locationsOf (results: FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
     |> Seq.map (fun u ->
-        $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
+        match u.Symbol with
+        // Its tag's range, which the base property does not reach
+        | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
+        | _ ->
+            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
     |> Seq.sort
     |> List.ofSeq
 
@@ -384,6 +388,48 @@ let tests =
               do! expectDiagnostics p a text finished "after shifting back"
               let! reference = interactive p a text
               expectLocations finished.CheckResults reference "every symbol's declaration after shifting back"
+          }
+
+          // `reraise ()` in a computation expression's handler is checked at the finish (CheckExpressions.fs): the check's
+          // closure holds the range it reports at, FS0413 here. Three inserts, so the offsets accumulate.
+          testTask "a check deferred to the finish reports at the shifted line" {
+              let text =
+                  "module Deps.A\n\ntype B() =\n    member _.Return(x: int) = x\n    member _.Delay(f: unit -> int) = f\n    member _.TryWith(body: unit -> int, handler: string -> int) = body ()\nlet b = B()\nlet first = 1\nlet bad () =\n    b {\n        try\n            return 1\n        with e ->\n            return reraise ()\n    }\n"
+
+              let! p = load [ a, text ]
+              let refusals = Collections.Concurrent.ConcurrentQueue<string>()
+              p.Context.ShiftRefusedHook <- refusals.Enqueue
+
+              try
+                  let parse = DeclarationChecker.Parse(p.Context, a, text)
+                  let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+                  let mutable results = checkAll start env0 (DeclarationChecker.Split parse)
+                  let first = DeclarationChecker.FinishFile(start, results, parse)
+                  let lineOf (r: FileResult) = (r.Diagnostics |> Array.find (fun d -> d.ErrorNumber = 413)).StartLine
+                  let firstLine = lineOf first
+                  let mutable target = text
+
+                  for insert in 1..3 do
+                      target <- target.Replace("type B()", "\ntype B()")
+                      let parse2 = DeclarationChecker.Parse(p.Context, a, target)
+
+                      let shifted =
+                          Array.map2
+                              (fun (d: ParsedDeclaration) (r: DeclarationResult) ->
+                                  match DeclarationChecker.Shift(r, d) with
+                                  | ValueSome s -> s
+                                  | ValueNone -> failtest $"insert %d{insert}: %s{d.Key.Name} was not shifted: %A{List.ofSeq refusals}")
+                              (DeclarationChecker.Split parse2)
+                              results
+
+                      let finished = DeclarationChecker.FinishFile(start, shifted, parse2)
+                      Expect.equal (lineOf finished) (firstLine + insert) $"insert %d{insert}: FS0413 moved with its declaration"
+                      do! expectDiagnostics p a target finished $"insert %d{insert}"
+                      results <- shifted
+
+                  Expect.equal ProjectContext.ShiftFinishMisses 0L "the check reported only ranges of its own declaration"
+              finally
+                  p.Context.ShiftRefusedHook <- ignore
           }
 
           testTask "shift refuses a column change" {
