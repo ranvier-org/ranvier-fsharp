@@ -290,6 +290,39 @@ let tests =
               do! expectDiagnostics p a edited second "after the shift"
           }
 
+          // A superseded graph flight shifts the result it read again, after another flight shifted it
+          testTask "a result shifted twice moves its items once" {
+              let text = threeDecls area
+              let edited = blankAboveSecond text
+              let! p = load [ a, text ]
+              let parse = DeclarationChecker.Parse(p.Context, a, text)
+              let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+              let results = checkAll start env0 (DeclarationChecker.Split parse)
+              DeclarationChecker.FinishFile(start, results, parse) |> ignore
+              let parse2 = DeclarationChecker.Parse(p.Context, a, edited)
+              let decls2 = DeclarationChecker.Split parse2
+              let shift i = DeclarationChecker.Shift(results[i], decls2[i])
+              let first = [| for i in 1..2 -> (shift i).Value |]
+              let again = [| for i in 1..2 -> (shift i).Value |]
+
+              for f, g in Array.zip first again do
+                  Expect.isTrue (obj.ReferenceEquals(f, g)) $"%s{f.Key.Name}: the second shift gives the first's result"
+
+              let finished = DeclarationChecker.FinishFile(start, Array.append [| results[0] |] again, parse2)
+              do! expectDiagnostics p a edited finished "after shifting twice"
+              let! reference = interactive p a edited
+              expectLocations finished.CheckResults reference "every symbol's declaration after shifting twice"
+
+              // Back to the first text, from the results first read: shifted from where they were last shifted to
+              let decls1 = DeclarationChecker.Split(DeclarationChecker.Parse(p.Context, a, text))
+              let back = [| for i in 1..2 -> (DeclarationChecker.Shift(results[i], decls1[i])).Value |]
+              let parse3 = DeclarationChecker.Parse(p.Context, a, text)
+              let finished = DeclarationChecker.FinishFile(start, Array.append [| results[0] |] back, parse3)
+              do! expectDiagnostics p a text finished "after shifting back"
+              let! reference = interactive p a text
+              expectLocations finished.CheckResults reference "every symbol's declaration after shifting back"
+          }
+
           testTask "shift refuses a column change" {
               let text = "module Deps.A\n\nmodule Inner =\n    let one = 1\n\n    let two = one + 1\n"
               let edited = "module Deps.A\n\nmodule Inner =\n      let one = 1\n\n\n      let two = one + 1\n"

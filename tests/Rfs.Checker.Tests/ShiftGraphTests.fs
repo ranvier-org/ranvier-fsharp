@@ -36,6 +36,56 @@ let private shifting (s: Session) (file: string) (text: string) =
         return r, s.Graph.ShiftedRows - before
     }
 
+let private bagFile =
+    """namespace Deps
+
+/// A bag of items
+/// kept in arrival order
+type Bag<'T>(items: 'T list, count: int) =
+    let mutable cached = None
+
+    override x.GetHashCode() =
+        match cached with
+        | Some h -> h
+        | None ->
+            let h = List.fold (fun acc i -> 31 * acc + Unchecked.hash i) 1 items
+            cached <- Some h
+            h
+
+    override x.Equals(other) =
+        match other with
+        | :? Bag<'T> as y -> x.Count = y.Count && List.forall2 Unchecked.equals x.Items y.Items
+        | _ -> false
+
+    member x.Items = items
+    member x.Count = count
+    member x.Head = List.head items
+    member x.Add i = Bag(i :: items, count + 1)
+
+    interface System.Collections.Generic.IReadOnlyCollection<'T> with
+        member x.Count = count
+        member x.GetEnumerator() = (Seq.ofList items).GetEnumerator()
+        member x.GetEnumerator() = (Seq.ofList items :> System.Collections.IEnumerable).GetEnumerator()
+
+[<RequireQualifiedAccess>]
+module Bag =
+    let empty<'T> : Bag<'T> = Bag<_>([], 0)
+
+    let inline head (b: Bag<'T>) = b.Head
+
+    let inline count (b: Bag<'T>) = b.Count
+
+    let ofList xs = Bag<'T>(xs, List.length xs)
+
+    let inline toSeq (b: Bag<'T>) = b :> 'T seq
+
+    let inline add (b: Bag<'T>) x = b.Add x
+
+    let isEmpty (b: Bag<'T>) = b.Count = 0
+
+    let inline items (b: Bag<'T>) = b.Items
+"""
+
 let private blankAbove (anchor: string) (text: string) =
     if not (text.Contains anchor) then
         failtest $"no %s{anchor}"
@@ -76,6 +126,27 @@ let tests =
                           Expect.equal shifted (int64 rows) "every row is shifted"
                           do! expectOracle s r.Diagnostics "after the blank line under the header"
                       })
+          }
+
+          // large-lineinsert's shape: a line inside a documented generic type, which a module of the same name's
+          // inline functions use. Their checks run again while their shifts are in flight, and a superseded flight's
+          // shift must not move what the result it was shifted to already moved.
+          testTask "a line inside a type re-checks only it, while the rows using it are shifted" {
+              let! s = start ()
+              use _ = (s :> IAsyncDisposable)
+              let! _ = edit s a bagFile
+              s.Graph.Promote a
+              let! _ = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+
+              for round in 1..3 do
+                  let! (r: Edit), shifted = shifting s a (bagFile.Replace("type Bag<'T>(items", "\ntype Bag<'T>(items"))
+                  Expect.equal (r.NamesIn a) [ "Bag" ] $"round %d{round}: only the type is checked again"
+                  Expect.equal shifted 9L $"round %d{round}: the module's header and its eight values are shifted"
+                  do! expectOracle s r.Diagnostics $"round %d{round}: after the line inside Bag"
+                  let! (r: Edit), shifted = shifting s a bagFile
+                  Expect.equal (r.NamesIn a) [ "Bag" ] $"round %d{round}: the type is checked again once the line goes"
+                  Expect.equal shifted 9L $"round %d{round}: and the rest shifted back"
+                  do! expectOracle s r.Diagnostics $"round %d{round}: after the line goes"
           }
 
           testTask "line inside a declaration re-checks only it" {
