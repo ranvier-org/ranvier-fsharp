@@ -211,7 +211,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
                     let path = Paths.ofUri p.TextDocument.Uri
 
-                    match workspace.OwnersOf path with
+                    match (if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then [] else workspace.OwnersOf path) with
                     | [] -> return Ok None
                     | graph :: _ ->
                         let! text =
@@ -236,8 +236,6 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     // A request the client cancelled never gets here: the library cancels the async itself.
                     | :? OperationCanceledException
                     | :? ObjectDisposedException -> return Ok None
-                    // A signature file, which has no result to read, or a position the file does not have
-                    | :? ArgumentException -> return Ok None
                     | e ->
                         eprintfn "[ranvierautocomplete] hover failed: %O" e
                         return LspResult.internalError e.Message

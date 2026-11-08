@@ -12,10 +12,10 @@ open Ranvier
 open Rfs.Projects
 
 module private ReadSupport =
-    /// Takes the lock shared. A grant that arrives after `ct` ended the wait is released at once.
-    let acquireShared (l: AsyncReaderWriterLock) (ct: CancellationToken) : Task<IDisposable> =
+    /// Takes the lock exclusively. A grant that arrives after `ct` ended the wait is released at once.
+    let acquireExclusive (l: AsyncReaderWriterLock) (ct: CancellationToken) : Task<IDisposable> =
         task {
-            let grant = l.ReadAsync()
+            let grant = l.WriteAsync()
 
             try
                 return! grant.WaitAsync ct
@@ -79,6 +79,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     let requested = Array.zeroCreate<int64> files.Length
     let lifetime = new CancellationTokenSource()
     let mutable disposed = 0
+    let mutable afterSettle: unit -> Task = fun () -> Task.CompletedTask
 
     // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle
     let settled (read: unit -> 'T voption) = host.WhenSettled(read, lifetime.Token)
@@ -281,8 +282,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         settled (fun () -> readSettled i (fun f version -> f.Results version))
 
-    /// Runs `read` off the graph thread on the file's published result, once it is settled on its latest text (as for
-    /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart shared, so no
+    /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no
     /// finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
     /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
     /// signature file, which has no FileResult, and with InvalidOperationException when called holding the file's
@@ -311,10 +311,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
             while answer.IsNone do
                 let! r = host.WhenSettled(readable, linked.Token)
+                do! afterSettle ()
 
                 let run (r: Readable) =
                     Task.Run(fun () ->
-                        guard ()
 
                         read
                             { Result = r.Result
@@ -327,7 +327,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                     let! v = run r
                     answer <- ValueSome v
                 | ValueSome l ->
-                    let! held = acquireShared l linked.Token
+                    let! held = acquireExclusive l linked.Token
                     use _ = held
                     // A finish may have run between the settle and the lock; one in flight now changes the inputs first
                     let! again = host.Read(fun () -> try readable () with NotReadyException _ -> ValueNone)
@@ -489,6 +489,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// The project's checker context. For tests.
     member internal _.Context: ProjectContext = project.Context
+
+    /// Awaits `hook` in each ReadFile after the file settled and before it takes the lock. For tests.
+    member internal _.OnReadSettled(hook: unit -> Task) : unit = afterSettle <- hook
 
     /// Runs `hook` off the graph thread, with the file's path, just before a setup from a file's dependencies is given
     /// to the checker. For tests.

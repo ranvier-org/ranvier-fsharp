@@ -1,37 +1,78 @@
 namespace Rfs.Server
 
 open System
+open System.Collections.Concurrent
+open System.IO
+open System.Net
 open System.Text.RegularExpressions
 open System.Threading
 open System.Threading.Tasks
+open System.Xml.Linq
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Tokenization
-open FSharp.Compiler.Text
 open Rfs.Checker
 
 /// <summary>
 /// Hover, ported from FSAC's <c>TryGetToolTipEnhanced</c> (ParseAndCheckResults.fs) and the part of its TipFormatter that
-/// renders a tooltip as Markdown: the signature in a code block, then the summary of the XML documentation. Left out:
-/// keyword and hash-directive tooltips, the enhanced (parameter, returns, remarks) comment styles and documentation links.
+/// renders a tooltip as Markdown: the signature in a code block, then the summary of the XML documentation, from the
+/// source's doc comment or from the referenced assembly's XML file.
 /// </summary>
+/// <remarks>
+/// Not ported (hover answers nothing, or shows less): keyword and hash-directive tooltips, the parameter, returns and
+/// remarks sections and FSAC's comment-style modes, generic type mappings, <c>inheritdoc</c>, and documentation links.
+/// The identifier under the cursor is found with the tokenizer, as FSAC's <c>Lexer.findLongIdents</c> does: operators
+/// answer, and strings and comments do not.
+/// </remarks>
 module Hover =
     let private tags = Regex("<[^>]+>", RegexOptions.Compiled)
+    let private cref = Regex("""<(?:see|seealso)\s+cref="(?:[A-Z]:)?([^"]*)"\s*/>""", RegexOptions.Compiled)
+    let private paramref = Regex("""<(?:paramref|typeparamref)\s+name="([^"]*)"\s*/>""", RegexOptions.Compiled)
     let private summary = Regex("<summary>(.*?)</summary>", RegexOptions.Compiled ||| RegexOptions.Singleline)
+
+    /// The summary of a doc comment's XML, as plain text
+    let private plain (xml: string) : string option =
+        let body =
+            match summary.Match xml with
+            | m when m.Success -> m.Groups[1].Value
+            | _ -> xml
+
+        let referenced = cref.Replace(body, (fun m -> let name = m.Groups[1].Value in name.Substring(name.LastIndexOf '.' + 1)))
+        let named = paramref.Replace(referenced, "$1")
+        let text = WebUtility.HtmlDecode(tags.Replace(named, "")).Trim()
+        let compact = Regex.Replace(text, @"\s*\n\s*", " ")
+        if compact = "" then None else Some compact
+
+    /// An assembly's XML documentation file, by member name, read once
+    let private xmlFiles = ConcurrentDictionary<string, Lazy<System.Collections.Generic.Dictionary<string, string>>>()
+
+    let private membersOf (dllName: string) =
+        xmlFiles.GetOrAdd(
+            dllName,
+            fun _ ->
+                lazy
+                    (let members = System.Collections.Generic.Dictionary<string, string>()
+                     let xml = Path.ChangeExtension(dllName, ".xml")
+
+                     try
+                         if File.Exists xml then
+                             for m in XDocument.Load(xml).Descendants "member" do
+                                 match m.Attribute "name" with
+                                 | null -> ()
+                                 | name -> members[name.Value] <- String.concat "" (m.Nodes() |> Seq.map _.ToString())
+                     with :? System.Xml.XmlException | :? IOException -> ()
+
+                     members)
+        )
 
     let private docText (doc: FSharpXmlDoc) : string option =
         match doc with
-        | FSharpXmlDoc.FromXmlText x ->
-            let xml = String.Join("\n", x.GetElaboratedXmlLines())
-
-            let body =
-                match summary.Match xml with
-                | m when m.Success -> m.Groups[1].Value
-                | _ -> xml
-
-            let text = tags.Replace(body, "").Replace("&lt;", "<").Replace("&gt;", ">").Trim()
-            if text = "" then None else Some text
+        | FSharpXmlDoc.FromXmlText x -> plain (String.Join("\n", x.GetElaboratedXmlLines()))
+        | FSharpXmlDoc.FromXmlFile(dllName, xmlSig) ->
+            match (membersOf dllName).Value.TryGetValue xmlSig with
+            | true, xml -> plain xml
+            | _ -> None
         | _ -> None
 
     /// The tooltip as Markdown, or None when it holds nothing
@@ -53,21 +94,82 @@ module Hover =
         | [] -> None
         | all -> Some(String.concat "\n\n---\n\n" all)
 
-    /// The Markdown for the symbol at the 0-based line and character of the view's text.
+    [<Struct>]
+    type private Tok =
+        { Left: int
+          Right: int
+          Kind: FSharpTokenCharKind
+          Text: string }
+
+    /// The tokens of line `target`, lexed from the top so a block comment or string that opened above is known
+    let private tokensOf (lines: string[]) (target: int) : Tok list =
+        let tokenizer = FSharpSourceTokenizer([], Some "hover.fs", None)
+        let mutable state = FSharpTokenizerLexState.Initial
+        let mutable result = []
+
+        for i in 0..target do
+            let lineStr = lines[i].TrimEnd '\r'
+            let line = tokenizer.CreateLineTokenizer lineStr
+            let found = ResizeArray()
+            let mutable more = true
+
+            while more do
+                match line.ScanToken state with
+                | Some t, next ->
+                    state <- next
+                    let right = min t.RightColumn (lineStr.Length - 1)
+
+                    if right >= t.LeftColumn then
+                        found.Add
+                            { Left = t.LeftColumn
+                              Right = right
+                              Kind = t.CharClass
+                              Text = lineStr.Substring(t.LeftColumn, right - t.LeftColumn + 1) }
+                | None, next ->
+                    state <- next
+                    more <- false
+
+            if i = target then
+                result <- List.ofSeq found
+
+        result
+
+    let private unquote (name: string) =
+        if name.Length > 4 && name.StartsWith "``" && name.EndsWith "``" then name.Substring(2, name.Length - 4) else name
+
+    /// The identifier or operator under the 0-based character: its long name up to it, and the column its text ends at
+    let private nameAt (lines: string[]) (line: int) (character: int) : (string list * int) option =
+        let tokens = tokensOf lines line |> Array.ofList
+
+        match tokens |> Array.tryFindIndex (fun t -> t.Left <= character && character <= t.Right) with
+        | None -> None
+        | Some k ->
+            let t = tokens[k]
+
+            match t.Kind with
+            | FSharpTokenCharKind.Identifier ->
+                let mutable first = k
+
+                while first >= 2 && tokens[first - 1].Text = "." && tokens[first - 2].Kind = FSharpTokenCharKind.Identifier do
+                    first <- first - 2
+
+                let names = [ for i in first..2 .. k -> unquote tokens[i].Text ]
+                Some(names, t.Right + 1)
+            | FSharpTokenCharKind.Operator -> Some([ t.Text ], t.Right + 1)
+            | _ -> None
+
+    /// The Markdown for the symbol at the 0-based line and character of the text.
     let tooltipOf (check: FSharpCheckFileResults) (text: string) (line: int) (character: int) : string option =
         let lines = text.Split '\n'
 
         if line < 0 || line >= lines.Length then
             None
         else
-            let lineStr = lines[line].TrimEnd '\r'
-
-            match QuickParse.GetCompleteIdentifierIsland false lineStr character with
+            match nameAt lines line character with
             | None -> None
-            | Some(ident, endColumn, _) ->
-                let names = ident.Split '.' |> List.ofArray
-                let tip = check.GetToolTip(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
-                format tip
+            | Some(names, endColumn) ->
+                let lineStr = lines[line].TrimEnd '\r'
+                format (check.GetToolTip(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier))
 
     let tooltipAt (view: FileView) (line: int) (character: int) : string option =
         tooltipOf view.Result.CheckResults view.Text line character

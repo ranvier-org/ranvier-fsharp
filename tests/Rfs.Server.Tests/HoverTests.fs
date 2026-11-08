@@ -71,6 +71,17 @@ let private hoverRequest (path: string) (line: int, character: int) : HoverParam
       Position = { Line = uint32 line; Character = uint32 character }
       WorkDoneToken = None }
 
+/// Waits until the file is checked by declaration for its latest text
+let private promoted (s: Session) (path: string) =
+    task {
+        let graph = (s.Server.Workspace.ProjectOf path).Value
+        let! mode = graph.WhenPromoted(path, CancellationToken.None) |> within
+        Expect.equal mode Rfs.Checker.FileMode.Declarations $"%s{Path.GetFileName path} is checked by declaration"
+    }
+
+let private signedFsi = "module Deps.E\n\n/// Adds one\nval f: x: int -> int\n\nval g: int\n"
+let private signedFs (k: int) = $"module Deps.E\n\nlet f y = y + 1\n\nlet g = f %d{k}\n"
+
 [<Tests>]
 let tests =
     testSequenced
@@ -121,10 +132,17 @@ let tests =
               use _ = disposing s
               do! openAll s [ a ]
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              do! promoted s a
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let ran = System.Collections.Concurrent.ConcurrentQueue<_>()
+              let _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
               let! before = hoverText s a (position (s.Lsp.Text a) "scale" 1 1)
               Expect.isSome before "a tooltip before"
               do! s.Lsp.DidChange(a, 1, replace s a "x * 2" "x * 3")
               do! eventually "the edit's publish" (fun () -> hasVersion s a 1)
+              do! promoted s a
+              Expect.isNonEmpty (ran.ToArray()) "the edited row was checked"
+              Expect.isFalse (ran.ToArray() |> Array.contains "grouped") "grouped was kept, not checked again"
               let texts = diskTexts () |> Map.add a (s.Lsp.Text a)
 
               // `doubled` and `grouped` come after the edited row, and are kept when it changes
@@ -134,6 +152,90 @@ let tests =
                   let! reference = expected s texts a at
                   Expect.isSome reference $"FCS has a tooltip for %s{needle}"
                   Expect.equal actual reference $"%s{needle} in a kept row equals FCS"
+          }
+
+          testTask "hover in a row shifted by a line insert" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              do! promoted s a
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let shifted = graph.ShiftedRows
+              do! s.Lsp.DidChange(a, 1, replace s a "let baseValue = 10" "\nlet baseValue = 10")
+              do! eventually "the edit's publish" (fun () -> hasVersion s a 1)
+              do! promoted s a
+              Expect.isGreaterThan graph.ShiftedRows shifted "the rows after the insert were moved, not checked again"
+              let texts = diskTexts () |> Map.add a (s.Lsp.Text a)
+
+              for needle, nth, inside in [ "grouped", 0, 2; "doubled", 0, 2; "area", 0, 1 ] do
+                  let at = position (s.Lsp.Text a) needle nth inside
+                  let! actual = hoverText s a at
+                  let! reference = expected s texts a at
+                  Expect.isSome reference $"FCS has a tooltip for %s{needle}"
+                  Expect.equal actual reference $"%s{needle} in a shifted row equals FCS"
+          }
+
+          testTask "hovers overlapping edits of a signed file all equal a settled tooltip" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let efsi, efs = file "E.fsi", file "E.fs"
+              do! s.Lsp.DidOpen(efsi, signedFsi)
+              do! s.Lsp.DidOpen(efs, signedFs 1)
+              do! eventually "the open publish" (fun () -> hasVersion s efs 0)
+              do! promoted s efs
+              let at = (2, 4)
+              let! reference = expected s (diskTexts () |> Map.add efsi signedFsi |> Map.add efs (signedFs 1)) efs at
+              Expect.isSome reference "FCS has a tooltip for f"
+              Expect.stringContains reference.Value "Adds one" "with the signature's documentation"
+
+              // Every edit re-checks `g`, which undoes the last finish of the file; the hovers are not waited for
+              let hovers = ResizeArray()
+
+              for i in 1..30 do
+                  do! s.Lsp.DidChange(efs, i, replace s efs $"let g = f %d{i}" $"let g = f %d{i + 1}")
+                  hovers.Add(hoverText s efs at)
+
+              for h in hovers do
+                  let! actual = h |> within
+                  Expect.equal actual reference "an answer for a settled text: f keeps its signature's name and docs"
+          }
+
+          testTask "hover shows the documentation of a referenced assembly's member" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              do! s.Lsp.DidChange(a, 1, replace s a "let grouped = (baseValue + 1) * 2" "let grouped = (baseValue + 1) * 2\n\nlet mapped = List.map scale [ 1; 2 ]")
+              let! actual = hoverText s a (position (s.Lsp.Text a) "List.map" 0 6)
+              Expect.isSome actual "a tooltip for List.map"
+              Expect.stringContains actual.Value "Builds a new collection" "with FSharp.Core's documentation from its XML file"
+          }
+
+          testTask "hover on an operator answers, and in a string or a comment answers nothing" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+
+              do!
+                  s.Lsp.DidChange(
+                      a,
+                      1,
+                      replace s a "let grouped = (baseValue + 1) * 2" "let grouped = (baseValue + 1) * 2\n\nlet text = \"baseValue scale\"\n\n// baseValue in a comment\n(* scale *)"
+                  )
+
+              let text = s.Lsp.Text a
+              let! op = hoverText s a (position text "+ 1" 0 0)
+              Expect.isSome op "a tooltip for +"
+              let! inString = hoverText s a (position text "\"baseValue" 0 3)
+              Expect.isNone inString "nothing inside a string"
+              let! inComment = hoverText s a (position text "// baseValue" 0 5)
+              Expect.isNone inComment "nothing inside a line comment"
+              let! inBlock = hoverText s a (position text "(* scale" 0 4)
+              Expect.isNone inBlock "nothing inside a block comment"
+              let! code = hoverText s a (position text "let grouped" 0 6)
+              Expect.isSome code "code still answers"
           }
 
           testTask "a hover right after an edit answers from the edit's text" {

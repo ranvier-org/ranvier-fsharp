@@ -76,10 +76,10 @@ let tests =
               let ticks = s.Graph.FinishTicks
               let after = before.Replace("let baseValue = 10", "let baseValue = 11")
               let version = s.Graph.SetText(a, after)
-              // The declarations are checked (checks share the lock); the finish needs it alone
-              do! eventually "the edited declaration to be checked" (fun () -> ran.Count > 0)
               let settled = s.Graph.SettledDiagnostics a
-              do! Task.Delay 500
+              do! Task.Delay 700
+              // A check or shift undoes the last finish in place, so none runs while the read holds the file
+              Expect.equal ran.Count 0 "no declaration check ran during the read"
               Expect.isFalse settled.IsCompleted "the file does not settle while the read holds it"
               Expect.equal s.Graph.FinishTicks ticks "no finish ran during the read"
               release.Set()
@@ -88,6 +88,79 @@ let tests =
               let! struct (v, _) = settled |> settle
               Expect.equal v version "the file then settles on the edit"
               Expect.isGreaterThan s.Graph.FinishTicks ticks "and the finish ran"
+          }
+
+          testTask "a read that waits for the lock reads again when a newer result came meanwhile" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let reached = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+              let go = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+              let mutable calls = 0
+
+              // The first settle of the read is held before the lock is asked for
+              s.Graph.OnReadSettled(fun () ->
+                  if Interlocked.Increment &calls = 1 then
+                      reached.SetResult(())
+                      go.Task :> Task
+                  else
+                      Task.CompletedTask)
+
+              let read = s.Graph.ReadFile(a, (fun v -> v.Text), CancellationToken.None)
+              do! reached.Task |> settle
+              // A whole edit, finish included, lands between the settle and the lock
+              let after = s.Texts[a].Replace("let baseValue = 10", "let baseValue = 11")
+              let version = s.Graph.SetText(a, after)
+              let! struct (settledVersion, _) = s.Graph.SettledDiagnostics a |> settle
+              Expect.equal settledVersion version "the file settled on the edit"
+              go.SetResult(())
+              let! text = read |> settle
+              Expect.equal text after "the read answers from the result published when it got the lock, not the one it settled on"
+          }
+
+          testTask "queries inside one read agree across an edit, in a signed file" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let efsi = fileOf "E.fsi"
+              let efs = fileOf "E.fs"
+              let! _ = edit s efsi "module Deps.E\n\n/// Adds one\nval f: x: int -> int\n\nval g: int\n"
+              let! _ = edit s efs "module Deps.E\n\nlet f y = y + 1\n\nlet g = f 1\n"
+              let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+              let release = new ManualResetEventSlim(false)
+
+              let tip (v: FileView) =
+                  let (FSharp.Compiler.EditorServices.ToolTipText elements) =
+                      v.Result.CheckResults.GetToolTip(3, 5, "let f y = y + 1", [ "f" ], FSharp.Compiler.Tokenization.FSharpTokenTag.Identifier)
+
+                  [ for e in elements do
+                        match e with
+                        | FSharp.Compiler.EditorServices.ToolTipElement.Group items ->
+                            for i in items do
+                                yield i.MainDescription.Text
+
+                                match i.XmlDoc with
+                                | FSharp.Compiler.Symbols.FSharpXmlDoc.FromXmlText x -> yield! x.GetElaboratedXmlLines()
+                                | _ -> ()
+                        | _ -> () ]
+
+              let held =
+                  s.Graph.ReadFile(
+                      efs,
+                      (fun v ->
+                          let one = tip v
+                          entered.SetResult(())
+                          release.Wait(TimeSpan.FromSeconds 60.) |> ignore
+                          one, tip v),
+                      CancellationToken.None
+                  )
+
+              do! entered.Task |> settle
+              s.Graph.SetText(efs, "module Deps.E\n\nlet f y = y + 1\n\nlet g = f 2\n") |> ignore
+              do! Task.Delay 700
+              release.Set()
+              let! one, two = held |> settle
+              Expect.isNonEmpty one "a tooltip"
+              Expect.equal two one "the tooltip does not change while the read holds the file"
+              Expect.exists one (fun (l: string) -> l.Contains "Adds one") "with the signature's documentation"
           }
 
           testTask "a read of a file checked whole needs no lock" {
