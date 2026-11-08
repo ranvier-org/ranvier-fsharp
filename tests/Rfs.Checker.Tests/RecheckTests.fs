@@ -566,7 +566,7 @@ let tests =
                   do! expectOracle s r.Diagnostics "the target changed"
               })
 
-          inBothModes "a row keeps a type it reached through a kept row's old abbreviation" (fun s ->
+          inBothModes "a row reaching a type through an abbreviation holds the type" (fun s ->
               task {
                   let source (gap: string) (literal: int) (z: string) =
                       lines
@@ -584,10 +584,97 @@ let tests =
                   let! r = edit s d (source " " 1 "let z = (y)")
                   do! expectOracle s r.Diagnostics "z edited"
                   let! r = edit s d (source " " 2 "let z = (y)")
-                  Expect.contains (r.NamesIn d) "z" "z holds T through the old A"
+                  Expect.contains (r.NamesIn d) "z" "z holds T through A"
                   do! expectOracle s r.Diagnostics "T's body edited"
                   let! r = edit s d (source " " 2 "let z: T = (y)")
                   do! expectOracle s r.Diagnostics "a row meets T again"
+              })
+
+          // HeldDefinitions: each A re-checks with the same print and the rows over it stay on an older one
+          inBothModes "a chain of kept rows keeps what it holds across re-checks" (fun s ->
+              task {
+                  let source (gap: string) (target: string) (y: string) (z: int) =
+                      lines [ $"type A =%s{gap} %s{target}"; "let x: A = Unchecked.defaultof<A>"; y; $"let z = y + %d{z}" ]
+
+                  let plain = "let y = x"
+                  let! r = edit s d (source "" "int" plain 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source " " "int" plain 1)
+                  Expect.equal (r.NamesIn d) [ "A" ] "the first same-print re-check"
+                  let! r = edit s d (source " " "int" "let y = (x)" 1)
+                  Expect.contains (r.NamesIn d) "y" "y re-checks through the kept x, holding the first A"
+                  do! expectOracle s r.Diagnostics "y between"
+                  let! r = edit s d (source "  " "int" "let y = (x)" 1)
+                  Expect.equal (r.NamesIn d) [ "A" ] "the second same-print re-check"
+                  let! r = edit s d (source "  " "int" "let y = (x)" 2)
+                  Expect.contains (r.NamesIn d) "z" "z re-checks through the kept y"
+                  do! expectOracle s r.Diagnostics "z after both"
+                  let! r = edit s d (source "  " "string" "let y = (x)" 2)
+                  Expect.isTrue (Set.isSubset (set [ "x"; "y"; "z" ]) (set (r.NamesIn d))) "every row over A, whichever A it holds"
+                  Expect.isTrue (r.Diagnostics[d] |> Array.exists (fun x -> x.ErrorNumber = 1 || x.ErrorNumber = 43)) "string + 1"
+                  do! expectOracle s r.Diagnostics "the target changed"
+              })
+
+          inBothModes "rows in a nested module keep what they hold across re-checks" (fun s ->
+              task {
+                  let source (gap: string) (target: string) (z: int) =
+                      lines
+                          [ $"module M =\n    type A =%s{gap} %s{target}\n\n    let x: A = Unchecked.defaultof<A>\n\n    let y = x\n\n    let z = y + %d{z}"
+                            "let after = M.y" ]
+
+                  let! r = edit s d (source "" "int" 1)
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source " " "int" 1)
+                  do! expectOracle s r.Diagnostics "same print"
+                  let! r = edit s d (source " " "int" 2)
+                  Expect.contains (r.NamesIn d) "z" "z re-checks through the kept y"
+                  do! expectOracle s r.Diagnostics "z edited"
+                  let! r = edit s d (source " " "string" 2)
+                  Expect.contains (r.NamesIn d) "z" "z depends on A"
+                  Expect.isTrue (r.Diagnostics[d] |> Array.exists (fun x -> x.ErrorNumber = 1 || x.ErrorNumber = 43)) "string + 1"
+                  do! expectOracle s r.Diagnostics "the target changed"
+              })
+
+          // N1: what a unit is comes from the attribute alone, whatever else the definition holds. Each row after the first
+          // re-checks only through w's unit, and a stale w reports that the unit is not itself.
+          yield!
+              [ for name, attribute, definition in
+                    [ "a property", "[<Measure>]\n", (fun (literal: int) -> $"type m =\n    static member X with get () = %d{literal}")
+                      "a property, aliased", "[<MA>]\n", (fun literal -> $"type m =\n    static member X with get () = %d{literal}")
+                      "class end, aliased", "[<MA>]\n", (fun literal -> $"type m =\n    class\n        static member X = %d{literal}\n    end")
+                      "an instance member, an error", "[<Measure>]\n", (fun literal -> $"type m =\n    member _.X = %d{literal}")
+                      "a primary constructor, an error", "[<MA>]\n", (fun literal -> $"type m(a: int) =\n    member _.X = a + %d{literal}") ] ->
+                    inBothModes $"a unit with %s{name} gives its users one unit" (fun s ->
+                        task {
+                            let source (literal: int) (y: string) =
+                                lines [ "type MA = MeasureAttribute"; attribute + definition literal; "let x = 1.0<m>"; "let w = x"; y ]
+
+                            let! r = edit s d (source 1 "let y: float<m> = w")
+                            do! expectOracle s r.Diagnostics "the source"
+                            let! r = edit s d (source 2 "let y: float<m> = w")
+                            Expect.contains (r.NamesIn d) "m" "the unit re-checks"
+                            do! expectOracle s r.Diagnostics "the body edited"
+                            let! r = edit s d (source 2 "let y: float<m> = w + 1.0<m>")
+                            do! expectOracle s r.Diagnostics "a row meets w's unit and the new one"
+                        }) ]
+
+          inBothModes "a unit reached only through abbreviations holds" (fun s ->
+              task {
+                  let source (literal: int) (y: string) =
+                      lines
+                          [ $"[<Measure>]\ntype m =\n    static member X with get () = %d{literal}"
+                            "type F = float<m>"
+                            "let x: F = 1.0<m>"
+                            "let w = x"
+                            y ]
+
+                  let! r = edit s d (source 1 "let y: float<m> = w")
+                  do! expectOracle s r.Diagnostics "the source"
+                  let! r = edit s d (source 2 "let y: float<m> = w")
+                  Expect.contains (r.NamesIn d) "w" "w holds m through F"
+                  do! expectOracle s r.Diagnostics "the body edited"
+                  let! r = edit s d (source 2 "let y: float<m> = w + 1.0<m>")
+                  do! expectOracle s r.Diagnostics "a row meets w's unit and the new one"
               })
 
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->

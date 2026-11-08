@@ -500,6 +500,36 @@ let private abbreviationSamePrint (follow: (string -> (string * string) option) 
 
             Some(replaceMatch text m $"type Abbr%s{n} =%s{spaces}%s{m.Groups[3].Value}", $"a space inside Abbr%s{n}")
 
+/// A unit of measure with a member, with a value over it that names it only through another. Edits the member's body, then
+/// leaves `follow` to edit a row that meets the kept value's unit and the new one.
+let private unitWithMember (counter: int ref) (follow: (string -> (string * string) option) option ref) : Mutation =
+    fun random text ->
+        let bodies = [| for m in Regex.Matches(text, @"(type Unit\d+ =\n\s+static member X with get \(\) = )\d+") -> m |]
+
+        if bodies.Length = 0 then
+            counter.Value <- counter.Value + 1
+            let n = counter.Value
+
+            appended
+                text
+                $"[<Measure>]\ntype Unit%d{n} =\n    static member X with get () = 1\n\nlet ux%d{n} = 1.0<Unit%d{n}>\n\nlet uw%d{n} = ux%d{n}\n\nlet uy%d{n}: float<Unit%d{n}> = uw%d{n}"
+            |> Option.map (fun t -> t, $"add Unit%d{n}")
+        else
+            let m = pick random bodies
+            let n = Regex.Match(m.Value, @"Unit(\d+)").Groups[1].Value
+
+            follow.Value <-
+                Some(fun text ->
+                    let row = Regex.Match(text, $@"let uy%s{n}: float<Unit%s{n}> = uw%s{n}[^\n]*")
+
+                    if not row.Success then
+                        None
+                    else
+                        let edited = if row.Value.EndsWith ">" then $"let uy%s{n}: float<Unit%s{n}> = uw%s{n}" else row.Value + $" + 1.0<Unit%s{n}>"
+                        Some(replaceMatch text row edited, $"edit uy%s{n} after its unit's body"))
+
+            Some(replaceMatch text m (m.Groups[1].Value + string (random.Next 100)), $"edit the body of Unit%s{n}")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -561,7 +591,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                abbreviationSamePrint follow
                abbreviationSamePrint follow
                farAugmentation counter
-               farAugmentation counter |]
+               farAugmentation counter
+               unitWithMember counter follow
+               unitWithMember counter follow |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
         let mutations = Array.concat [ before; [| failingDefault |]; after ]
