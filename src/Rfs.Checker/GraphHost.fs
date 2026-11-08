@@ -47,8 +47,6 @@ type GraphHost private (name: string) =
     let mutable graph: Graph = Unchecked.defaultof<Graph>
     let mutable thread: Thread = null
     let mutable startupError: exn = null
-    // Written and read on the host thread only
-    let mutable pumps = 0L
 
     let maxKeptErrors = 256
 
@@ -112,8 +110,6 @@ type GraphHost private (name: string) =
                         with ex ->
                             keep pumpErrors "pump" ex
 
-                        pumps <- pumps + 1L
-
                         // Work run by this pump may have disposed the host; parked reads must then fault, not settle.
                         if not (isStopping ()) then
                             runWaiters ()
@@ -153,9 +149,6 @@ type GraphHost private (name: string) =
     /// The graph. Touch it only on the host thread, from inside <c>Post</c>, <c>Read</c> or a <c>WhenSettled</c> read.
     member _.Graph = graph
 
-    /// How many pumps the loop has run. Every <c>WhenSettled</c> step follows one, so the parked calls stepped after a
-    /// pump all read the same count. Read it on the host thread only.
-    member internal _.Pumps = pumps
 
     /// Runs <c>work</c> on the host thread, after earlier posts from the same caller. Throws if the host is disposed.
     /// A failure of <c>work</c> is kept for <c>TakePostErrors</c>.

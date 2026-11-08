@@ -464,15 +464,7 @@ module internal WholeFile =
                     [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start ]
                 | _ -> []
 
-            member _.Activate() = activate ()
-
-            // The whole check only while it is the published one: reading it starts it
-            member _.Kick() =
-                scopedKey.TryValue |> ignore
-
-                match published.TryValue with
-                | Ready Whole -> observeWhole ()
-                | _ -> () }
+            member _.Activate() = activate () }
 
     /// A signature file, file `index` of the project. Its diagnostics are its parse's: CheckSignatureFile reports none.
     let signature
@@ -520,6 +512,4 @@ module internal WholeFile =
             member _.Activate() =
                 createEffect (fun () ->
                     result.TryValue |> ignore
-                    observe ())
-
-            member _.Kick() = observe () }
+                    observe ()) }

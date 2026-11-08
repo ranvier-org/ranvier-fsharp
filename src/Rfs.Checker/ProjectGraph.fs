@@ -73,37 +73,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         if applied then read files[i] (Volatile.Read &requested[i]) else ValueNone
 
-    // The pump the files up to `kickedTo` were kicked after, and how many kicks there were. Host thread only.
-    let mutable kickedAt = -1L
-    let mutable kickedTo = -1
-    let mutable kicks = 0L
-
-    /// Kicks the files up to `i` (IFileNode.Kick) once per pump, however many settle waits read them: a kick only reads,
-    /// and every wait steps after a pump, so each wait still reads files kicked since the latest pump.
-    let kickTo (i: int) =
-        if host.Pumps <> kickedAt then
-            kickedAt <- host.Pumps
-            kickedTo <- -1
-
-        for j in kickedTo + 1 .. i do
-            files[j].Kick()
-            kicks <- kicks + 1L
-
-        kickedTo <- max kickedTo i
-
-    /// readSettled, after kicking the files up to `i`: each settle wait reads after every pump, so a lost wake-up never
-    /// stalls it.
-    let settledFile (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
-        kickTo i
-        readSettled i read
-
     /// Reads every file once each is settled on its latest text.
     let settledAll (read: IFileNode -> int64 -> 'T voption) : 'T[] voption =
         let results = Array.zeroCreate files.Length
         let mutable ok = true
         let mutable i = 0
-
-        kickTo (files.Length - 1)
 
         while ok && i < files.Length do
             match readSettled i read with
@@ -233,12 +207,12 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         let i = indexOf file
 
         host.WhenSettled(fun () ->
-            settledFile i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d))))
+            readSettled i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d))))
 
     /// The file's diagnostics once its result is for its latest text and the files it depends on are settled.
     member _.Diagnostics(file: string) : Task<FSharpDiagnostic[]> =
         let i = indexOf file
-        host.WhenSettled(fun () -> settledFile i (fun f version -> f.Settled version))
+        host.WhenSettled(fun () -> readSettled i (fun f version -> f.Settled version))
 
     /// Every file's diagnostics once all of them are settled on their latest texts.
     member _.AllDiagnostics() : Task<IReadOnlyDictionary<string, FSharpDiagnostic[]>> =
@@ -260,7 +234,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         if isSignatureFile files[i] then
             invalidArg (nameof file) $"%s{file} is a signature file"
 
-        host.WhenSettled(fun () -> settledFile i (fun f version -> f.Results version))
+        host.WhenSettled(fun () -> readSettled i (fun f version -> f.Results version))
 
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
@@ -288,7 +262,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// and it is then checked whole), and at once for a file that is not wanted.
     member _.WhenPromoted(file: string, ct: CancellationToken) : Task<Rfs.Checker.FileMode> =
         let i = indexOf file
-        host.WhenSettled((fun () -> settledFile i (fun f version -> f.Promoted version)), ct)
+        host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), ct)
 
     /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
     /// is checked whole) once all files are settled on their latest texts.
@@ -377,12 +351,6 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// Each newly published declaration result, with its file, on the graph thread.
     member _.Checked: IObservable<DeclarationKey * string> = project.Checked
-
-    /// How many file kicks settle waits have made, at most one per file per pump. For tests.
-    member internal _.Kicks: int64 = (host.Read(fun () -> kicks)).GetAwaiter().GetResult()
-
-    /// How many pumps the graph's host has run. For tests.
-    member internal _.Pumps: int64 = (host.Read(fun () -> host.Pumps)).GetAwaiter().GetResult()
 
     /// The project's checker context. For tests.
     member internal _.Context: ProjectContext = project.Context

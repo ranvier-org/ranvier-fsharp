@@ -635,7 +635,7 @@ module internal Setup =
         // Reads the keys and the checks that give the result, as `result` does. SigChain2's fuzz (at R 96d957c too) left a
         // key Pending and Dirty on a source that had settled, with none of its readers (the checks, the declaration
         // setup, the node's effect) run again: a Ranvier lost wake-up. Any read of the key itself runs it again. The
-        // node's effect calls this, and so does every settle wait, after each pump, so a wait never hangs on it.
+        // node's effect calls this.
         let observe () =
             scopedKey.TryValue |> ignore
 

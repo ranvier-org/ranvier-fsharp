@@ -704,9 +704,6 @@ type internal IFileNode =
     abstract DeclarationObjects: unit -> WeakReference list
     /// Creates the effects that keep the file checked. Called once every file's nodes exist.
     abstract Activate: unit -> unit
-    /// Reads the file's setup keys and checks, so a key a lost wake-up left Dirty runs again (Setup.build). Graph
-    /// thread, outside any run.
-    abstract Kick: unit -> unit
 
 /// The nodes that check an implementation file one declaration at a time: created when the file is promoted, and
 /// disposed with their owner when it is demoted.
