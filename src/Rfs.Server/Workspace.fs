@@ -265,6 +265,13 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
     let mutable onSetText: ProjectGraph -> string -> int64 -> int -> unit = fun _ _ _ _ -> ()
     let mutable onLoaded: ProjectGraph -> unit = ignore
+    let mutable onLoadEndHook: unit -> unit = ignore
+
+    let onLoadEnd () =
+        try
+            onLoadEndHook ()
+        with ex ->
+            eprintfn "[ranvierautocomplete] after-load hook failed: %O" ex
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -383,6 +390,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 do! visit visited results p
 
             do! notifyWorkspace (Responses.workspaceLoad true)
+            onLoadEnd ()
             let requested = projects |> List.map Path.GetFullPath |> List.distinct
             let others = results.Keys |> Seq.filter (fun k -> not (List.exists (fun r -> String.Equals(r, k, StringComparison.OrdinalIgnoreCase)) requested)) |> List.ofSeq
             return (requested @ others) |> List.map (fun k -> results[k])
@@ -412,6 +420,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             do! notifyWorkspace (Responses.workspaceLoad false)
             do! visit visited results project
             do! notifyWorkspace (Responses.workspaceLoad true)
+            onLoadEnd ()
         }
 
     /// How long a load waits for a project's cold check: `RFS_LOAD_TIMEOUT_MS`, else ten minutes
@@ -487,9 +496,32 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             [ for e in all do if found.Contains e.Spec.ProjectFile then yield e.Graph ]
 
     /// The editor closed the document: the file on disk is the file's text again, which the caller reads
-    member _.Close(path: string) : unit =
+    /// Returns the graphs that own the file. A file that is gone from disk keeps its last text in the graph: the project
+    /// no longer loads without it, and the watched-file change that reloads the project settles that.
+    member _.Close(path: string) : ProjectGraph list =
         let path = Path.GetFullPath path
-        lock gate (fun () -> openTexts.Remove path |> ignore)
+
+        // One critical section with loadGraph and Open, so the disk text cannot overtake a newer open text
+        lock gate (fun () ->
+            openTexts.Remove path |> ignore
+
+            [ for e in Seq.toArray entries.Values do
+                  if isSource e.Spec path then
+                      try
+                          e.Graph.SetText(path, File.ReadAllText path) |> ignore
+                      with
+                      | :? IOException
+                      | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read on close: %s{ex.Message}"
+
+                      yield e.Graph ])
+
+    /// Runs `hook` when a load or reload has finished, whether its projects loaded or not.
+    member internal _.OnLoadEnd(hook: unit -> unit) : unit = onLoadEndHook <- hook
+
+    /// The graphs of the projects that have `path` as a source file, in load order
+    member _.OwnersOf(path: string) : ProjectGraph list =
+        let path = Path.GetFullPath path
+        snapshot () |> Array.filter (fun e -> isSource e.Spec path) |> Array.map _.Graph |> List.ofArray
 
     member _.IsOpen(path: string) : bool =
         let path = Path.GetFullPath path

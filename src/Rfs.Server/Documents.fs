@@ -79,3 +79,12 @@ type Documents() =
                 | true, v -> Some v
                 | _ -> None
             | _ -> None)
+
+    /// Forgets the version maps of graphs that are no longer loaded
+    member _.Prune(live: ProjectGraph list) : unit =
+        lock gate (fun () ->
+            for k in versions.Keys |> Seq.filter (fun (struct (g, _)) -> not (live |> List.exists (fun l -> obj.ReferenceEquals(l, g)))) |> Seq.toArray do
+                versions.Remove k |> ignore)
+
+    /// How many (graph, file) version maps are kept. For tests.
+    member internal _.VersionMaps: int = lock gate (fun () -> versions.Count)

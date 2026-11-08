@@ -7,6 +7,7 @@
     <Compile Include="LifecycleTests.fs" />
     <Compile Include="WorkspaceTests.fs" />
     <Compile Include="PublishTests.fs" />
+    <Compile Include="PublishFixTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
