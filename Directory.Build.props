@@ -4,7 +4,7 @@
     <NoWarn>$(NoWarn);NU1507</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <FickleFcsDir>C:\Users\shaya\RiderProjects\fickle-fsharp\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\</FickleFcsDir>
-    <!-- The main Ranvier checkout next to this repo: master, with the late-link lost wake-up fix (#290) merged. -->
+    <!-- The main Ranvier checkout next to this repo: master, with the lost wake-up fixes (#290, #303) merged. The graph needs both. -->
     <RanvierDir>$(MSBuildThisFileDirectory)..\Ranvier\src\Ranvier\</RanvierDir>
     <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>

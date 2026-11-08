@@ -129,9 +129,9 @@ type Edit =
         |> List.countBy (fun (k, _) -> k.Name)
         |> Map.ofList
 
-/// Sets the text of `file` and waits until every file is settled, and when `promoted`, until promoting every wanted
-/// file has settled too.
-let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<Edit> =
+/// Sets the text of `file`, runs `beforeReading`, and waits until every file is settled, and when `promoted`, until
+/// promoting every wanted file has settled too.
+let editAfter (beforeReading: unit -> Task) (promoted: bool) (s: Session) (file: string) (text: string) : Task<Edit> =
     task {
         let events = ConcurrentQueue<DeclarationKey * string>()
         let ran = ConcurrentQueue<DeclarationKey * string>()
@@ -140,6 +140,7 @@ let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<
         let before = s.Graph.AdoptedChecks
         s.Texts[file] <- text
         s.Graph.SetText(file, text) |> ignore
+        do! beforeReading ()
         let settledEach = [ for f in s.Spec.SourceFiles -> f, s.Graph.SettledDiagnostics f ]
         let! _ = s.Graph.AllDiagnostics() |> settle
         let settled = Dictionary<string, FSharpDiagnostic[]>(StringComparer.OrdinalIgnoreCase)
@@ -160,6 +161,11 @@ let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<
               Diagnostics = diagnostics
               Settled = settled }
     }
+
+/// Sets the text of `file` and waits until every file is settled, and when `promoted`, until promoting every wanted
+/// file has settled too.
+let editWith (promoted: bool) (s: Session) (file: string) (text: string) : Task<Edit> =
+    editAfter (fun () -> Task.CompletedTask) promoted s file text
 
 /// Sets the text of `file` and waits until every file is settled and every wanted file's promotion has.
 let edit (s: Session) (file: string) (text: string) : Task<Edit> = editWith true s file text

@@ -342,7 +342,7 @@ let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
     attempt 0
 
 /// `refuse`: the checker refuses every shift (W1), so the graph checks each moved declaration again as it checks a changed one
-let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int) (steps: int) =
+let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (project: string) (mode: FileMode) (seed: int) (steps: int) =
     task {
         let! s = startOn project mode
         s.Graph.Context.RefuseShifts <- refuse
@@ -441,7 +441,7 @@ let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int
                             let! diagnostics = s.Graph.AllDiagnostics() |> settle
                             return { Delta = 0L; Checked = []; Ran = []; Diagnostics = diagnostics; Settled = diagnostics }
                         else
-                            return! editWith waitForBuilds s file text
+                            return! editAfter (beforeReading s) waitForBuilds s file text
                     with e ->
                         return fail (string e)
                 }
@@ -501,7 +501,44 @@ let private runWith (refuse: bool) (project: string) (mode: FileMode) (seed: int
 
     }
 
+let private runWith = runIn (fun _ _ -> Task.CompletedTask)
+
 let private run = runWith false
+
+/// How much checking the graph has done, read without touching the graph.
+let private activity (s: Session) =
+    s.Graph.FileLevelChecks + s.Graph.CheckedCount + s.Graph.FinishTicks
+
+/// m6: every edit's checks must finish with nothing waiting and nothing reading. After an edit the test only watches the
+/// counters until they rest, then reads: a read that finds work left to do found a check that had stalled.
+let private runUnread (project: string) (mode: FileMode) (seed: int) (steps: int) =
+    task {
+        let stalled = ResizeArray<string>()
+        let step = ref 0
+
+        let unread (s: Session) () : Task =
+            task {
+                step.Value <- step.Value + 1
+                let mutable last = activity s
+                let resting = Diagnostics.Stopwatch.StartNew()
+
+                while resting.Elapsed < TimeSpan.FromSeconds 1. do
+                    do! Task.Delay 25
+                    let now = activity s
+
+                    if now <> last then
+                        last <- now
+                        resting.Restart()
+
+                let! _ = s.Graph.AllDiagnostics() |> settle
+
+                if activity s <> last then
+                    stalled.Add $"edit %d{step.Value}"
+            }
+
+        do! runIn unread false project mode seed steps
+        Expect.isEmpty stalled $"%A{mode} seed %d{seed}: the checks of these edits ran only once a read asked"
+    }
 
 let private fuzz (name: string) (mode: FileMode) =
     testSequenced
@@ -536,3 +573,12 @@ let tests = fuzz "OracleFuzz" FileLevel
 /// Every file checked by declaration, set up from the files it depends on
 [<Tests>]
 let declarationTests = fuzz "OracleFuzzDeclarations" Declarations
+
+[<Tests>]
+let unreadTests =
+    testSequenced
+    <| testList
+        "OracleFuzzUnread"
+        [ for mode in [ FileLevel; Declarations ] do
+              for project, label in [ sigChain2Project, "SigChain2" ] ->
+                  testTask $"%A{mode} %s{label} seed 1515: checks finish with no reader" { do! runUnread project mode 1515 200 } ]
