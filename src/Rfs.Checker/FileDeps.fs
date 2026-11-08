@@ -92,6 +92,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable checkedCount = 0L
     let mutable adoptedCount = 0L
     let mutable shiftedCount = 0L
+    let mutable envExtendCount = 0L
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
@@ -225,6 +226,9 @@ type internal ProjectShared(ctx: ProjectContext) =
 
     /// Counts a published result shifted to another line instead of checked again (W1).
     member _.CountShift() = Interlocked.Increment &shiftedCount |> ignore
+    /// ExtendEnv calls assembling environments before checks: on an in-order re-check, about one per row.
+    member _.CountEnvExtend() = Interlocked.Increment &envExtendCount |> ignore
+    member _.EnvExtendCount = Interlocked.Read &envExtendCount
     member _.ShiftedCount = Interlocked.Read &shiftedCount
     member _.Checked = published :> IObservable<_>
     member _.Ran = ran :> IObservable<_>

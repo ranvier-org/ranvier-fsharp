@@ -338,6 +338,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// How many published results were shifted to the line their unchanged declaration moved to (W1) instead of
     /// checked again: each once, when a finish of the current text that holds it is published.
     member _.ShiftedRows: int64 = project.ShiftedCount
+    /// ExtendEnv calls assembling environments before checks
+    member _.EnvExtends: int64 = project.EnvExtendCount
 
     /// Runs `hook`, off the graph thread, with the reason each time the checker refuses to shift one of the project's
     /// declarations (W1). For diagnosis.

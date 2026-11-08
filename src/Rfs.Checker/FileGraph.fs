@@ -290,6 +290,16 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
         for k in keys do
             (file.RowOf k).Check.Value |> ignore
 
+    /// Waits for the declaration just before this one, so rows that re-check together run in file order. Run out of order,
+    /// each reads earlier results that differ from the last row's, and assembles most of its environment again: quadratic
+    /// in the rows. Checks of a file take its lock in turn anyway, so this costs no parallelism.
+    member private _.AwaitPrevious() =
+        let order = untrack (fun () -> file.Order.Value)
+
+        match order.TryPosition key with
+        | ValueSome position when position > 0 -> (file.RowOf order.Keys[position - 1]).Check.Value |> ignore
+        | _ -> ()
+
     /// The declarations of the file a result depends on through types, as of its latest finish (R13).
     member private _.TypedOf(c: RowCheck) =
         NameIndex.typedKeys file.Path c.Key c.Result.TypedUses
@@ -395,6 +405,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             else
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
+                this.AwaitPrevious()
                 let earlier = file.Earlier(key, start)
 
                 // An earlier result with free inference variables whose segment has not formed yet: checks that solve
@@ -532,6 +543,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
             else
                 let start = file.Start.Value
                 this.AwaitSettled(Seq.append tokenKeys identityKeys)
+                this.AwaitPrevious()
                 let earlier = file.Earlier(key, start)
                 let laterOf = dict [ for r, _, _ in members -> r.Key, untrack (fun () -> file.KeysAfter r.Key) ]
 
@@ -673,6 +685,7 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
             if not (isNull cached) && Nodes.same cached.Previous node && Nodes.same cached.Check c then
                 node <- cached
             else
+                project.CountEnvExtend()
                 let next = EnvNode(node, c, DeclarationChecker.ExtendEnv(node.Env, c.Result))
                 row.EnvCache <- next
                 node <- next

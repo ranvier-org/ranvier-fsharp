@@ -110,6 +110,35 @@ let tests =
               do! expectOracle s r.Diagnostics "D.fs's signature changed, so the later file begins again"
           }
 
+          testTask "an edit every later row depends on stays linear" {
+              let! s = startWith Declarations
+              use _ = (s :> IAsyncDisposable)
+              let n = 400
+
+              let rows =
+                  String.Join("\n\n", [ for i in 1..n -> $"let v%d{i} (x: int) = (x + %d{i}) * List.length [ x; x ]" ])
+
+              let measure (first: string) (second: string) =
+                  task {
+                      let! _ = edit s d first
+                      let! _ = edit s d second
+                      let! _ = edit s d first
+                      let extends = s.Graph.EnvExtends
+                      let allocated = GC.GetTotalAllocatedBytes true
+                      let! r = edit s d second
+                      Expect.isGreaterThanOrEqual r.Delta (int64 n) "every row re-checks"
+                      return s.Graph.EnvExtends - extends, GC.GetTotalAllocatedBytes true - allocated
+                  }
+
+              let openOf (name: string) = $"module Deps.D\n\nopen %s{name}\n\n%s{rows}\n"
+              let! singleExtends, singleAllocated = measure (openOf "System") (openOf "System.IO")
+              let segmentOf (w: int) = $"module Deps.D\n\nlet r = ref []\n\nlet w = %d{w}\n\n%s{rows}\n"
+              let! _, segmentAllocated = measure (segmentOf 1) (segmentOf 2)
+              printfn $"single rows: %d{singleExtends} ExtendEnv, %d{singleAllocated / 1048576L} MB; segment: %d{segmentAllocated / 1048576L} MB"
+              Expect.isLessThanOrEqual singleExtends (int64 (2 * n)) "environments are assembled in file order"
+              Expect.isLessThan singleAllocated (3L * segmentAllocated) "the same rows cost about what a segment does"
+          }
+
           inBothModes "an unrelated row is kept when a type re-checks" (fun s ->
               task {
                   let source (literal: int) = x1 literal "let k = useT (T())" + "
