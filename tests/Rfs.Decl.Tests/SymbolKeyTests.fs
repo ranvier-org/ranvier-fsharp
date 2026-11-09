@@ -110,6 +110,15 @@ let tests =
                   Expect.contains after key "an index would have shifted: the same text names the same overload"
           }
 
+          test "a member and the interface implementations of its name differ" {
+              let text =
+                  "module Deps.E\n\ntype IOne =\n    abstract Same: int\n\ntype ITwo =\n    abstract Same: int\n\ntype Both() =\n    member _.Same = 0\n\n    interface IOne with\n        member _.Same = 1\n\n    interface ITwo with\n        member _.Same = 2\n\n"
+                  + rest
+
+              let found = usesOf (inE text).FileResult.CheckResults "Same" |> List.filter _.IsFromDefinition |> List.map keyOf
+              Expect.equal (List.distinct found).Length 5 $"two slots and three implementations: %A{found}"
+          }
+
           test "the use of an overload has the key of that overload's definition" {
               let e = inE overloads
               let check = e.FileResult.CheckResults

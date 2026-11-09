@@ -158,7 +158,7 @@ let private expectLikeFcs (s: Session) (project: string) (positions: (string * s
     }
 
 let private battery =
-    "\n\ntype Rec = { Field: int; Other: string }\n\ntype Un =\n    | CaseA of named: int\n    | CaseB\n\ntype Cls(x: int) =\n    new() = Cls(0)\n    member _.Meth(a: int) = a + x\n    member _.Meth(a: string) = a\n    member _.Prop\n        with get () = x\n        and set (v: int) = ()\n    member val Auto = 1 with get, set\n    static member Stat = 1\n\nexception Boom of int\n\ntype Abbr = int\n\ntype IFace =\n    abstract Do: unit -> int\n\nmodule Nest =\n    let inner = 1\n\n    type InNest = | I\n\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n\nlet (|Small|_|) n = if n < 1 then Some n else None\n\nlet inline (+++) a b = a + b\n\ntype System.String with\n    member s.Ext = s.Length\n"
+    "\n\ntype Rec = { Field: int; Other: string }\n\ntype Un =\n    | CaseA of named: int\n    | CaseB\n\ntype Cls(x: int) =\n    new() = Cls(0)\n    member _.Meth(a: int) = a + x\n    member _.Meth(a: string) = a\n    member _.Prop\n        with get () = x\n        and set (v: int) = ()\n    member val Auto = 1 with get, set\n    static member Stat = 1\n\nexception Boom of int\n\ntype Abbr = int\n\ntype IFace =\n    abstract Do: unit -> int\n\nmodule Nest =\n    let inner = 1\n\n    type InNest = | I\n\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n\nlet (|Small|_|) n = if n < 1 then Some n else None\n\nlet inline (+++) a b = a + b\n\ntype System.String with\n    member s.Ext = s.Length\n\ntype IOne =\n    abstract Same: int\n\ntype ITwo =\n    abstract Same: int\n\ntype Both() =\n    member _.Same = 0\n\n    interface IOne with\n        member _.Same = 1\n\n    interface ITwo with\n        member _.Same = 2\n"
 
 let private batteryUses =
     "\n\nlet u1 = { Field = 1; Other = \"\" }\nlet u2 = u1.Field\nlet u3 = CaseA 1\nlet u4 = match u3 with CaseA(named = n) -> n | CaseB -> 0\nlet u5 = Cls()\nlet u6 = Cls(1)\nlet u7 = u5.Meth 1\nlet u8 = u5.Meth \"s\"\nlet u9 = u5.Prop\nlet u10 = u5.Prop <- 2\nlet u11 = u5.Auto\nlet u12 = Cls.Stat\nlet u13 = Boom 1\nlet u14: Abbr = 1\nlet u15 (i: IFace) = i.Do()\nlet u16 = Nest.inner\nlet u17 = Nest.I\nlet u18 = match 1 with Even -> 1 | Odd -> 2\nlet u19 = match 1 with Small x -> x | _ -> 2\nlet u20 = 1 +++ 2\nlet u21 = \"s\".Ext\nlet u22 (c: Cls) = c\nlet u23 (x: Rec) (y: Un) = x, y\nlet u24 = Deps.A.baseValue\nlet local = (let inner = 1 in inner + 1)\n"
@@ -212,7 +212,10 @@ let private batteryPositions =
       a, "Abbr =", 0, 1
       a, "Nest =", 0, 1
       a, "(|Even|Odd|) n", 0, 3
-      a, "Ext =", 0, 1 ]
+      a, "Ext =", 0, 1
+      a, "Same = 0", 0, 1
+      a, "Same = 1", 0, 1
+      a, "Same = 2", 0, 1 ]
 
 let private original (path: string) = File.ReadAllText path
 
@@ -512,6 +515,7 @@ let tests =
               gate.Set()
               do! reload
               Expect.isNone answer "the graph it waited on went away"
+              do! s.Server.Publisher.Barrier().WaitAsync(TimeSpan.FromSeconds 120.)
               (s.Server :> IDisposable).Dispose()
               let! (afterShutdown: Answer) = definition s d at
               Expect.isNone afterShutdown "after shutdown"
