@@ -95,6 +95,7 @@ module Report =
         o["index"] <- JsonValue.Create s.Index
         o["step"] <- JsonValue.Create s.Step
         o["latencyMs"] <- JsonValue.Create s.LatencyMs
+        s.Answer |> Option.iter (fun a -> o["answer"] <- JsonValue.Create a)
         o["publishes"] <- JsonValue.Create s.Publishes
 
         o["declsChecked"] <-
@@ -139,6 +140,7 @@ module Report =
           Publishes = n["publishes"].GetValue<int>()
           DeclsChecked = opt "declsChecked" (fun v -> v.GetValue<int>())
           OracleDiff = opt "oracleDiff" (fun v -> [ for d in v.AsArray() -> d.GetValue<string>() ])
+          Answer = opt "answer" (fun v -> v.GetValue<string>())
           Error = opt "error" (fun v -> v.GetValue<string>()) }
 
     let resultOfJson (json: string) : RunResult =

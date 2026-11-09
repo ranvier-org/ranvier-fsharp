@@ -12,6 +12,7 @@ let private step index name latency publishes decls (error: string option) : Ste
       Publishes = publishes
       DeclsChecked = decls
       OracleDiff = None
+      Answer = None
       Error = error }
 
 let private started = DateTime(2026, 11, 1, 12, 0, 0, DateTimeKind.Utc)

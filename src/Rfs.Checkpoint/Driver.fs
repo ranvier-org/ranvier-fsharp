@@ -206,6 +206,7 @@ module Driver =
                       Publishes = 0
                       DeclsChecked = decls
                       OracleDiff = diff
+                      Answer = None
                       Error = error }
 
             let coldAllocatedBefore = GC.GetTotalAllocatedBytes true
