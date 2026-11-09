@@ -16,7 +16,7 @@ type StepResult =
       Publishes: int
       DeclsChecked: int option
       OracleDiff: string list option
-      /// What a references request answered: how many locations, and a hash of them, to compare two runs
+      /// What a request answered: a count and a hash, to compare two runs
       Answer: string option
       /// Why the step did not finish (timeout, server error); the run carries on with the next step.
       Error: string option }
@@ -46,14 +46,21 @@ module Runner =
         { StepTimeout = TimeSpan.FromSeconds 120.
           Quiet = TimeSpan.FromMilliseconds 300. }
 
-    /// A references answer's location count and a hash of its sorted locations, whatever order they come in.
+    let private hashOf (text: string) =
+        (Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes text))).Substring(0, 12)
+
+    /// An answer's count and a hash of it, to compare two runs: for a list of locations, how many and their hash whatever
+    /// order they come in; for a completion list, its items in order; for anything else (a hover, one location), 1.
     let private answerOf (answer: System.Text.Json.Nodes.JsonNode) =
         match answer with
         | :? System.Text.Json.Nodes.JsonArray as locations ->
             let sorted = [ for l in locations -> l.ToJsonString() ] |> List.sort |> String.concat "|"
-            let hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes sorted)
-            $"%d{locations.Count} %s{(Convert.ToHexString hash).Substring(0, 12)}"
-        | _ -> "null"
+            $"%d{locations.Count} %s{hashOf sorted}"
+        | :? System.Text.Json.Nodes.JsonObject as o when (o["items"] :? System.Text.Json.Nodes.JsonArray) ->
+            let items = o["items"].AsArray()
+            $"%d{items.Count} %s{hashOf (items.ToJsonString())}"
+        | null -> "null"
+        | a -> $"1 %s{hashOf (a.ToJsonString())}"
 
     let private subscribe (source: IObservable<'T>) (f: 'T -> unit) =
         source.Subscribe
@@ -388,12 +395,9 @@ module Runner =
                         let! answer, elapsed = client.Request(method, parameters, options.StepTimeout)
                         let r = record name elapsed.TotalMilliseconds (Some watch) (Ok elapsed.TotalMilliseconds)
 
-                        if method <> "textDocument/references" then
-                            return r
-                        else
-                            let answered = { r with Answer = Some(answerOf answer) }
-                            results[r.Index] <- answered
-                            return answered
+                        let answered = { r with Answer = Some(answerOf answer) }
+                        results[r.Index] <- answered
+                        return answered
                     with e ->
                         return record name 0. (Some watch) (Error(0., $"%s{method}: %s{e.Message}"))
                 }
