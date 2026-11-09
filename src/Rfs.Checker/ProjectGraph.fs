@@ -623,9 +623,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// the request waits for the next turn. A new text of the file, or a newer result, runs the request again on it and
     /// cancels what ran on the older one, ad hoc checks inside it included (FileView.CheckResultsAt), so a request answers
     /// for the latest text once it has settled. A `read` refused because the file's #line directives are another parse's
-    /// is tried again under the lock, for as long as a check would be (Setup.DirectiveWait), and then fails the request
-    /// with SupersededLineDirectivesException. Cancelling `ct`, or disposing the graph (a reload), cancels the task and nothing shared. Fails
-    /// with ArgumentException for a signature file, which has no FileResult.
+    /// (a whole-checked result's check results, built on first read) fails the request at once with
+    /// SupersededLineDirectivesException: the build caches its refusal, so trying again can't answer. Cancelling `ct`, or
+    /// disposing the graph (a reload), cancels the task and nothing shared. Fails with ArgumentException for a signature
+    /// file, which has no FileResult.
     /// </remarks>
     member _.ReadFile(file: string, prepare: FileView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
         let i = indexOf file
@@ -659,22 +660,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                         let v = view r flight
                         let prepared = prepare v
 
-                        // Tried again under the lock, as Setup.runWhileDirectivesCurrent does: a parse of another text on
-                        // another context (DeclarationLines) replaces the file's #line directives until it parses the held
-                        // text again, which no node shows. Past the bound the request fails with it, which answers nothing.
-                        let answer () =
-                            let clock = Diagnostics.Stopwatch.StartNew()
-                            let mutable result = ValueNone
-
-                            while result.IsNone do
-                                flight.ThrowIfCancellationRequested()
-
-                                try
-                                    result <- ValueSome(read v prepared)
-                                with :? SupersededLineDirectivesException when not flight.IsCancellationRequested && clock.Elapsed < Setup.DirectiveWait ->
-                                    Thread.Sleep 5
-
-                            result
+                        let answer () = ValueSome(read v prepared)
 
                         let inEffect () =
                             host.Read(fun () ->

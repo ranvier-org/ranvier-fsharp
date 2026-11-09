@@ -389,17 +389,33 @@ module internal WholeFile =
                     resultAt version |> ValueOption.map (fun struct (r, l) -> struct (version, r, l)))
                 (fun (struct (_, r, _)) -> box r)
                 (fun (struct (version, result, lock)) ct ->
+                    // Building a whole-checked result's check results refuses while the file's #line directives are
+                    // another parse's, as a check does, and CheckResultsNotKept builds again at each read: tried again for
+                    // as long as a check is, waiting without a thread. The hook is inside, as that build is.
                     let index () =
                         Task.Run<FileUses>(
                             (fun () ->
-                                // Building a whole-checked result's check results refuses while the file's #line
-                                // directives are another parse's, as a check does. The hook is inside, as that build is
-                                let u =
-                                    Setup.runWhileDirectivesCurrent project ct (fun () ->
-                                        project.FlightHook "uses" path ct
-                                        SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct)
-                                project.CountUsesBuilt()
-                                u),
+                                task {
+                                    let clock = Diagnostics.Stopwatch.StartNew()
+                                    let mutable built = ValueNone
+
+                                    while built.IsNone do
+                                        ct.ThrowIfCancellationRequested()
+
+                                        let attempt =
+                                            try
+                                                project.FlightHook "uses" path ct
+                                                ValueSome(SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct)
+                                            with :? SupersededLineDirectivesException when clock.Elapsed < Setup.DirectiveWait ->
+                                                ValueNone
+
+                                        match attempt with
+                                        | ValueSome u -> built <- ValueSome u
+                                        | ValueNone -> do! Task.Delay(5, ct)
+
+                                    project.CountUsesBuilt()
+                                    return built.Value
+                                }),
                             ct
                         )
 

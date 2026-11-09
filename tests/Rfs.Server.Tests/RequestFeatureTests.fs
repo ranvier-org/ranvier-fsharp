@@ -224,7 +224,7 @@ let tests =
                           Expect.isNull later "and nothing after"
                   finally
                       gate.Set()
-              } 
+              }
 
               testTask $"%s{feature}: a project that fails to load during the wait answers as for a file no project holds" {
                   let dir = copyDeps ()
@@ -254,37 +254,11 @@ let tests =
                       gate.Set()
               }
 
-          testTask "a read refused for another parse's #line directives is tried again, and answers once they are back" {
+          testTask "a read refused for #line directives fails at once with the refusal" {
               let! s = startSession () |> within
               use _ = disposing s
               let graph = (s.Server.Workspace.ProjectOf a).Value
-              let stale = ref 1
-              let refused = ref 0
-
-              let read =
-                  graph.ReadFile(
-                      a,
-                      (fun v ->
-                          if Volatile.Read &stale.contents = 1 then
-                              Interlocked.Increment refused |> ignore
-                              raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives")
-
-                          v.Text),
-                      CancellationToken.None
-                  )
-
-              do! eventually "a refused read" (fun () -> refused.Value >= 1)
-              // Nothing the read depends on changes when the directives come back
-              Volatile.Write(&stale.contents, 0)
-              let! text = read.WaitAsync(TimeSpan.FromSeconds 20.)
-              Expect.equal text (File.ReadAllText a) "the read answers"
-              Expect.isGreaterThan refused.Value 1 "after trying again"
-          }
-
-          testTask "a read refused for #line directives for as long as a check waits fails with it, which answers nothing" {
-              let! s = startSession () |> within
-              use _ = disposing s
-              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let clock = Diagnostics.Stopwatch.StartNew()
 
               let read =
                   graph.ReadFile(a, (fun _ -> raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives")), CancellationToken.None)
@@ -303,6 +277,72 @@ let tests =
                    | Some e -> e :? FSharp.Compiler.Declarations.SupersededLineDirectivesException
                    | None -> false)
                   $"the request fails with it: %A{failed}"
+
+              Expect.isLessThan clock.Elapsed (TimeSpan.FromSeconds 1.) "at once"
+          }
+
+          // Another context holding the file with other #line directives replaces the process's directives of it, which
+          // no node of this graph shows: the whole-checked result's check results then refuse to build, and cache that
+          testTask "with another context's #line directives in effect, requests answer nothing at once over LSP, and references Moved" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let disk = File.ReadAllText a
+              let! spec = Rfs.Projects.ProjectSpec.load depsProject
+
+              let! (other: Rfs.Checker.ProjectGraph) =
+                  Rfs.Checker.ProjectGraph.Create(graph.Host, { Rfs.Projects.ProjectSpec.sequential spec with ProjectFile = Path.Combine(depsDir, "Other.fsproj") })
+                  |> within
+
+              try
+                  // Ours, with a directive, parsed and checked last; then the other context's, without one
+                  let version = graph.SetText(a, "# 1 \"elsewhere.fsy\"\n" + disk)
+                  let! struct (settled, _) = graph.SettledDiagnostics a |> within
+                  Expect.equal settled version "settled on the directive's text"
+                  let at = position disk "baseValue" 0 2
+                  let line, character = fst at + 1, snd at
+                  other.SetText(a, disk + "\n") |> ignore
+                  let! _ = other.Diagnostics a |> within
+                  let probeClock = Diagnostics.Stopwatch.StartNew()
+
+                  let! (probe: string) =
+                      task {
+                          try
+                              let! t = graph.ReadFile(a, (fun (v: Rfs.Checker.FileView) -> v.Result.CheckResults |> ignore; "built"), CancellationToken.None)
+                              return t
+                          with e ->
+                              return e.GetType().Name
+                      }
+
+                  Expect.equal probe "SupersededLineDirectivesException" "the check results refuse to build, for real"
+                  Expect.isLessThan probeClock.Elapsed (TimeSpan.FromSeconds 1.) "and the read fails at once"
+
+                  for feature in [ "hover"; "definition"; "completion" ] do
+                      let clock = Diagnostics.Stopwatch.StartNew()
+                      let! (answer: JsonNode) = overLsp s feature a (line, character)
+                      Expect.isNull answer $"%s{feature} answers nothing"
+                      Expect.isLessThan clock.Elapsed (TimeSpan.FromSeconds 1.) $"%s{feature} answers at once"
+
+                  let parameters =
+                      JsonNode.Parse(
+                          $"""{{"textDocument":{{"uri":%s{JsonValue.Create(Paths.toUri a).ToJsonString()}}},"position":{{"line":%d{line},"character":%d{character}}},"context":{{"includeDeclaration":true}}}}"""
+                      )
+
+                  let clock = Diagnostics.Stopwatch.StartNew()
+
+                  let! (outcome: string) =
+                      task {
+                          try
+                              let! (r: JsonNode), _ = s.Lsp.Request("textDocument/references", parameters) |> within
+                              return (if isNull r then "null" else r.ToJsonString())
+                          with e ->
+                              return e.Message
+                      }
+
+                  Expect.isTrue (outcome.Contains "-32801" || outcome.StartsWith "[") $"references answer Moved (ContentModified) or the uses: %s{outcome}"
+                  Expect.isLessThan clock.Elapsed (TimeSpan.FromSeconds 1.) "at once"
+              finally
+                  other.Dispose()
           }
 
           testTask "a definition that lands in a signature file answers when another project on the host faults" {
