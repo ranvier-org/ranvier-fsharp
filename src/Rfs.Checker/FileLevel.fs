@@ -31,7 +31,11 @@ type internal KeptResult =
       Parsed: Parsed
       Result: FileResult
       /// The lock of the FileStart it was finished on: a flight still running on that start can change the types it holds
-      Lock: AsyncReaderWriterLock }
+      Lock: AsyncReaderWriterLock
+      /// The finish with each declaration's role, when a row of it was not checked in the environment the rows before
+      /// it now assemble (a row inserted, renamed or shifted above it): its sink holds the names of the older text, and a
+      /// query in it checks it again, as a promoted file's does (RowView.at). None when every row is current.
+      Declarations: (Finished * Map<DeclarationKey, Role>) voption }
 
 /// Which result of an implementation file is the published one.
 [<NoEquality; NoComparison>]
@@ -354,7 +358,7 @@ module internal WholeFile =
                       Result = r
                       Key = k.Key
                       Lock = ValueSome k.Lock
-                      Declarations = ValueNone
+                      Declarations = k.Declarations
                       Identity = box k })
             | ValueSome Whole ->
                 settledAt project file whole version
@@ -565,16 +569,17 @@ module internal WholeFile =
             member _.Demote() =
                 if wanted.Peek then
                     // What the finish published now publishes stays published until the file's text or setup changes;
-                    // nothing else of the declaration state is kept
+                    // nothing else of the declaration state is kept, but for a finish with a stale row (KeptResult.Declarations)
                     let last =
                         match untrack (fun () -> published.TryValue) with
-                        | Ready(ByDeclaration(_, f)) ->
+                        | Ready(ByDeclaration(g, f)) ->
                             ValueSome
                                 { Version = f.Version
                                   Key = f.Start.Setup.Key
                                   Parsed = f.Parsed
                                   Result = f.FileResult
-                                  Lock = f.Start.Lock }
+                                  Lock = f.Start.Lock
+                                  Declarations = if RowView.allCurrent f then ValueNone else ValueSome(f, untrack g.Roles) }
                         | _ -> ValueNone
 
                     batch (fun () ->
