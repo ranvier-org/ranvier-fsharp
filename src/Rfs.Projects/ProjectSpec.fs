@@ -12,12 +12,20 @@ type ProjectSpec =
     { ProjectFile: string
       SourceFiles: string list
       OtherOptions: string list
-      ReferencedProjects: string list }
+      ReferencedProjects: string list
+      /// The framework each of ReferencedProjects resolved to, in order: the one in its `-r:`, as the evaluation lists
+      /// only every framework a reference has. `?` when that can't be told; such a reference stays the file on disk.
+      ReferencedFrameworks: string list
+      /// The framework this evaluation is for
+      TargetFramework: string
+      /// What the build generates and compiles under obj (assembly attributes), in compile order, before SourceFiles.
+      /// Evaluating the project writes them, so they are current as of the spec.
+      GeneratedFiles: string list }
 
 module ProjectSpec =
 
     // Bump when the cache content or the way `load` derives it changes; a mismatch is a cache miss.
-    let private formatVersion = 1
+    let private formatVersion = 3
 
     let toJson (spec: ProjectSpec) =
         let arr (xs: string list) =
@@ -29,6 +37,9 @@ module ProjectSpec =
         o["SourceFiles"] <- arr spec.SourceFiles
         o["OtherOptions"] <- arr spec.OtherOptions
         o["ReferencedProjects"] <- arr spec.ReferencedProjects
+        o["ReferencedFrameworks"] <- arr spec.ReferencedFrameworks
+        o["TargetFramework"] <- JsonValue.Create spec.TargetFramework
+        o["GeneratedFiles"] <- arr spec.GeneratedFiles
         o.ToJsonString()
 
     let ofJson (json: string) : ProjectSpec =
@@ -42,16 +53,19 @@ module ProjectSpec =
         { ProjectFile = root["ProjectFile"].GetValue<string>()
           SourceFiles = strings "SourceFiles"
           OtherOptions = strings "OtherOptions"
-          ReferencedProjects = strings "ReferencedProjects" }
+          ReferencedProjects = strings "ReferencedProjects"
+          ReferencedFrameworks = strings "ReferencedFrameworks"
+          TargetFramework = root["TargetFramework"].GetValue<string>()
+          GeneratedFiles = strings "GeneratedFiles" }
 
     let private objDir (fsproj: string) =
         Path.Combine(Path.GetDirectoryName fsproj, "obj")
 
     let private cachePath fsproj = Path.Combine(objDir fsproj, "rfs-spec.json")
+    let private cachePathFor fsproj (framework: string) = Path.Combine(objDir fsproj, $"rfs-spec-%s{framework}.json")
     let private assetsPath fsproj = Path.Combine(objDir fsproj, "project.assets.json")
 
-    let private isFresh (fsproj: string) =
-        let cache = cachePath fsproj
+    let private isFresh (fsproj: string) (cache: string) =
         let assets = assetsPath fsproj
 
         File.Exists cache
@@ -78,10 +92,10 @@ module ProjectSpec =
     let private toolsPath =
         lazy (Init.init (DirectoryInfo AppContext.BaseDirectory) None)
 
-    let private loadFresh (fsproj: string) : ProjectSpec =
+    let private loadFresh (fsproj: string) (properties: (string * string) list) : ProjectSpec =
         // AssemblyInfo and TargetFramework attribute files generated into obj do not take part in declaration checking.
         let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
-        let loader = WorkspaceLoader.Create(toolsPath.Value, [])
+        let loader = WorkspaceLoader.Create(toolsPath.Value, properties)
 
         let notes = System.Collections.Concurrent.ConcurrentQueue<string>()
         loader.Notifications.Add(fun n -> notes.Enqueue(sprintf "%A" n))
@@ -91,12 +105,33 @@ module ProjectSpec =
             let details = String.Join("; ", notes)
             failwith $"Ionide.ProjInfo returned no project for {fsproj}: {details}"
         | Some p ->
+            let isGenerated (f: string) = f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase)
+
+            let resolvedFramework (projectFile: string) (frameworks: string) =
+                match frameworks.Split(';', StringSplitOptions.RemoveEmptyEntries) with
+                | [||] -> ""
+                | [| only |] -> only
+                | candidates ->
+                    let dir = Path.GetDirectoryName projectFile + string Path.DirectorySeparatorChar
+
+                    let inPath =
+                        p.OtherOptions
+                        |> List.tryPick (fun o ->
+                            if o.StartsWith "-r:" && o.Substring(3).StartsWith(dir, StringComparison.OrdinalIgnoreCase) then
+                                let segments = o.Substring(3).Split(Path.DirectorySeparatorChar)
+                                candidates |> Array.tryFind (fun c -> Array.contains c segments)
+                            else
+                                None)
+
+                    defaultArg inPath "?"
+
             { ProjectFile = fsproj
-              SourceFiles =
-                p.SourceFiles
-                |> List.filter (fun f -> not (f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase)))
+              SourceFiles = p.SourceFiles |> List.filter (isGenerated >> not)
               OtherOptions = p.OtherOptions
-              ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName) }
+              ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName)
+              ReferencedFrameworks = p.ReferencedProjects |> List.map (fun r -> resolvedFramework r.ProjectFileName r.TargetFramework)
+              TargetFramework = p.TargetFramework
+              GeneratedFiles = p.SourceFiles |> List.filter isGenerated }
 
     /// The path `spec` references `referenced`'s assembly by, as it appears in its `-r:`: the file of the name the
     /// project outputs (its reference assembly has the same name).
@@ -136,13 +171,18 @@ module ProjectSpec =
     /// project imports does not touch the project file, which the cache's freshness check looks at.
     let invalidate (fsproj: string) : unit =
         try
-            File.Delete(cachePath (Path.GetFullPath fsproj))
+            let fsproj = Path.GetFullPath fsproj
+            let dir = objDir fsproj
+
+            if Directory.Exists dir then
+                for cache in Directory.GetFiles(dir, "rfs-spec*.json") do
+                    File.Delete cache
         with
         | :? IOException
         | :? UnauthorizedAccessException ->
             ()
 
-    let load (fsproj: string) : Task<ProjectSpec> =
+    let private loadWith (fsproj: string) (cache: string) (properties: (string * string) list) : Task<ProjectSpec> =
         task {
             let fsproj = Path.GetFullPath fsproj
 
@@ -151,9 +191,9 @@ module ProjectSpec =
                 raise (FileNotFoundException($"project file not found: {fsproj}", fsproj))
 
             let cached =
-                if isFresh fsproj then
+                if isFresh fsproj cache then
                     try
-                        Some(ofJson (File.ReadAllText(cachePath fsproj)))
+                        Some(ofJson (File.ReadAllText cache))
                     with _ ->
                         None
                 else
@@ -165,14 +205,14 @@ module ProjectSpec =
                 if not (File.Exists(assetsPath fsproj)) then
                     do! restore fsproj
 
-                let spec = loadFresh fsproj
+                let spec = loadFresh fsproj properties
                 // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
-                let tmp = cachePath fsproj + "." + Guid.NewGuid().ToString("N") + ".tmp"
+                let tmp = cache + "." + Guid.NewGuid().ToString("N") + ".tmp"
 
                 try
                     Directory.CreateDirectory(objDir fsproj) |> ignore
                     File.WriteAllText(tmp, toJson spec)
-                    File.Move(tmp, cachePath fsproj, true)
+                    File.Move(tmp, cache, true)
                 with
                 | :? IOException
                 | :? UnauthorizedAccessException ->
@@ -183,6 +223,27 @@ module ProjectSpec =
 
                 return requireReferences spec
         }
+
+    let load (fsproj: string) : Task<ProjectSpec> =
+        let fsproj = Path.GetFullPath fsproj
+        loadWith fsproj (cachePath fsproj) []
+
+    /// The spec of a project as a reference to it resolved: for that framework, when the project's default evaluation
+    /// is for another (a multi-target project takes its first).
+    let loadFor (fsproj: string) (framework: string) : Task<ProjectSpec> =
+        task {
+            let fsproj = Path.GetFullPath fsproj
+            let! spec = load fsproj
+
+            if String.IsNullOrEmpty framework || framework = "?" || spec.TargetFramework = framework then
+                return spec
+            else
+                return! loadWith fsproj (cachePathFor fsproj framework) [ "TargetFramework", framework ]
+        }
+
+    /// Whether a project reference can be a graph: what is not F# stays the assembly on disk.
+    let isFSharpProject (project: string) =
+        String.Equals(Path.GetExtension project, ".fsproj", StringComparison.OrdinalIgnoreCase)
 
     /// The spec with type checking forced sequential, as an editor checks: each file sees every earlier file. In the
     /// compiler's default graph mode a file sees only the files the dependency graph links to it, which reports an

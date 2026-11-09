@@ -173,11 +173,7 @@ let tests =
               let app = Path.Combine(multi, "App", "App.fsproj")
               let lib = Path.Combine(multi, "Lib", "Lib.fs")
               let shapes = Path.Combine(multi, "Lib", "Shapes.fs")
-              let psi = System.Diagnostics.ProcessStartInfo("dotnet", $"build \"{app}\" -v q --nologo")
-              psi.RedirectStandardOutput <- true
-              let build = System.Diagnostics.Process.Start psi
-              let! _ = build.StandardOutput.ReadToEndAsync()
-              do! build.WaitForExitAsync()
+              Fixtures.build app
               use! (oracle: OracleClient) = OracleClient.start ()
               let! clean = oracle.Check app Map.empty
               Expect.isEmpty clean "as built"

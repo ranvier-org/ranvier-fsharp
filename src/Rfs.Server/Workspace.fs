@@ -303,12 +303,14 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
             try
                 // The ones that are not loaded (they failed to) stay the files on disk
+                // or are loaded for another framework than this project resolved to: only those are its assembly
                 let references =
                     lock gate (fun () ->
-                        spec.ReferencedProjects
-                        |> List.choose (fun r ->
+                        List.zip spec.ReferencedProjects spec.ReferencedFrameworks
+                        |> List.choose (fun (r, framework) ->
                             match entries.TryGetValue r with
-                            | true, e -> Some e.Graph
+                            | true, e when ProjectSpec.isFSharpProject r && (String.IsNullOrEmpty framework || e.Spec.TargetFramework = framework) ->
+                                Some e.Graph
                             | _ -> None))
 
                 let! graph = ProjectGraph.Create(host, spec, references)
@@ -358,8 +360,9 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             do! showMessage $"Failed to load %s{project}: %s{reason}"
         }
 
-    /// Loads `project` after the projects it references; the results are added to `results`
-    let rec visit (visited: HashSet<string>) (results: Dictionary<string, LoadResult>) (project: string) : Task =
+    /// Loads `project`, for `framework` when a reference resolved to one, after the projects it references; the results
+    /// are added to `results`. The first framework a project is loaded for is its graph's.
+    let rec visitFor (visited: HashSet<string>) (results: Dictionary<string, LoadResult>) (project: string) (framework: string) : Task =
         task {
             let project = Path.GetFullPath project
 
@@ -372,10 +375,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     let! loaded =
                         task {
                             try
-                                let! spec = ProjectSpec.load project
+                                let! spec = ProjectSpec.loadFor project framework
 
-                                for r in spec.ReferencedProjects do
-                                    do! visit visited results r
+                                // A project of another language stays the assembly on disk
+                                for r, resolved in List.zip spec.ReferencedProjects spec.ReferencedFrameworks do
+                                    if ProjectSpec.isFSharpProject r then
+                                        do! visitFor visited results r resolved
 
                                 return! loadGraph spec
                             with ex ->
@@ -388,6 +393,8 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     | Failed(_, reason) -> do! report project reason
                     | Loaded _ -> ()
         }
+
+    let visit visited results project = visitFor visited results project ""
 
     let loadAll (projects: string list) : Task<LoadResult list> =
         task {
@@ -445,6 +452,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             let results = Dictionary<string, LoadResult>(StringComparer.OrdinalIgnoreCase)
             do! notifyWorkspace (Responses.workspaceLoad false)
             do! visit visited results project
+
+            // A referencing project's spec holds the `-r:` this project's output gave it. While this one does not load,
+            // evaluating them would fail too: they keep their specs, and the file on disk
+            if isLoaded project then
+                for p in referencing do
+                    ProjectSpec.invalidate p
 
             for p in referencing do
                 do! visit visited results p

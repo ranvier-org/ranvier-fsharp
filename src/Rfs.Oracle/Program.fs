@@ -16,6 +16,8 @@ open Rfs.Projects
 let private isOutputOption (o: string) =
     [ "-o:"; "--out:"; "--refout:"; "--doc:"; "--pdb:"; "--refonly" ] |> List.exists o.StartsWith
 
+let private isFSharpProject = ProjectSpec.isFSharpProject
+
 let private sourceOf (overrides: Map<string, string>) (file: string) =
     overrides |> Map.tryFind (LspClient.NormalizePath file)
 
@@ -25,10 +27,12 @@ let private compile (temp: string) (spec: ProjectSpec) (overrides: Map<string, s
     let dir = Directory.CreateDirectory(Path.Combine(temp, Guid.NewGuid().ToString("N"))).FullName
 
     // Every source is copied, a directory for each directory: a signature file pairs with its implementation file by path
-    let directories = spec.SourceFiles |> List.map Path.GetDirectoryName |> List.distinct
+    // What the build compiles: the generated assembly attributes too
+    let files = (spec.GeneratedFiles |> List.filter File.Exists) @ spec.SourceFiles
+    let directories = files |> List.map Path.GetDirectoryName |> List.distinct
 
     let sources =
-        spec.SourceFiles
+        files
         |> List.map (fun file ->
             let index = directories |> List.findIndex (fun d -> d = Path.GetDirectoryName file)
             let copy = Path.Combine(Directory.CreateDirectory(Path.Combine(dir, string index)).FullName, Path.GetFileName file)
@@ -38,7 +42,10 @@ let private compile (temp: string) (spec: ProjectSpec) (overrides: Map<string, s
     let dll =
         let name =
             spec.OtherOptions
-            |> List.tryPick (fun o -> if o.StartsWith "-o:" then Some(Path.GetFileName(o.Substring 3)) else None)
+            |> List.tryPick (fun o ->
+                if o.StartsWith "-o:" then Some(Path.GetFileName(o.Substring 3))
+                elif o.StartsWith "--out:" then Some(Path.GetFileName(o.Substring 6))
+                else None)
             |> Option.defaultValue (Path.GetFileNameWithoutExtension spec.ProjectFile + ".dll")
 
         Path.Combine(dir, name)
@@ -60,24 +67,25 @@ let private compile (temp: string) (spec: ProjectSpec) (overrides: Map<string, s
 
 /// The project's diagnostics and those of the projects it references that are overridden, with their assemblies:
 /// a referenced project with an override, or a reference that has one, is compiled, and its DLL replaces its `-r:`.
-let rec private checkWith (temp: string) (visited: System.Collections.Generic.Dictionary<string, (string * Diagnostic list) option>) (project: string) (overrides: Map<string, string>) =
+let rec private checkWith (temp: string) (visited: System.Collections.Generic.Dictionary<string, (string * Diagnostic list) option>) (project: string) (framework: string) (overrides: Map<string, string>) =
     // `load` has its own disk cache that notices project edits, so there is none here.
     // Checked sequentially, whatever the project asks for, as editors and the declaration checker check.
-    let spec = (ProjectSpec.load project).GetAwaiter().GetResult() |> ProjectSpec.sequential
+    let spec = (ProjectSpec.loadFor project framework).GetAwaiter().GetResult() |> ProjectSpec.sequential
 
     let referenced =
-        [ for r in (if overrides.IsEmpty then [] else spec.ReferencedProjects) do
+        [ for r, resolved in (if overrides.IsEmpty then [] else List.zip spec.ReferencedProjects spec.ReferencedFrameworks) do
               let compiled =
                   match visited.TryGetValue r with
                   | true, known -> known
+                  | _ when not (isFSharpProject r) || resolved = "?" -> None
                   | _ ->
-                      let answer = compileIfOverridden temp visited r overrides
+                      let answer = compileIfOverridden temp visited r resolved overrides
                       visited[r] <- answer
                       answer
 
               match compiled with
               | Some(dll, diagnostics) ->
-                  let target = (ProjectSpec.load r).GetAwaiter().GetResult()
+                  let target = (ProjectSpec.loadFor r resolved).GetAwaiter().GetResult()
                   yield ProjectSpec.referencePath spec target, dll, diagnostics
               | None -> () ]
 
@@ -112,13 +120,20 @@ let rec private checkWith (temp: string) (visited: System.Collections.Generic.Di
             yield! diagnostics ]
 
 /// None when neither the project nor a project it reaches has an override: its assembly on disk stands.
-and private compileIfOverridden temp visited (project: string) (overrides: Map<string, string>) =
-    let rec reaches (file: string) =
-        let spec = (ProjectSpec.load file).GetAwaiter().GetResult()
-        spec.SourceFiles |> List.exists (fun f -> (sourceOf overrides f).IsSome) || spec.ReferencedProjects |> List.exists reaches
+and private compileIfOverridden temp visited (project: string) (framework: string) (overrides: Map<string, string>) =
+    let seen = System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
-    if reaches project then
-        let spec, diagnostics = checkWith temp visited project overrides
+    let rec reaches (file: string, resolved: string) =
+        seen.Add file
+        && (let spec = (ProjectSpec.loadFor file resolved).GetAwaiter().GetResult()
+
+            spec.SourceFiles |> List.exists (fun f -> (sourceOf overrides f).IsSome)
+            || List.zip spec.ReferencedProjects spec.ReferencedFrameworks
+               |> List.filter (fun (r, resolved) -> isFSharpProject r && resolved <> "?")
+               |> List.exists reaches)
+
+    if reaches (project, framework) then
+        let spec, diagnostics = checkWith temp visited project framework overrides
         Some(compile temp spec overrides spec.OtherOptions, diagnostics)
     else
         None
@@ -131,7 +146,7 @@ let private check (project: string) (overrides: Map<string, string>) =
 
     try
         let visited = System.Collections.Generic.Dictionary<string, _>(StringComparer.OrdinalIgnoreCase)
-        snd (checkWith temp visited project overrides)
+        snd (checkWith temp visited project "" overrides)
     finally
         // A DLL the fresh checker still maps stays until the process ends
         try

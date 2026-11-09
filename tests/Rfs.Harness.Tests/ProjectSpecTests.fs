@@ -66,7 +66,10 @@ let tests =
                   { ProjectFile = "p.fsproj"
                     SourceFiles = [ "a.fs" ]
                     OtherOptions = [ "--z"; "--a"; "--z"; "-r:x.dll"; "-r:x.dll" ]
-                    ReferencedProjects = [] }
+                    ReferencedProjects = []
+                    ReferencedFrameworks = []
+                    TargetFramework = ""
+                    GeneratedFiles = [] }
 
               Expect.equal (ProjectSpec.ofJson (ProjectSpec.toJson spec)) spec "round trip"
           }
@@ -90,8 +93,8 @@ let tests =
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
-                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":1,", "\"FormatVersion\":0,"))
-                    (fun j -> j.Replace("\"FormatVersion\":1,", "")) ] do
+                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":3,", "\"FormatVersion\":0,"))
+                    (fun j -> j.Replace("\"FormatVersion\":3,", "")) ] do
                   let json = mutate (ProjectSpec.toJson stale)
                   Expect.notEqual json (ProjectSpec.toJson stale) "mutation applied"
                   File.WriteAllText(cache, json)
@@ -119,7 +122,10 @@ let tests =
                   { ProjectFile = "p.fsproj"
                     SourceFiles = []
                     OtherOptions = [ "--x"; $"-r:{present}"; $"-r:{absent}"; $"-r:{absent}" ]
-                    ReferencedProjects = [] }
+                    ReferencedProjects = []
+                    ReferencedFrameworks = []
+                    TargetFramework = ""
+                    GeneratedFiles = [] }
 
               Expect.equal (ProjectSpec.missingReferences spec) [ absent ] "only the absent one, once"
           }
@@ -129,7 +135,10 @@ let tests =
                   { ProjectFile = "p.fsproj"
                     SourceFiles = []
                     OtherOptions = [ "--a"; "--parallelcompilation+"; "--b" ]
-                    ReferencedProjects = [] }
+                    ReferencedProjects = []
+                    ReferencedFrameworks = []
+                    TargetFramework = ""
+                    GeneratedFiles = [] }
 
               Expect.equal (ProjectSpec.sequential spec).OtherOptions [ "--a"; "--b"; "--parallelcompilation-" ] "forced off"
 
@@ -193,7 +202,10 @@ let tests =
                   { ProjectFile = "p.fsproj"
                     SourceFiles = [ "a.fs"; "b.fs" ]
                     OtherOptions = [ "--x"; "--x" ]
-                    ReferencedProjects = [] }
+                    ReferencedProjects = []
+                    ReferencedFrameworks = []
+                    TargetFramework = ""
+                    GeneratedFiles = [] }
 
               let o = ProjectSpec.toFcsOptions spec
               Expect.equal o.ProjectFileName "p.fsproj" "name"

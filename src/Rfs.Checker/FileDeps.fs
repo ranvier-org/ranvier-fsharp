@@ -46,9 +46,10 @@ type internal FileSig =
     /// What later files are checked against, given the last value. The last one stays while the file's fingerprint
     /// (compared structurally) and its setup's signature objects are the same, whatever the new check made: the files
     /// after it hold its entities, by identity, for as long as they keep their results, so its signature may not move
-    /// to a new entity of the same print under them. A new setup or a new fingerprint gives the new signature: the
-    /// files that depend on this one (transitively, by FileDependencies) were set up from the same files and are being
-    /// checked again. The new fingerprint is taken only when the last one was: nothing has read this file's otherwise.
+    /// to a new entity of the same print under them. A new setup or a new fingerprint gives the new signature, which
+    /// the dependents see through SameBefore. So by induction a signature only holds entities reached through its
+    /// Before, whatever closure FileDependencies gives. The new fingerprint is taken only when the last one was: nothing
+    /// has read this file's otherwise.
     static member Next(previous: FileSig voption, signature: FileSignature, before: FileSignature list) =
         match previous with
         | ValueSome p when

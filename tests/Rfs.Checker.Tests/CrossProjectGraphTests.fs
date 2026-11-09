@@ -21,19 +21,6 @@ let private signed = Path.Combine(multiDir, "Lib", "Signed.fs")
 let private libFs = Path.Combine(multiDir, "Lib", "Lib.fs")
 let private useFs = Path.Combine(multiDir, "App", "Use.fs")
 
-let private built =
-    lazy
-        (let psi = ProcessStartInfo("dotnet", $"build \"{topProject}\" -v q --nologo")
-         psi.RedirectStandardOutput <- true
-         psi.RedirectStandardError <- true
-         use p = Process.Start psi
-         let out = p.StandardOutput.ReadToEndAsync()
-         let err = p.StandardError.ReadToEndAsync()
-         p.WaitForExit()
-
-         if p.ExitCode <> 0 then
-             failwith $"building the Multi fixture failed: {out.Result}{err.Result}")
-
 type private Multi =
     { Host: GraphHost
       Oracle: OracleClient
@@ -50,7 +37,7 @@ type private Multi =
 
 let private startMulti (mode: FileMode) : Task<Multi> =
     task {
-        built.Force()
+        Fixtures.build topProject
         let! libSpec = ProjectSpec.load libProject
         let! appSpec = ProjectSpec.load appProject
         let host = GraphHost.Start "multi"
@@ -113,12 +100,93 @@ let private settleHolding (hold: ManualResetEventSlim) (t: Task<'T>) =
         return! t |> settle
     }
 
+/// The review's rows: what App's diagnostics read that a print could miss. Lib's text before and after, and App's use.
+let private rows =
+    [ "EqualityConditionalOn",
+      "[<CustomEquality; NoComparison>]\ntype EqC<'T> =\n    { V: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n",
+      "[<CustomEquality; NoComparison>]\ntype EqC<[<EqualityConditionalOn>] 'T> =\n    { V: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n",
+      "let eqX : EqC<int -> int> = { V = 1 }\nlet eqB = (eqX = eqX)"
+      "ComparisonConditionalOn",
+      "[<CustomEquality; CustomComparison>]\ntype CmpC<'T> =\n    { W: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n    interface System.IComparable with\n        member _.CompareTo _ = 0\n",
+      "[<CustomEquality; CustomComparison>]\ntype CmpC<[<ComparisonConditionalOn>] 'T> =\n    { W: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n    interface System.IComparable with\n        member _.CompareTo _ = 0\n",
+      "let cmpX : CmpC<int -> int> = { W = 1 }\nlet cmpB = (cmpX < cmpX)"
+      "PermitsExplicitTypeInstantiation",
+      "let hh<'T> (x: 'T) = x\n",
+      "let hh (x: 'T) = x\n",
+      "let hhUse = hh<int> 1"
+      "type parameter name",
+      "type OverC =\n    static member M<'Elem>(x: 'Elem, y: int) = ()\n    static member M<'Elem>(x: 'Elem, y: string) = ()\n",
+      "type OverC =\n    static member M<'Other>(x: 'Other, y: int) = ()\n    static member M<'Other>(x: 'Other, y: string) = ()\n",
+      "let overUse = OverC.M(1, 1.0)"
+      "IsPrefixDisplay",
+      "type XP<'a> = { VX: 'a }\n",
+      "type 'a XP = { VX: 'a }\n",
+      "let (xpUse: int) = Unchecked.defaultof<XP<int>>" ]
+
+let private blindRows =
+    [ for name, before, after, used in rows do
+          testTask $"across projects: %s{name}" {
+              let! s = startMulti FileLevel
+              use _ = (s :> IAsyncDisposable)
+              let libText = s.Texts[libFs]
+              set s libFs (libText + "\n" + before)
+              set s useFs (s.Texts[useFs] + "\n" + used + "\n")
+              let! first = expectAppOracle s "before"
+              set s libFs (libText + "\n" + after)
+              let! second = expectAppOracle s "after"
+              Expect.notEqual second first "App's diagnostics read it"
+          }
+
+          for mode in [ FileLevel; Declarations ] do
+              testTask $"inside one project, %A{mode}: %s{name}" {
+                  let! (s: Session) = startWith mode
+                  use _ = (s :> IAsyncDisposable)
+                  let a, c = fileOf "A.fs", fileOf "C.fs"
+                  let aText = s.Texts[a]
+                  let! _ = edit s a (aText + "\n" + before)
+                  let indented = String.concat "\n" [ for l in used.Split '\n' -> "    " + l ]
+                  let! r = edit s c (s.Texts[c] + "\n" + indented + "\n")
+                  do! expectOracle s r.Diagnostics "before"
+                  let! r = edit s a (aText + "\n" + after)
+                  do! expectOracle s r.Diagnostics "after"
+              } ]
+
+/// A graph per project of `libs` (in order), and the diagnostics of `app` on a graph referencing them, with `texts` set.
+let private checkAppWith (libs: string list) (app: string) (texts: Map<string, string>) =
+    task {
+        let host = GraphHost.Start "multi-real"
+        use _ = { new IAsyncDisposable with member _.DisposeAsync() = (host.Dispose(); ValueTask()) }
+        let graphs = ResizeArray<ProjectGraph>()
+        let! appSpec = ProjectSpec.load app
+        let frameworkOf (lib: string) =
+            let i = appSpec.ReferencedProjects |> List.findIndex (fun r -> String.Equals(r, lib, StringComparison.OrdinalIgnoreCase))
+            appSpec.ReferencedFrameworks[i]
+
+        // As Workspace does for a reference: the framework App resolved to
+        for lib in libs do
+            let! spec = ProjectSpec.loadFor lib (frameworkOf lib)
+            let! (g: ProjectGraph) = ProjectGraph.Create(host, spec)
+            graphs.Add g
+
+        let! (graph: ProjectGraph) = ProjectGraph.Create(host, appSpec, List.ofSeq graphs)
+
+        for KeyValue(path, text) in texts do
+            graph.SetText(path, text) |> ignore
+
+        let! all = graph.AllDiagnostics() |> settle
+        return [ for kv in all do yield! kv.Value |> Seq.map FcsDiagnostics.ofFcs ]
+    }
+
+let private checkApp (libs: string list) (app: string) = checkAppWith libs app Map.empty
+
 [<Tests>]
 let tests =
     testSequenced
     <| testList
         "CrossProject"
-        [ testTask "a kept file holding an earlier file's old entity sees one entity" {
+        [ testList "what a print must see" blindRows
+
+          testTask "a kept file holding an earlier file's old entity sees one entity" {
               let! s = start ()
               use _ = (s :> IAsyncDisposable)
               let a, b, c = fileOf "A.fs", fileOf "B.fs", fileOf "C.fs"
@@ -295,20 +363,22 @@ let tests =
               Expect.equal now (List.length broken) "the next read is on the new context"
           }
 
-          // No oracle here: a project that does not compile has no assembly to compare with
+          // No oracle while Lib does not compile: a project that does not compile has no assembly to compare with
           testTask "a Lib that does not check still gives App an assembly" {
               let! s = startMulti FileLevel
               use _ = (s :> IAsyncDisposable)
               let original = s.Texts[libFs]
+              let originalUse = s.Texts[useFs]
               change s libFs "let shapeOf ()" "let unknown = undefinedName\n\nlet rec inferred x = nope x\n\nlet shapeOf ()"
               let! typeErrors = settled s
               Expect.isEmpty typeErrors "App reads what Lib did define"
-              change s useFs "let z = g 2" "let z = g 2\n\nlet u: string = unknown"
-              let! _ = settled s
+              change s useFs "let z = g 2" "let z = g 2\n\nlet u = unknown"
+              let! usesIt = settled s
+              // Stale, App would not know `unknown`
+              Expect.isFalse (usesIt |> List.exists (fun (d: Diagnostic) -> d.Code = "FS0039")) $"App sees the value Lib failed to check: %A{usesIt}"
+              set s useFs originalUse
               set s libFs (original.Replace("let f (x: int) : int = x + 1", "let f (x: int) : int ="))
-              let! syntaxError = settled s
-              Expect.isNonEmpty syntaxError "App reports what Lib lost"
-              set s useFs (File.ReadAllText useFs)
+              let! _ = settled s
               set s libFs original
               let! fixedAgain = expectAppOracle s "Lib as on disk again"
               Expect.isEmpty fixedAgain "clean again"
@@ -334,7 +404,7 @@ let tests =
           }
 
           testTask "a reference through another project is in memory too" {
-              built.Force()
+              Fixtures.build topProject
               let! libSpec = ProjectSpec.load libProject
               let! appSpec = ProjectSpec.load appProject
               let! topSpec = ProjectSpec.load topProject
@@ -352,9 +422,60 @@ let tests =
               top.SetText(topFs, File.ReadAllText topFs + "\nlet seen = Lib.Shapes.viaLibOnly + 1\n") |> ignore
               let! seen = top.Diagnostics topFs |> settle
               Expect.isEmpty seen $"Top reads Lib as it stands: %A{seen |> Array.map string}"
+              let! (oracle: OracleClient) = OracleClient.start ()
+              use _ = (oracle :> IAsyncDisposable)
+              let! expected = oracle.Check topProject (Map [ shapes, shapesText + "\nlet viaLibOnly = 1\n"; topFs, File.ReadAllText topFs + "\nlet seen = Lib.Shapes.viaLibOnly + 1\n" ])
+              Expect.isEmpty expected "the oracle, through App's compile, agrees"
               // And through App's signature
               let libText = File.ReadAllText libFs
               lib.SetText(libFs, libText.Replace("let f (x: int) : int = x + 1", "let f (x: int) : string = string x")) |> ignore
               let! broken = top.Diagnostics topFs |> settle
               Expect.isNonEmpty broken "App.Use.y is a string"
+          }
+
+          testTask "disposing App leaves Lib holding nothing of it" {
+              let! s = startMulti FileLevel
+              use _ = (s :> IAsyncDisposable)
+              Expect.equal s.Lib.DependentCount 1 "App"
+              s.App.Dispose()
+              Expect.equal s.Lib.DependentCount 0 "gone with its context"
+          }
+
+          testTask "generated InternalsVisibleTo and AutoOpen count" {
+              let lib, app = Path.Combine(multiDir, "Gen", "Lib", "GenLib.fsproj"), Path.Combine(multiDir, "Gen", "App", "GenApp.fsproj")
+              // A real build compiles App against them
+              Fixtures.build app
+              let! actual = checkApp [ lib ] app
+              Expect.isEmpty actual $"as `dotnet build` compiled it: %A{actual}"
+              // And the oracle's compile of an overridden Lib, which reads the same spec
+              let! (oracle: OracleClient) = OracleClient.start ()
+              use _ = (oracle :> IAsyncDisposable)
+              let gen = Path.Combine(multiDir, "Gen", "Lib", "Gen.fs")
+              let! expected = oracle.Check app (Map [ gen, File.ReadAllText gen + "\n    let added = 1\n" ])
+              Expect.isEmpty expected $"the oracle's Lib has them: %A{expected}"
+          }
+
+          testTask "a multi-target Lib is checked for the framework App resolved to" {
+              let lib, app = Path.Combine(multiDir, "Frameworks", "Lib", "FwLib.fsproj"), Path.Combine(multiDir, "Frameworks", "App", "FwApp.fsproj")
+              Fixtures.build app
+              let! actual = checkApp [ lib ] app
+              Expect.isEmpty actual $"as `dotnet build` compiled it: %A{actual}"
+              let! (oracle: OracleClient) = OracleClient.start ()
+              use _ = (oracle :> IAsyncDisposable)
+              let fw = Path.Combine(multiDir, "Frameworks", "Lib", "Fw.fs")
+              let! expected = oracle.Check app (Map [ fw, File.ReadAllText fw + "\nlet added = 1\n" ])
+              Expect.isEmpty expected $"the oracle compiles the same framework: %A{expected}"
+          }
+
+          testTask "names come from AssemblyName, and two Core projects stay distinct" {
+              let a = Path.Combine(multiDir, "Names", "a", "Core.fsproj")
+              let b = Path.Combine(multiDir, "Names", "b", "Core.fsproj")
+              let uses = Path.Combine(multiDir, "Names", "Uses", "Uses.fsproj")
+              Fixtures.build uses
+              let! actual = checkApp [ a; b ] uses
+              Expect.isEmpty actual $"as `dotnet build` compiled it: %A{actual}"
+              // InternalsVisibleTo("Uses") names the project file, not this assembly
+              let useFile = Path.Combine(multiDir, "Names", "Uses", "Use.fs")
+              let! hidden = checkAppWith [ a; b ] uses (Map [ useFile, "module Uses.Use\n\nlet out = CoreB.Api.hidden\n" ])
+              Expect.isNonEmpty hidden "out of reach, as for RealUses"
           } ]

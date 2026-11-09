@@ -18,18 +18,48 @@ let private libProject = Path.Combine(multiDir, "Lib", "Lib.fsproj")
 let private useFs = Path.Combine(multiDir, "App", "Use.fs")
 let private libFs = Path.Combine(multiDir, "Lib", "Lib.fs")
 
-let private built =
-    lazy
-        (let psi = ProcessStartInfo("dotnet", $"build \"{appProject}\" -v q --nologo")
-         psi.RedirectStandardOutput <- true
-         psi.RedirectStandardError <- true
-         use p = Process.Start psi
-         let out = p.StandardOutput.ReadToEndAsync()
-         let err = p.StandardError.ReadToEndAsync()
-         p.WaitForExit()
+/// A copy of Multi's Lib and App without obj and bin, to break or rename
+let private copyMulti () =
+    let root = Path.Combine(Path.GetTempPath(), "rfs-multi-" + Guid.NewGuid().ToString("N").Substring(0, 8))
+    Directory.CreateDirectory root |> ignore
+    File.Copy(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName multiDir)), "global.json"), Path.Combine(root, "global.json"))
 
-         if p.ExitCode <> 0 then
-             failwith $"building the Multi fixture failed: {out.Result}{err.Result}")
+    for f in [ "Directory.Build.props"; "Directory.Packages.props" ] do
+        File.Copy(Path.Combine(multiDir, f), Path.Combine(root, f))
+
+    for name in [ "Lib"; "App" ] do
+        Directory.CreateDirectory(Path.Combine(root, name)) |> ignore
+
+        for f in Directory.GetFiles(Path.Combine(multiDir, name)) do
+            File.Copy(f, Path.Combine(root, name, Path.GetFileName f))
+
+    root
+
+let private buildAgain (project: string) =
+    let psi = ProcessStartInfo("dotnet", $"build \"{project}\" -v q --nologo")
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    use p = Process.Start psi
+    let out = p.StandardOutput.ReadToEndAsync()
+    let err = p.StandardError.ReadToEndAsync()
+    p.WaitForExit()
+    Expect.equal p.ExitCode 0 $"{out.Result}{err.Result}"
+
+/// Every `window/showMessage` from now on: the server says a project failed to load with one
+let private watchMessages (s: Session) =
+    let messages = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+    s.Lsp.Notifications.Subscribe
+        { new IObserver<Received> with
+            member _.OnNext r =
+                if r.Message["method"].GetValue<string>() = "window/showMessage" then
+                    messages.Enqueue(r.Message.ToJsonString())
+
+            member _.OnError _ = ()
+            member _.OnCompleted() = () }
+    |> ignore
+
+    messages
 
 let private errorsOf (s: Session) (path: string) =
     match publishesOf s path |> Array.tryLast with
@@ -45,7 +75,7 @@ let tests =
     <| testList
         "CrossProject"
         [ testTask "server publishes App's open file after a Lib edit" {
-              built.Force()
+              Fixtures.build appProject
               let! (s: Session) = startSessionWith multiDir [ appProject ] true ignore
               use _ = (s :> IAsyncDisposable)
               do! openAll s [ useFs; libFs ]
@@ -62,7 +92,7 @@ let tests =
           }
 
           testTask "a reload of Lib leaves App on the new graph" {
-              built.Force()
+              Fixtures.build appProject
               let! (s: Session) = startSessionWith multiDir [ appProject ] true ignore
               use _ = (s :> IAsyncDisposable)
               do! openAll s [ useFs; libFs ]
@@ -75,16 +105,13 @@ let tests =
               // Waits on the old graph end with it
               let waiting = oldApp.AllDiagnostics()
               do! workspace.Reload libProject
-              let! ended =
-                  task {
-                      try
-                          let! _ = waiting
-                          return true
-                      with :? OperationCanceledException ->
-                          return true
-                  }
+              // It ends one way or the other: a graph disposed under it does not leave it waiting
+              try
+                  let! _ = waiting |> within
+                  ()
+              with :? OperationCanceledException ->
+                  ()
 
-              Expect.isTrue ended "the wait on the old App ended"
               let lib = (workspace.ProjectOf libFs).Value
               let app = (workspace.ProjectOf useFs).Value
               Expect.isFalse (obj.ReferenceEquals(lib, oldLib)) "a new Lib"
@@ -97,4 +124,64 @@ let tests =
               do! eventually "App clean after an edit of the new Lib" (fun () -> (errorsOf s useFs).IsEmpty)
               let! diagnostics = app.Diagnostics useFs |> within
               Expect.isEmpty diagnostics "the new App settled on the new Lib"
+          }
+
+          testTask "a C# project reference stays the file on disk" {
+              let app = Path.Combine(multiDir, "Cs", "App", "CsApp.fsproj")
+              let csUse = Path.Combine(multiDir, "Cs", "App", "Use.fs")
+              Fixtures.build app
+              let! (s: Session) = startSessionWith multiDir [ app ] false ignore
+              use _ = (s :> IAsyncDisposable)
+              let messages = watchMessages s
+              do! s.Load()
+              Expect.equal (List.ofSeq messages) [] "no project failed to load"
+              Expect.isNone (s.Server.Workspace.ProjectOf(Path.Combine(multiDir, "Cs", "Lib", "CsLib.csproj"))) "not a graph"
+              let graph = (s.Server.Workspace.ProjectOf csUse).Value
+              let! diagnostics = graph.Diagnostics csUse |> within
+              Expect.isEmpty diagnostics "CsType comes from the DLL"
+          }
+
+          testTask "App falls back to the file on disk when Lib stops loading" {
+              let root = copyMulti ()
+              let lib, app = Path.Combine(root, "Lib", "Lib.fsproj"), Path.Combine(root, "App", "App.fsproj")
+              let use' = Path.Combine(root, "App", "Use.fs")
+              Fixtures.build app
+              let! (s: Session) = startSessionWith root [ app ] true ignore
+              use _ = (s :> IAsyncDisposable)
+              let workspace = s.Server.Workspace
+              Expect.isSome (workspace.ProjectOf(Path.Combine(root, "Lib", "Lib.fs"))) "Lib is in memory first"
+              File.WriteAllText(lib, "<Project><not xml")
+              do! workspace.Reload lib
+              Expect.isNone (workspace.ProjectOf(Path.Combine(root, "Lib", "Lib.fs"))) "Lib no longer loads"
+              let graph = (workspace.ProjectOf use').Value
+              let! clean = graph.Diagnostics use' |> within
+              Expect.isEmpty clean "App reads the DLL"
+              let bad = File.ReadAllText(use').Replace("let y = f 1", "let y: string = f 1")
+              graph.SetText(use', bad) |> ignore
+              let! typed = graph.Diagnostics use' |> within
+              Expect.isNonEmpty typed "and checks against what it says"
+          }
+
+          testTask "an edit of Lib's AssemblyName reaches App's spec on a reload" {
+              let root = copyMulti ()
+              let lib, app = Path.Combine(root, "Lib", "Lib.fsproj"), Path.Combine(root, "App", "App.fsproj")
+              let libSource, use' = Path.Combine(root, "Lib", "Lib.fs"), Path.Combine(root, "App", "Use.fs")
+              Fixtures.build app
+              let! (s: Session) = startSessionWith root [ app ] true ignore
+              use _ = (s :> IAsyncDisposable)
+              let messages = watchMessages s
+              let renamed = File.ReadAllText(lib).Replace("<TargetFramework>net10.0</TargetFramework>", "<TargetFramework>net10.0</TargetFramework>\n    <AssemblyName>Renamed</AssemblyName>")
+              File.WriteAllText(lib, renamed)
+              // Lib's alone, as an editor's build of it: App's own files don't change, so its cached spec looks fresh
+              buildAgain lib
+              do! s.Server.Workspace.Reload lib
+              Expect.equal (List.ofSeq messages) [] "Lib and App load again"
+              let graph = (s.Server.Workspace.ProjectOf use').Value
+              let libGraph = (s.Server.Workspace.ProjectOf libSource).Value
+              let! clean = graph.Diagnostics use' |> within
+              Expect.isEmpty clean "built as Renamed"
+              // In memory, not on the old DLL's path
+              libGraph.SetText(libSource, File.ReadAllText(libSource).Replace("let f (x: int) : int = x + 1", "let f (x: int) : string = string x")) |> ignore
+              let! broken = graph.Diagnostics use' |> within
+              Expect.isNonEmpty broken "App reads Lib in memory"
           } ]

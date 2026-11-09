@@ -175,6 +175,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     let mutable files = initialFiles
     let mutable owner = initialOwner
     let mutable seen = firstSeen
+    let mutable generatedResults: Lazy<FileResult list> = Lazy<FileResult list>.CreateFromValue []
     let mutable filesNow: Signal<IFileNode[]> = Unchecked.defaultof<_>
     let mutable assemblyFlight: AsyncMemo<AssemblyState> = Unchecked.defaultof<_>
     let mutable assemblyMemo: Memo<AssemblyState> = Unchecked.defaultof<_>
@@ -281,7 +282,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
             let allocated = GC.GetTotalAllocatedBytes true
             let started = Diagnostics.Stopwatch.GetTimestamp()
-            let! ctx = ProjectGraph.MakeContext(options, linked |> List.map fst, first)
+            let! ctx = ProjectGraph.MakeContext(spec, options, linked |> List.map fst, first)
             let project = ProjectShared ctx
             project.Post <- host.Post
 
@@ -309,16 +310,38 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                     graph)
         }
 
-    static member private MakeContext(options: FSharpProjectOptions, paths: string list, assemblies: ProjectAssembly[]) : Task<ProjectContext> =
+    static member private MakeContext(spec: ProjectSpec, options: FSharpProjectOptions, paths: string list, assemblies: ProjectAssembly[]) : Task<ProjectContext> =
         if paths.IsEmpty then
             DeclarationChecker.CreateProject options |> Async.StartAsTask
         else
-            let references = Dictionary<string, ProjectAssembly>(StringComparer.Ordinal)
-            List.iteri (fun i path -> references[path] <- assemblies[i]) paths
-            DeclarationChecker.CreateProject(options, references) |> Async.StartAsTask
+            task {
+                let references = Dictionary<string, ProjectAssembly>(StringComparer.Ordinal)
+                List.iteri (fun i path -> references[path] <- assemblies[i]) paths
+
+                // Pickles here, off the graph thread, and fails here
+                do!
+                    Task.Run(fun () ->
+                        for KeyValue(path, assembly) in references do
+                            if assembly.ReadsFileOnDisk then
+                                eprintfn "[ranvierautocomplete] %s reads %s from disk as of its last build: that project generates types with a type provider" spec.ProjectFile path)
+
+                return! DeclarationChecker.CreateProject(options, references) |> Async.StartAsTask
+            }
+
+    /// What the build generates into obj, checked on their own: they add assembly attributes (a `namespace` holding
+    /// nothing), which later files don't read, only the assembly's referencing projects. Their diagnostics are dropped:
+    /// nothing is shown for a file the user has not written. Evaluating the project wrote them, so one that is gone
+    /// is gone from the build too.
+    static member private GeneratedResults(spec: ProjectSpec, ctx: ProjectContext) : Lazy<FileResult list> =
+        lazy
+            [ for path in spec.GeneratedFiles do
+                  if File.Exists path then
+                      DeclarationChecker.CheckFile(ctx, [], DeclarationChecker.Parse(ctx, path, File.ReadAllText path)) ]
 
     /// Makes the nodes that link this project to the ones it references and to those that reference it. Graph thread.
     member private this.Link(options: FSharpProjectOptions, paths: string list) =
+        generatedResults <- ProjectGraph.GeneratedResults(spec, project.Context)
+
         linkOwner <-
             createRoot (fun o ->
                 filesNow <- createSignal files
@@ -341,7 +364,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                                 let started = Diagnostics.Stopwatch.GetTimestamp()
 
                                 task {
-                                    let! ctx = ProjectGraph.MakeContext(options, paths, built)
+                                    let! ctx = ProjectGraph.MakeContext(spec, options, paths, built)
                                     project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
                                     return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
                                 })
@@ -389,7 +412,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                             let signatures = nodes |> Array.map (fun f -> f.Signature.Value.Signature) |> List.ofArray
                             let results = results |> Array.choose _.Value |> List.ofArray
                             let ctx = project.Context
-                            Task.Run<AssemblyState>(fun () -> Built(DeclarationChecker.ProjectAssembly(ctx, results, signatures))))
+                            let generated = generatedResults
+                            Task.Run<AssemblyState>(fun () -> Built(DeclarationChecker.ProjectAssembly(ctx, generated.Value @ results, signatures))))
 
                 // The cutoff at the project boundary
                 assemblyMemo <-
@@ -421,6 +445,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             next.Context.ShiftRefusedHook <- shiftHook
             next.Context.RefuseShifts <- refuseShifts
             project.Context <- next.Context
+            generatedResults <- ProjectGraph.GeneratedResults(spec, next.Context)
             // A root attaches to the scope it is made in: the links', not the effect's that asked for the restart, whose
             // next run would dispose the nodes
             let newOwner, nodes = runWithOwner linkOwner (fun () -> ProjectNodes.build project texts wanted)
@@ -451,6 +476,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             ValueNone
 
     member internal _.AddDependent(graph: ProjectGraph) = lock dependents (fun () -> dependents.Add graph)
+
+    member internal _.RemoveDependent(graph: ProjectGraph) = lock dependents (fun () -> dependents.Remove graph |> ignore)
+
+    /// How many live graphs reference this one. For tests.
+    member internal _.DependentCount: int = lock dependents (fun () -> dependents.Count)
 
     /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Call it when the
     /// graph is idle, and never from the graph thread: it waits for the graph thread to read the file's parse. A text
@@ -726,12 +756,16 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// Ends every wait in flight (they are canceled) and disposes the graph's nodes on the graph thread. Idempotent,
     /// and safe once the host is disposed, which has disposed the graph already.
-    member _.Dispose() =
+    member this.Dispose() =
         if Interlocked.Exchange(&disposed, 1) = 0 then
             lifetime.Cancel()
 
             for d in lock dependents (fun () -> dependents.ToArray()) do
                 d.Dispose()
+
+            // A reference outlives this graph on a reload: it must not keep this context alive
+            for r in references do
+                r.RemoveDependent this
 
             try
                 host.Post(fun () ->

@@ -4,6 +4,7 @@
     <AssemblyName>rfs-harness</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Fixtures.fs" />
     <Compile Include="Scenario.fs" />
     <Compile Include="Servers.fs" />
     <Compile Include="Metrics.fs" />

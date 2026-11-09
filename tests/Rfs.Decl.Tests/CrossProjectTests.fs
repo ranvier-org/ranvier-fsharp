@@ -16,22 +16,8 @@ let private libFile = Path.Combine(multiDir, "Lib", "Lib.fs")
 let private signedFile = Path.Combine(multiDir, "Lib", "Signed.fs")
 let private useFile = Path.Combine(multiDir, "App", "Use.fs")
 
-/// App references Lib's assembly on disk, and a project's -r: must exist to load
-let private built =
-    lazy
-        (let psi = ProcessStartInfo("dotnet", $"build \"{appProject}\" -v q --nologo")
-         psi.RedirectStandardOutput <- true
-         psi.RedirectStandardError <- true
-         use p = Process.Start psi
-         let out = p.StandardOutput.ReadToEndAsync()
-         let err = p.StandardError.ReadToEndAsync()
-         p.WaitForExit()
-
-         if p.ExitCode <> 0 then
-             failwith $"building the Multi fixture failed: {out.Result}{err.Result}")
-
 let private load (project: string) =
-    built.Force()
+    Rfs.Harness.Fixtures.build appProject
     (ProjectSpec.load project).GetAwaiter().GetResult()
 
 /// Checks every file whole in file order: each file's result, when it is an implementation file, and every signature
@@ -131,4 +117,39 @@ let tests =
               let reopened = signed.Replace("let signed = 1", "open System.Runtime.CompilerServices\n\n[<assembly: InternalsVisibleTo(\"App\")>]\ndo ()\n\nlet signed = 1")
               let viaSigned = appWith (assemblyOf lib (Map [ "Lib.fs", closed; "Signed.fs", reopened ]))
               Expect.isEmpty (diagnosticsOf viaSigned app Map.empty) "the attribute of the signed file reaches App"
+          }
+
+          test "the fingerprint sees everything App's diagnostics read" {
+              let lib = load libProject
+              let text = libText ()
+              let fingerprint (extra: string) = (assemblyOf lib (Map [ "Lib.fs", text + "\n" + extra + "\n" ])).Fingerprint
+
+              for name, before, after in
+                  [ "a union case", "type U =\n    | A\n", "type U =\n    | A\n    | B\n"
+                    "the order of cases", "type U =\n    | A\n    | B\n", "type U =\n    | B\n    | A\n"
+                    "a member in an augmentation", "type U = { X: int }\ntype U with\n    member _.P = 1\n", "type U = { X: int }\ntype U with\n    member _.Q = 1\n"
+                    "an attribute's argument", "[<System.Obsolete(\"a\")>]\nlet u = 1\n", "[<System.Obsolete(\"b\")>]\nlet u = 1\n"
+                    "a literal", "[<Literal>]\nlet U = 1\n", "[<Literal>]\nlet U = 2\n"
+                    "a default parameter", "type U =\n    static member M([<System.Runtime.InteropServices.Optional; System.Runtime.InteropServices.DefaultParameterValue(1)>] x: int) = x\n", "type U =\n    static member M([<System.Runtime.InteropServices.Optional; System.Runtime.InteropServices.DefaultParameterValue(2)>] x: int) = x\n"
+                    "EqualityConditionalOn", "[<CustomEquality; NoComparison>]\ntype U<'T> =\n    { V: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n", "[<CustomEquality; NoComparison>]\ntype U<[<EqualityConditionalOn>] 'T> =\n    { V: int }\n    override _.Equals _ = true\n    override _.GetHashCode() = 0\n"
+                    "explicit type parameters", "let u<'T> (x: 'T) = x\n", "let u (x: 'T) = x\n"
+                    "a type parameter's name", "let u (x: 'A) = x\n", "let u (x: 'B) = x\n"
+                    "prefix display", "type U<'a> = { V: 'a }\n", "type 'a U = { V: 'a }\n"
+                    "a struct record", "type U = { V: int }\n", "[<Struct>]\ntype U = { V: int }\n"
+                    "a self-referential constructor", "type U() =\n    member _.P = 1\n", "type U() as this =\n    member _.P = this.GetHashCode()\n" ] do
+                  Expect.notEqual (fingerprint after) (fingerprint before) name
+
+              // Generalized from inference, with no name of the user's: checking it again gives the same print
+              Expect.equal (fingerprint "let i x = x\n") (fingerprint "let i x = id x\n") "an inferred type parameter has no name to see"
+          }
+
+          test "a pickling failure is an error, not a missing reference" {
+              let lib, app = load libProject, load appProject
+              let broken = DeclarationChecker.FailingProjectAssembly "the pickle failed"
+              let references = Dictionary<string, ProjectAssembly>()
+              references[(ProjectSpec.referencePath app lib).Value] <- broken
+
+              Expect.throws
+                  (fun () -> DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions app, references) |> Async.RunSynchronously |> ignore)
+                  "CreateProject fails where its caller sees it"
           } ]
