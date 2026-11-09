@@ -190,6 +190,15 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     let dependents = ResizeArray<ProjectGraph>()
     let mutable disposed = 0
     let mutable afterSettle: unit -> Task = fun () -> Task.CompletedTask
+    // Graph thread. A restart disposes the nodes first, so one that fails leaves nothing that could ever settle.
+    let mutable restartFailure: exn = null
+
+    let restarting (work: unit -> unit) =
+        try
+            work ()
+        with ex ->
+            restartFailure <- ex
+            reraise ()
 
     // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle
     let settled (read: unit -> 'T voption) = host.WhenSettled(read, lifetime.Token)
@@ -228,6 +237,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// applied, and the projects it references settled. Its result being settled means the files it was set up from are
     /// current too, transitively (IFileNode.Current).
     let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+        if not (isNull restartFailure) then
+            raise (InvalidOperationException("The project's nodes could not be made again after a reference changed.", restartFailure))
+
         let mutable applied = true
 
         for j in 0..i do
@@ -376,9 +388,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                                     return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
                                 })
 
-                    createEffect (fun () ->
+                    GraphEffects.guarded (fun () ->
                         match contextMemo.TryValue with
-                        | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> this.Restart next)
+                        | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> restarting (fun () -> this.Restart next))
                         | _ -> ())
 
                 o)
@@ -928,6 +940,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// The project's checker context. For tests.
     member internal _.Context: ProjectContext = project.Context
+
+    /// Fails as a restart does when it throws. For tests.
+    member internal _.FailRestart(ex: exn) : unit = host.Post(fun () -> restarting (fun () -> raise ex))
 
     /// Awaits `hook` in each ReadFile after the file settled and before it takes the lock. For tests.
     member internal _.OnReadSettled(hook: unit -> Task) : unit = afterSettle <- hook

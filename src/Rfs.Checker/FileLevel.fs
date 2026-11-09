@@ -316,7 +316,7 @@ module internal WholeFile =
         let activate () =
             // Keeps the published result checked, so files that do not depend on each other check in parallel; reports
             // the declaration results of a published finish of the current text
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 match published.Value with
                 | Whole ->
                     whole.TryValue |> ignore
@@ -329,7 +329,7 @@ module internal WholeFile =
                 | Kept _ -> ())
 
             // Makes the declaration nodes once a wanted file is known to have more than one declaration
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 if wanted.Value then
                     let struct (_, count) = rows.Value
 
@@ -357,7 +357,7 @@ module internal WholeFile =
 
             // Promotes the file once its build has finished for its current text and setup; records a failed build, so
             // the builder moves on to the next wanted file
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 if driven.Value then
                     match decl.Value with
                     | ValueSome g when stateOf () = Building ->
@@ -593,7 +593,7 @@ module internal WholeFile =
             member _.MayBuild = false
             member _.DeclarationObjects() = []
             member _.Activate() =
-                createEffect (fun () -> result.TryValue |> ignore)
+                GraphEffects.guarded (fun () -> result.TryValue |> ignore)
 
           interface ISignatureFile with
               member _.LatestCheck version = settledAt project file result version |> ValueOption.map snd }

@@ -956,6 +956,26 @@ let tests =
                       })
           }
 
+          testTask "after a restart that failed, waits fail instead of hanging" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          s.Graph.FailRestart(InvalidOperationException "restart boom")
+
+                          let! (failure: exn option) =
+                              task {
+                                  try
+                                      let! _ = s.Graph.ReadFile(a, (fun v -> v.Version), CancellationToken.None) |> settle
+                                      return None
+                                  with ex ->
+                                      return Some ex
+                              }
+
+                          Expect.isTrue (failure |> Option.exists (fun e -> (string e).Contains "restart boom")) $"the read says why: %A{failure}"
+                      })
+          }
+
           // The finish's phases add up to the time spent in FinishFile, so the phase profile attributes all of it
           testTask "the finish phases add up to the finish time" {
               do!

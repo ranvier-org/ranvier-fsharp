@@ -13,6 +13,33 @@ type private Waiter =
     { Step: unit -> bool
       Abort: exn -> unit }
 
+/// Work on the graph thread failed, so what a parked wait is waiting for may never come.
+type GraphFailedException(what: string, inner: exn) =
+    inherit Exception($"%s{what} failed on the graph thread: %s{inner.Message}", inner)
+
+[<AbstractClass; Sealed>]
+type internal GraphThread private () =
+    /// Tells this thread's host that an effect failed
+    [<DefaultValue; ThreadStatic>]
+    static val mutable private report: exn -> unit
+
+    static member Report
+        with get () = GraphThread.report
+        and set (v: exn -> unit) = GraphThread.report <- v
+
+module internal GraphEffects =
+    /// An effect whose failure reaches its host. Ranvier keeps a failed effect's exception on the effect, where nothing
+    /// reads it, and a pending read is no failure.
+    let guarded (body: unit -> unit) =
+        createEffect (fun () ->
+            try
+                body ()
+            with
+            | NotReadyException _ -> reraise ()
+            | ex ->
+                GraphThread.Report ex
+                reraise ())
+
 /// <summary>
 /// A Ranvier graph with a dedicated owner thread that pumps its inbox.
 /// </summary>
@@ -24,10 +51,16 @@ type private Waiter =
 /// <c>Dispatch</c> and every async memo settling goes through it), and the loop then calls <c>Graph.Pump</c>.
 /// </para>
 /// <para>
-/// An exception thrown by <c>Post</c>ed work is caught, traced, and kept (the newest 256) for
+/// An exception thrown by <c>Post</c>ed work is caught, written to stderr, and kept (the newest 256) for
 /// <c>TakePostErrors</c>. It is never rethrown, so one failing item cannot fault an unrelated <c>Read</c>. A <c>Read</c>
-/// faults its own task. An exception escaping <c>Graph.Pump</c> is kept apart, for <c>TakePumpErrors</c>. Errors from
-/// effects and flushes go to Ranvier's <c>Root.Errors</c> and are not surfaced by the host.
+/// faults its own task. An exception escaping <c>Graph.Pump</c> is kept apart, for <c>TakePumpErrors</c>. What Ranvier
+/// records in <c>Root.Errors</c> is written to stderr after the pump that recorded it, and so is the failure of an effect
+/// made with <c>GraphEffects.guarded</c>.
+/// </para>
+/// <para>
+/// After any of these, the <c>WhenSettled</c> calls still parked once the waiters have run fault with
+/// <c>GraphFailedException</c>: what the failure left undone may be what they wait for, and nothing else would end
+/// them. The host is shared, so this reaches parked calls of other projects too. Later calls wait as usual.
 /// </para>
 /// <para>
 /// Once <c>Dispose</c> begins, work still in the inbox does not run: queued <c>Read</c>s fault with
@@ -55,13 +88,41 @@ type GraphHost private (name: string) =
     let isStopping () = Volatile.Read &stopping
     let isClosed () = Volatile.Read &closed
 
+    // Graph thread only: set while a pump runs, taken after it
+    let mutable failure: exn = null
+    let mutable rootErrorsSeen = 0
+
+    let failed (kind: string) (ex: exn) =
+        eprintfn "[ranvierautocomplete] graph %s, %s failed: %O" name kind ex
+        failure <- GraphFailedException(kind, ex)
+
     let keep (queue: ConcurrentQueue<exn>) (kind: string) (ex: exn) =
-        System.Diagnostics.Trace.WriteLine $"Rfs.Checker.GraphHost %s{name} %s{kind}: %O{ex}"
+        failed kind ex
         queue.Enqueue ex
         let mutable dropped = Unchecked.defaultof<exn>
 
         while queue.Count > maxKeptErrors && queue.TryDequeue &dropped do
             ()
+
+    let noteRootErrors () =
+        for ex in graph.Root.ErrorsFrom rootErrorsSeen do
+            rootErrorsSeen <- rootErrorsSeen + 1
+            failed "a graph scope" ex
+
+    /// Ends the waits a failure may have stranded. The waiters have just run: what could still settle has.
+    let failParked () =
+        if not (isNull failure) then
+            let ex = failure
+            failure <- null
+
+            let parked =
+                lock gate (fun () ->
+                    let all = waiters.ToArray()
+                    waiters.Clear()
+                    all)
+
+            for w in parked do
+                w.Abort ex
 
     let drain (queue: ConcurrentQueue<exn>) =
         let taken = List<exn>()
@@ -89,6 +150,7 @@ type GraphHost private (name: string) =
                 member _.Post _ = wake.Set() }
 
         let mutable activation = Unchecked.defaultof<IDisposable>
+        GraphThread.Report <- failed "an effect"
 
         try
             try
@@ -108,11 +170,13 @@ type GraphHost private (name: string) =
                         try
                             graph.Pump() |> ignore
                         with ex ->
-                            keep pumpErrors "pump" ex
+                            keep pumpErrors "a pump" ex
 
                         // Work run by this pump may have disposed the host; parked reads must then fault, not settle.
                         if not (isStopping ()) then
+                            noteRootErrors ()
                             runWaiters ()
+                            failParked ()
         finally
             let parked =
                 lock gate (fun () ->
@@ -168,7 +232,7 @@ type GraphHost private (name: string) =
                     try
                         work ()
                     with ex ->
-                        keep postErrors "post" ex)
+                        keep postErrors "posted work" ex)
         )
 
     /// Runs <c>f</c> on the host thread. The task faults with <c>f</c>'s exception, or with
