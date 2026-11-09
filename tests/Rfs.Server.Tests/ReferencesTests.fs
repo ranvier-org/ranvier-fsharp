@@ -653,7 +653,11 @@ let tests =
                               referencing <- referencing + 1
                               if referencing <= 1 then [] else [ app ] }
 
-              let! (projectBack: References.Answer) = References.find cameBack graph aFile (fst at) (snd at) CancellationToken.None |> within
+              let back = References.find cameBack graph aFile (fst at) (snd at) CancellationToken.None
+              // The first turn disagrees, and no node it read changes: wake the read, as Workspace does when entries change
+              do! whenAsked "the turn that disagreed" (fun () -> referencing >= 2)
+              graph.Host.Post ignore
+              let! (projectBack: References.Answer) = back |> within
               app.Dispose()
 
               match projectBack with
@@ -923,13 +927,43 @@ let tests =
           }
 
           // I3: a demoted file keeps its last finish, and a reader of it must get that finish's text and parse
-          testTask "a file demoted with no new text answers every feature as a fresh graph does" { do! demotedAsFresh  "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n"   "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = \"a string\"\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n\nlet g2 = third + 1\n"  }
+          testTask "a file demoted with no new text answers every feature as a fresh graph does" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n"
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = \"a string\"\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n\nlet g2 = third + 1\n"
+          }
           // Rows shifted or kept by the edit hold environments of the text before it; demoting keeps them
-          testTask "demoted after a row inserted above" { do! demotedAsFresh "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = \"two\"\n" "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = 1\n\nlet first = f 1\n\nlet second = \"two\"\n" }
-          testTask "demoted after a comment line inserted above" { do! demotedAsFresh "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n" "module Deps.A\n\nlet f (x: int) = x + 1\n\n// a line\nlet first = f 1\n\nlet second = first\n" }
-          testTask "demoted after a row appended" { do! demotedAsFresh "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n" "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n" }
-          testTask "demoted after a row renamed above kept rows" { do! demotedAsFresh "module Deps.A\n\nlet old = 1\n\nlet first = 2\n\nlet second = first\n" "module Deps.A\n\nlet renamed = 1\n\nlet first = 2\n\nlet second = first\n" }
-          testTask "demoted after an end edit, then a row inserted above" { do! demotedAsFresh "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n" "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = 1\n\nlet first = f 1\n\nlet second = first + 0\n" }
+          testTask "demoted after a row inserted above" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = \"two\"\n"
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = 1\n\nlet first = f 1\n\nlet second = \"two\"\n"
+          }
+          testTask "demoted after a comment line inserted above" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n"
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\n// a line\nlet first = f 1\n\nlet second = first\n"
+          }
+          testTask "demoted after a row appended" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n"
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n"
+          }
+          testTask "demoted after a row renamed above kept rows" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet old = 1\n\nlet first = 2\n\nlet second = first\n"
+                      "module Deps.A\n\nlet renamed = 1\n\nlet first = 2\n\nlet second = first\n"
+          }
+          testTask "demoted after an end edit, then a row inserted above" {
+              do!
+                  demotedAsFresh
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = first\n"
+                      "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = 1\n\nlet first = f 1\n\nlet second = first + 0\n"
+          }
 
           testTask "a 4000-row file promotes and answers completion, and so does a row of 4000 lets" {
               let dir = Directory.CreateTempSubdirectory "rfs-large-"

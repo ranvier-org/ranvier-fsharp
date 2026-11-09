@@ -21,7 +21,8 @@ type internal Build =
     /// Built by declaration for its current setup
     | Built
 
-/// What a demoted file keeps of its last finish: only what is published from it.
+/// What a demoted file keeps of its last finish: what is published from it, and the finish itself only when a row of it
+/// is stale (Declarations).
 [<NoEquality; NoComparison>]
 type internal KeptResult =
     { Version: int64
@@ -44,7 +45,8 @@ type internal Published =
     | Whole
     /// The finish of its current declaration results
     | ByDeclaration of DeclFile * Finished
-    /// Demoted: the last finish's FileResult, kept until the file's text or setup changes
+    /// Demoted: the last finish's FileResult, and the finish when a row of it is stale, kept until the file's text or setup
+    /// changes
     | Kept of KeptResult
 
 /// A published result with what a reader of it needs.
@@ -569,8 +571,8 @@ module internal WholeFile =
 
             member _.Demote() =
                 if wanted.Peek then
-                    // What the finish published now publishes stays published until the file's text or setup changes;
-                    // nothing else of the declaration state is kept, but for a finish with a stale row (KeptResult.Declarations)
+                    // What the finish published stays published until the file's text or setup changes. The finish itself
+                    // is kept only when a row of it is stale (KeptResult.Declarations); no other declaration state is
                     let last =
                         match untrack (fun () -> published.TryValue) with
                         | Ready(ByDeclaration(g, f)) ->
