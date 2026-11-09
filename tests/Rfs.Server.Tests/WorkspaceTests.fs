@@ -351,6 +351,90 @@ let tests =
               do! waitFor "a project notification with F.fs" (fun n -> kindIs "project" n && filesOf n |> List.contains extra) |> withinT
           }
 
+          testTask "a client that can register file watchers is asked to, and one that cannot is not" {
+              let registrations (lsp: LspClient) =
+                  lsp.ServerRequests |> Array.filter (fun r -> r["method"].GetValue<string>() = "client/registerCapability")
+
+              let! (lsp: LspClient), (owner: IDisposable) = TestServer.start ()
+              use _ = disposing owner
+              let! _ = lsp.Initialize(Paths.toUri depsDir, JsonNode.Parse "{}", watchers = true) |> within
+              let deadline = DateTime.UtcNow.AddSeconds 30.
+
+              while (registrations lsp).Length = 0 && DateTime.UtcNow < deadline do
+                  do! Task.Delay 20
+
+              let sent = registrations lsp |> Array.exactlyOne
+              let registration = sent["params"].["registrations"].[0]
+              Expect.equal (registration["method"].GetValue<string>()) "workspace/didChangeWatchedFiles" "the method"
+
+              let globs =
+                  registration["registerOptions"].["watchers"].AsArray()
+                  |> Seq.map (fun w -> w["globPattern"].GetValue<string>())
+                  |> Set.ofSeq
+
+              Expect.equal globs (set [ "**/*.{fs,fsi}"; "**/*.fsproj"; "**/*.props"; "**/*.targets"; "**/project.assets.json" ]) "the globs"
+
+              let! (plain: LspClient), (plainOwner: IDisposable) = TestServer.start ()
+              use _ = disposing plainOwner
+              let! _ = plain.Initialize(Paths.toUri depsDir, JsonNode.Parse "{}") |> within
+              let! _ = plain.Request("fsharp/workspacePeek", JsonNode.Parse($$"""{"Directory":{{JsonValue.Create(depsDir).ToJsonString()}},"Deep":1,"ExcludedDirs":[]}""")) |> within
+              Expect.isEmpty (registrations plain) "no registration"
+          }
+
+          testTask "a change on disk to a closed file and to a project file updates diagnostics" {
+              let dir = copyFixture "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let a = Path.Combine(dir, "A.fs")
+              let b = Path.Combine(dir, "B.fs")
+              let! (lsp: LspClient), (owner: IDisposable) = TestServer.start ()
+              use _ = disposing owner
+              let latest = ConcurrentDictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
+
+              lsp.Diagnostics.Subscribe
+                  { new IObserver<_> with
+                      member _.OnNext((_, path, _, list)) = latest[Path.GetFullPath path] <- list
+                      member _.OnError _ = ()
+                      member _.OnCompleted() = () }
+              |> ignore
+
+              let! _ = lsp.Initialize(Paths.toUri dir, JsonNode.Parse "{}", watchers = true) |> within
+              let load = JsonNode.Parse($$"""{"TextDocuments":[{"Uri":{{JsonValue.Create(Paths.toUri project).ToJsonString()}}}]}""")
+              let! _ = lsp.Request("fsharp/workspaceLoad", load) |> within
+              do! lsp.DidOpen(b, File.ReadAllText b)
+
+              let waitFor (what: string) (predicate: Rfs.Lsp.Diagnostic list -> bool) : Task =
+                  task {
+                      let deadline = DateTime.UtcNow.AddSeconds 60.
+
+                      while not (match latest.TryGetValue b with
+                                 | true, list -> predicate list
+                                 | _ -> false) do
+                          if DateTime.UtcNow > deadline then
+                              failtest $"timed out waiting for %s{what}: %A{latest.ToArray()}"
+
+                          do! Task.Delay 50
+                  }
+
+              let changed (path: string) (kind: int) =
+                  lsp.Notify("workspace/didChangeWatchedFiles", JsonNode.Parse($$"""{"changes":[{"uri":{{JsonValue.Create(Paths.toUri path).ToJsonString()}},"type":{{kind}}}]}"""))
+
+              do! waitFor "B.fs clean" List.isEmpty |> withinT
+
+              // A closed file B.fs depends on loses what B.fs reads
+              let original = File.ReadAllText a
+              File.WriteAllText(a, original.Replace("baseValue", "renamedValue"))
+              do! changed a 2
+              do! waitFor "the error from A.fs's change" (List.exists (fun d -> d.Message.Contains "baseValue")) |> withinT
+
+              // Back, then the project drops the file
+              File.WriteAllText(a, original)
+              do! changed a 2
+              do! waitFor "B.fs clean again" List.isEmpty |> withinT
+              File.WriteAllText(project, File.ReadAllText(project).Replace("""<Compile Include="A.fs" />""", ""))
+              do! changed project 2
+              do! waitFor "the error from the project's change" (fun list -> not list.IsEmpty) |> withinT
+          }
+
           testTask "dispose stops checks" {
               let host = GraphHost.Start "dispose-test"
               use _ = disposing host

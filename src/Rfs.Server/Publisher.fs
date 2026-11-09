@@ -113,6 +113,8 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
         }
 
     /// `rfs/declarationsChecked`: the declaration checks adopted since the previous one, over all projects. Holds `gate`.
+    /// The checks that promote a file are adopted too, so the notification after a promotion counts them with whatever
+    /// edit it follows. Telling them apart in the count would lose the checks of a restart, which an edit does cause.
     let notifyChecks () : Task =
         task {
             let mutable n = 0L
@@ -337,8 +339,7 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
             { Uri = uri
               Path = path
               LspVersion = version
-              Text = text
-              Graph = workspace.ProjectOf path }
+              Text = text }
 
         documents.Open document
 
@@ -394,7 +395,6 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
         for doc in documents.All do
             match workspace.OwnersOf doc.Path with
             | owners when owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph)) ->
-                documents.Update(doc.Path, (fun d -> { d with Graph = Some owners.Head })) |> ignore
                 owners.Head.Promote doc.Path
                 start doc.Path (fun ct -> run doc.Path owners true ct)
             | _ -> ()
@@ -421,6 +421,13 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
 
     /// The editor closed the document: the file on disk is its text again, it is demoted, and its diagnostics cleared
     member _.Close(path: string) : unit = post (fun () -> closeNow path)
+
+    /// A file that is not open changed on disk and the graphs have its new text: the open documents hear what that changed
+    member _.DiskChanged(path: string) : unit =
+        post (fun () ->
+            match (documents.TryFind path).IsNone, workspace.OwnersOf path with
+            | true, (_ :: _ as owners) -> start path (fun ct -> runClosed path owners ct)
+            | _ -> ())
 
     /// A project has loaded: its open documents were given their texts, so they are promoted and published
     member _.Loaded(graph: ProjectGraph) : unit = post (fun () -> loadedNow graph)

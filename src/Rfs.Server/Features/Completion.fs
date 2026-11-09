@@ -199,9 +199,10 @@ module Completion =
                 graph.ReadFile(
                     path,
                     (fun view ->
-                        itemsAt view line character
-                        |> Array.tryFind (fun d -> d.NameInList = item.Label)
-                        |> Option.map _.Description),
+                        onLargeStack (fun () ->
+                            itemsAt view line character
+                            |> Array.tryFind (fun d -> d.NameInList = item.Label)
+                            |> Option.map _.Description)),
                     ct
                 )
 

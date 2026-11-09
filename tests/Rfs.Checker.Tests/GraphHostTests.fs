@@ -174,6 +174,45 @@ let tests =
               Expect.isEmpty (host.TakePostErrors ()) "Read failures are not post errors"
           }
 
+          // I4: what a failure on the graph thread leaves behind may never settle
+          testTask "a failing post fails what is parked, and later waits are not touched" {
+              let host = GraphHost.Start "post-fails-waits"
+
+              try
+                  let parked = host.WhenSettled(fun () -> (ValueNone: int voption))
+                  host.Read (fun () -> ()) |> within 10
+                  host.Post (fun () -> failwith "post boom")
+                  let! finished = Task.WhenAny(parked, Task.Delay 10000)
+                  Expect.isTrue (obj.ReferenceEquals(finished, parked)) "the wait ended"
+                  Expect.isTrue parked.IsFaulted "the wait faults"
+                  Expect.stringContains parked.Exception.InnerException.Message "post boom" "with what failed"
+                  Expect.equal (host.WhenSettled(fun () -> ValueSome 3) |> within 10) 3 "a wait after it settles"
+                  Expect.equal (host.TakePostErrors ()).Length 1 "kept"
+              finally
+                  host.Dispose ()
+          }
+
+          testTask "a failing effect fails what is parked" {
+              let host = GraphHost.Start "effect-fails-waits"
+
+              try
+                  let! (signal: Signal<int>) =
+                      host.Read (fun () ->
+                          let s = createSignal 0
+                          GraphEffects.guarded (fun () -> if s.Value = 1 then failwith "effect boom")
+                          s)
+
+                  let parked = host.WhenSettled(fun () -> (ValueNone: int voption))
+                  host.Read (fun () -> ()) |> within 10
+                  host.Post (fun () -> signal.Value <- 1)
+                  let! finished = Task.WhenAny(parked, Task.Delay 10000)
+                  Expect.isTrue (obj.ReferenceEquals(finished, parked)) "the wait ended"
+                  Expect.isTrue parked.IsFaulted "the wait faults"
+                  Expect.stringContains parked.Exception.InnerException.Message "effect boom" "with what failed"
+              finally
+                  host.Dispose ()
+          }
+
           test "WhenSettled with an unsatisfied read waits without spinning and honours cancellation" {
               use host = GraphHost.Start "cancel-wait"
               let mutable reads = 0

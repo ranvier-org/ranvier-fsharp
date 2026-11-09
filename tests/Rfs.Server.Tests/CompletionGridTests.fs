@@ -152,7 +152,52 @@ let private scenarios2 : (string * string option * string list * string list) li
     "insert line and rename", None, [ keptText; keptText.Replace("let oldName", "// a line\nlet newName") ], []
     "line delete", None, [ "module Deps.D\n\nlet oldName = 1\n\n// gone\n\nlet kept =\n    let inner = 3\n    inner\n\nlet other = kept + 1\n"; "module Deps.D\n\nlet newName = 1\n\nlet kept =\n    let inner = 3\n    inner\n\nlet other = kept + 1\n" ], [] ]
 
-let private all = scenarios @ scenarios2
+/// C3: a row's scope depends on what follows it, so a row kept since it was last has captured a scope that has moved.
+/// Orders of two or more edits, each with a row that was last when it was checked, then rows inserted around it.
+let private editOrders : (string * string option * string list * string list) list =
+  let head = "module Deps.D\n\nlet f (x: int) = x + 1\n\n"
+  let rows = "let first = f 1\n\nlet second = \"two\"\n\nlet third = first\n"
+  let tail = "\nlet g2 = third + 1\n"
+  let above = "let inserted = \"s\"\n\n"
+  let locals = "let third =\n    let loc = first\n    loc\n"
+  let lastHasLocals = rows.Replace("let third = first\n", locals)
+  [ "append, then insert above", None, [ head + rows; head + rows + tail; head + above + rows + tail ], []
+    "insert above, then append", None, [ head + rows; head + above + rows; head + above + rows + tail ], []
+    "append, then insert below it", None, [ head + rows; head + rows + tail; head + rows + tail + "\nlet below = 1\n" ], []
+    "append twice, then insert above", None, [ head + rows; head + rows + tail; head + rows + tail + "\nlet g3 = g2\n"; head + above + rows + tail + "\nlet g3 = g2\n" ], []
+    "insert above twice after an append", None, [ head + rows; head + rows + tail; head + above + rows + tail; head + above + "let again = 2\n\n" + rows + tail ], []
+    "append, insert above, then edit a body", None, [ head + rows; head + rows + tail; head + above + rows + tail; head + above + rows.Replace("f 1", "f 2") + tail ], []
+    "append, insert above, then edit the appended row", None, [ head + rows; head + rows + tail; head + above + rows + tail; head + above + rows + tail.Replace("+ 1", "+ 2") ], []
+    "append, edit a body, then insert above", None, [ head + rows; head + rows + tail; head + rows.Replace("f 1", "f 2") + tail; head + above + rows.Replace("f 1", "f 2") + tail ], []
+    "the last row has locals: append, then insert above", None, [ head + lastHasLocals; head + lastHasLocals + tail; head + above + lastHasLocals + tail ], []
+    "the last row has a gap after it: append, then insert above", None, [ head + rows + "\n\n"; head + rows + "\n\n" + tail + "\n\n"; head + above + rows + "\n\n" + tail + "\n\n" ], []
+    "a comment line above after an append", None, [ head + rows; head + rows + tail; head + "// a line\n" + rows + tail ], []
+    "append, then remove the appended row, then insert above", None, [ head + rows; head + rows + tail; head + rows; head + above + rows ], []
+    "inside a module: append, then insert above", None,
+    [ "module Deps.D\n\nmodule M =\n    let a = 1\n\n    let b = a\n\nlet z = 1\n"
+      "module Deps.D\n\nmodule M =\n    let a = 1\n\n    let b = a\n\n    let c = b\n\nlet z = 1\n"
+      "module Deps.D\n\nmodule M =\n    let inserted = 0\n\n    let a = 1\n\n    let b = a\n\n    let c = b\n\nlet z = 1\n" ], [] ]
+
+/// Every order of two kinds of edit, as texts built from the rows and the lines between them.
+let private editPairs : (string * string option * string list * string list) list =
+  let render (top: string list, rows: string list) = "module Deps.D\n\n" + String.concat "\n" (top @ rows) + "\n"
+  let start = [], [ "let f (x: int) = x + 1\n"; "let first = f 1\n"; "let second = \"two\"\n"; "let third = first\n" ]
+
+  let ops : (string * ((string list * string list) -> (string list * string list))) list =
+    [ "append", (fun (t, r) -> t, r @ [ $"let added%d{r.Length} = 1\n" ])
+      "remove last", (fun (t, r) -> t, List.truncate (r.Length - 1) r)
+      "row above", (fun (t, r) -> t, $"let above%d{r.Length} = \"s\"\n" :: r)
+      "comment above", (fun (t, r) -> "// a line\n" :: t, r)
+      "comment between", (fun (t, r) -> t, List.insertAt 2 "// between\n" r)
+      "body", (fun (t, r) -> t, r |> List.map (fun x -> x.Replace("f 1", "f 2").Replace("f 2", "f 3"))) ]
+
+  [ for name1, op1 in ops do
+        for name2, op2 in ops do
+            let one = op1 start
+            let two = op2 one
+            $"%s{name1}, then %s{name2}", None, [ render start; render one; render two ], [] ]
+
+let private all = scenarios @ scenarios2 @ editOrders @ editPairs
 
 [<Tests>]
 let tests =

@@ -9,6 +9,7 @@ open Ionide.LanguageServerProtocol
 open Ionide.LanguageServerProtocol.JsonRpc
 open Ionide.LanguageServerProtocol.Server
 open Ionide.LanguageServerProtocol.Types
+open Newtonsoft.Json.Linq
 open Rfs.Checker
 
 /// Ported from FSAC's `Helpers` (Common.fs)
@@ -32,6 +33,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable automaticInit = false
     let mutable peekDepth = 2
     let mutable excludedDirs: string list = [ ".git"; "node_modules"; ".ionide" ]
+    let mutable canRegisterWatchers = false
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
@@ -66,7 +68,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                 match root ex with
                 | :? OperationCanceledException
-                | :? ObjectDisposedException -> return Ok none
+                | :? ObjectDisposedException
+                // A newer parse replaced the file's #line directives while its results were built: an edit got there first
+                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
                 | e ->
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
                     return LspResult.internalError e.Message
@@ -82,6 +86,40 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             with ex ->
                 eprintfn "[ranvierautocomplete] automatic workspace load failed: %O" ex
         }
+
+    /// Asks the client to report what changes on disk: only an editor knows about a `git pull` or a generator run. A client
+    /// that can't register watchers reports what it chooses to, if anything, and the rest stays stale until a restart.
+    let registerWatchers () =
+        if canRegisterWatchers then
+            let watcher (glob: string) = JObject(JProperty("globPattern", glob))
+
+            let options =
+                JObject(
+                    JProperty(
+                        "watchers",
+                        JArray(
+                            [ "**/*.{fs,fsi}"; "**/*.fsproj"; "**/*.props"; "**/*.targets"; "**/project.assets.json" ]
+                            |> List.map watcher
+                        )
+                    )
+                )
+
+            let registration: Registration =
+                { Id = "rfs-watched-files"
+                  Method = "workspace/didChangeWatchedFiles"
+                  RegisterOptions = Some(options :> JToken) }
+
+            async {
+                try
+                    match! client.ClientRegisterCapability { Registrations = [| registration |] } with
+                    | Ok() -> ()
+                    | Error e -> eprintfn "[ranvierautocomplete] the client refused the file watchers: %s" e.Message
+                with ex ->
+                    eprintfn "[ranvierautocomplete] registering the file watchers failed: %O" ex
+            }
+            |> Async.Start
+        else
+            eprintfn "[ranvierautocomplete] the client cannot register file watchers: changes on disk it does not report go unseen"
 
     member _.Client = client
     member _.Host = host
@@ -136,6 +174,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     | v -> excludedDirs <- [ for d in v -> d.ToObject<string>() ]
                 | _ -> ()
 
+                canRegisterWatchers <-
+                    p.Capabilities.Workspace
+                    |> Option.bind _.DidChangeWatchedFiles
+                    |> Option.bind _.DynamicRegistration
+                    |> Option.defaultValue false
+
                 let capabilities =
                     { ServerCapabilities.Default with
                         TextDocumentSync =
@@ -163,6 +207,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.Initialized(_) =
             async {
+                registerWatchers ()
+
                 match rootPath, automaticInit with
                 | Some root, true ->
                     // The load takes as long as the cold checks; the connection keeps serving meanwhile
@@ -226,6 +272,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         [ for c in p.Changes -> Paths.ofUri c.Uri, (c.Type = FileChangeType.Deleted) ]
 
                     do! workspace.FilesChanged changes |> Async.AwaitTask
+
+                    for path, deleted in changes do
+                        if not deleted then
+                            publisher.DiskChanged path
                 with ex ->
                     eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
             }

@@ -783,9 +783,10 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                     row, c)
 
     /// `previous` shifted to `decl`, the same declaration at another line (W1), or None when the checker refuses the
-    /// shift. Off the graph thread, under the FileStart's lock.
+    /// shift. Off the graph thread, under the FileStart's lock. From the origin, which the row keeps: Shift points each
+    /// result it walks at the latest, and starting from `previous` the origin would hold every shift through the next.
     member _.TryShift(previous: RowCheck, decl: ParsedDeclaration) : RowCheck option =
-        match DeclarationChecker.Shift(previous.Result, decl) with
+        match DeclarationChecker.Shift(previous.Origin.Result, decl) with
         | ValueSome result ->
             Some(RowCheck(previous.Key, decl, previous.Start, result, previous.EnvBefore, previous.Named, previous.Identity, previous.Later, previous.Origin).KeepingWindowOf previous)
         | ValueNone -> None
@@ -802,7 +803,7 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                 let c = previous.Rows[r.Key]
 
                 Nodes.same c.Decl decl
-                || (match DeclarationChecker.Shift(c.Result, decl) with
+                || (match DeclarationChecker.Shift(c.Origin.Result, decl) with
                     | ValueSome result ->
                         rows[r.Key] <- RowCheck(c.Key, decl, c.Start, result, c.EnvBefore, c.Named, c.Identity, c.Later, c.Origin).KeepingWindowOf c
                         true
@@ -1046,7 +1047,7 @@ module internal FileNodes =
 
         // Walks the file: a closed window is passed over, a flagged row that leads none starts one, and nothing is known
         // after a window that has not closed. A window whose leader is no longer flagged goes.
-        createEffect (fun () ->
+        GraphEffects.guarded (fun () ->
             if driven.Value then
                 let order = shared.Order.Value
                 let known = windows.Value
@@ -1186,7 +1187,7 @@ module internal FileNodes =
         let premiseChecked = HashSet<RowCheck>(HashIdentity.Reference)
         let unresolved = createSignal (ValueNone: DeclSetup voption)
 
-        createEffect (fun () ->
+        GraphEffects.guarded (fun () ->
             if driven.Value then
                 let version = file.Text.Value.Version
 
@@ -1200,7 +1201,8 @@ module internal FileNodes =
                                 ValueNone
 
                         let live = HashSet<DeclarationKey>(f.Checks |> Seq.map (fun (row, _) -> row.Key), HashIdentity.Structural)
-                        premiseChecked.RemoveWhere(fun c -> not (live.Contains c.Key)) |> ignore
+                        // Only the finish's own: a check replaced by a re-check or a shift holds its sink, environment and tree
+                        premiseChecked.IntersectWith(f.Checks |> Seq.map snd)
 
                         for row, c in f.Checks do
                             row.TypedSignal.Value <- NameIndex.typedKeys path row.Key c.Result.TypedUses

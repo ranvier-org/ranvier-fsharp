@@ -125,6 +125,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     let documents = ConcurrentDictionary<string, string>()
     let diagnostics = Broadcast<int64 * string * int option * Diagnostic list>()
     let notifications = Broadcast<Received>()
+    let serverRequests = ConcurrentQueue<JsonObject>()
     let mutable nextId = 0
     [<VolatileField>]
     let mutable settings: JsonNode = null
@@ -260,6 +261,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                 let method = m["method"]
 
                 if not (isNull method) && not (isNull id) then
+                    serverRequests.Enqueue m
                     do! answer m
                 elif not (isNull method) then
                     if method.GetValue<string>() = "textDocument/publishDiagnostics" then
@@ -336,13 +338,18 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
         | None -> -1
 
     /// Completes with the time from sending `initialize` to its response, then sends `initialized`.
-    member _.Initialize(rootUri: string, initOptions: JsonNode) : Task<TimeSpan> =
+    /// `watchers` declares what Ionide 8.1.0 declares for file watchers. The harness leaves it off.
+    member _.Initialize(rootUri: string, initOptions: JsonNode, ?watchers: bool) : Task<TimeSpan> =
         task {
             let capabilities =
                 JsonNode.Parse
                     """{"textDocument":{"synchronization":{"didSave":true},"publishDiagnostics":{"versionSupport":true}},
                         "workspace":{"configuration":true,"workspaceFolders":true,"didChangeConfiguration":{"dynamicRegistration":true}},
                         "window":{"workDoneProgress":true}}"""
+
+            if defaultArg watchers false then
+                capabilities["workspace"].["didChangeWatchedFiles"] <-
+                    JsonNode.Parse """{"dynamicRegistration":true,"relativePatternSupport":true}"""
 
             let parameters =
                 Protocol.obj' [ "processId", JsonValue.Create Environment.ProcessId
@@ -432,6 +439,9 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
 
     /// Receive timestamp (Stopwatch ticks), file path, document version if the server sent one, diagnostics.
     member _.Diagnostics: IObservable<int64 * string * int option * Diagnostic list> = diagnostics
+
+    /// Every request the server sent, in order.
+    member _.ServerRequests: JsonObject[] = serverRequests.ToArray()
 
     /// Every server notification, publishDiagnostics included.
     member _.Notifications: IObservable<Received> = notifications

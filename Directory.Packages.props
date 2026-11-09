@@ -6,6 +6,7 @@
     <PackageVersion Include="FSharp.Core" Version="10.1.403" />
     <PackageVersion Include="Ionide.LanguageServerProtocol" Version="0.7.0" />
     <PackageVersion Include="Ionide.ProjInfo" Version="0.75.3" />
+    <PackageVersion Include="Microsoft.Build" Version="17.14.28" />
     <PackageVersion Include="Microsoft.NET.StringTools" Version="17.4.0" />
     <PackageVersion Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.750501" />
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />

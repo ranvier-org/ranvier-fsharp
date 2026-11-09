@@ -448,7 +448,7 @@ let tests =
                           let! count = task { let! results = s.Graph.Results a |> settle in return results.Count }
                           Expect.isGreaterThan count 0 "declaration results while promoted"
                           let! held = s.Graph.DeclarationObjects a
-                          Expect.equal held.Length 3 "a declaration result, its environment and its FileStart"
+                          Expect.equal held.Length 4 "a declaration check, its environment, its FileStart and its result"
                           s.Graph.Demote a
                           let! all = s.Graph.AllDiagnostics() |> settle
                           do! expectOracle s all "the kept result after demotion"
@@ -457,7 +457,7 @@ let tests =
                           // nodes publish, so its log is dropped first.
                           do! dropTrace s
                           let gone = collected held
-                          Expect.equal gone [ true; true; true ] $"the declaration result, its environment and its FileStart are collected: %A{gone}"
+                          Expect.equal gone [ true; true; true; true ] $"the declaration check, its environment, its FileStart and its result are collected: %A{gone}"
 
                           let! (failure: exn option) =
                               task {
@@ -896,7 +896,7 @@ let tests =
                       task {
                           do! promote s [ a ]
                           let! held = s.Graph.DeclarationObjects a
-                          Expect.equal held.Length 3 "a declaration result, its environment and its FileStart"
+                          Expect.equal held.Length 4 "a declaration check, its environment, its FileStart and its result"
                           let roots = s.Graph.DeclarationRoots
                           let original = s.Texts[a]
                           let! r = edit s a (original.Replace("module Deps.A", "module rec Deps.A"))
@@ -904,12 +904,75 @@ let tests =
                           do! expectOracle s r.Diagnostics "module rec A.fs"
                           do! dropTrace s
                           let gone = collected held
-                          Expect.equal gone [ true; true; true ] $"the declaration result, its environment and its FileStart are collected: %A{gone}"
+                          Expect.equal gone [ true; true; true; true ] $"the declaration check, its environment, its FileStart and its result are collected: %A{gone}"
                           let! r = edit s a original
                           let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
                           Expect.equal mode Declarations "still wanted: built again once it has declarations"
                           Expect.equal s.Graph.DeclarationRoots (roots + 1L) "with new declaration nodes"
                           do! expectOracle s r.Diagnostics "A.fs back to its declarations"
+                      })
+          }
+
+          // C1: the D1 comparison remembers which checks it has seen. It must not keep the ones a later edit replaced.
+          testTask "a row's replaced checks are collected while the file stays promoted" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let! held = s.Graph.DeclarationObjects a
+                          let firstCheck = held.Head
+                          let original = s.Texts[a]
+
+                          for i in 3..6 do
+                              let! r = edit s a (original.Replace("(baseValue + 1) * 2", $"(baseValue + 1) * %d{i}"))
+                              do! expectOracle s r.Diagnostics "the edit"
+
+                          let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "still promoted"
+                          do! dropTrace s
+                          Expect.equal (collected [ firstCheck ]) [ true ] "the row's first check is collected"
+                      })
+          }
+
+          testTask "a row's earlier shifts are collected while the file stays promoted" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let original = s.Texts[a]
+                          let lines (n: int) = original.Replace("let baseValue", String('\n', n) + "let baseValue")
+                          let! _ = edit s a (lines 1)
+                          let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "promoted after the first shift"
+                          let! held = s.Graph.DeclarationObjects a
+                          let firstShift = held[3]
+
+                          for n in 2..5 do
+                              let! r = edit s a (lines n)
+                              do! expectOracle s r.Diagnostics "the shift"
+
+                          do! dropTrace s
+                          Expect.equal (collected [ firstShift ]) [ true ] "the row's first shifted result is collected"
+                      })
+          }
+
+          testTask "after a restart that failed, waits fail instead of hanging" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          s.Graph.FailRestart(InvalidOperationException "restart boom")
+
+                          let! (failure: exn option) =
+                              task {
+                                  try
+                                      let! _ = s.Graph.ReadFile(a, (fun v -> v.Version), CancellationToken.None) |> settle
+                                      return None
+                                  with ex ->
+                                      return Some ex
+                              }
+
+                          Expect.isTrue (failure |> Option.exists (fun e -> (string e).Contains "restart boom")) $"the read says why: %A{failure}"
                       })
           }
 

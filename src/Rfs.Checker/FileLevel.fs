@@ -25,6 +25,8 @@ type internal KeptResult =
     { Version: int64
       /// The setup the finish was built on: kept only while the current one has the same files and fingerprints
       Key: SetupKey
+      /// The parse the finish was of. The setup's is older once a body was edited.
+      Parsed: Parsed
       Result: FileResult
       /// The lock of the FileStart it was finished on: a flight still running on that start can change the types it holds
       Lock: AsyncReaderWriterLock }
@@ -314,7 +316,7 @@ module internal WholeFile =
         let activate () =
             // Keeps the published result checked, so files that do not depend on each other check in parallel; reports
             // the declaration results of a published finish of the current text
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 match published.Value with
                 | Whole ->
                     whole.TryValue |> ignore
@@ -327,7 +329,7 @@ module internal WholeFile =
                 | Kept _ -> ())
 
             // Makes the declaration nodes once a wanted file is known to have more than one declaration
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 if wanted.Value then
                     let struct (_, count) = rows.Value
 
@@ -355,7 +357,7 @@ module internal WholeFile =
 
             // Promotes the file once its build has finished for its current text and setup; records a failed build, so
             // the builder moves on to the next wanted file
-            createEffect (fun () ->
+            GraphEffects.guarded (fun () ->
                 if driven.Value then
                     match decl.Value with
                     | ValueSome g when stateOf () = Building ->
@@ -446,6 +448,7 @@ module internal WholeFile =
                             ValueSome
                                 { Version = f.Version
                                   Key = f.Start.Setup.Key
+                                  Parsed = f.Parsed
                                   Result = f.FileResult
                                   Lock = f.Start.Lock }
                         | _ -> ValueNone
@@ -503,7 +506,7 @@ module internal WholeFile =
                 match published.TryValue with
                 | Ready(ByDeclaration(_, f)) ->
                     let _, c = Array.last f.Checks
-                    [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start ]
+                    [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start; WeakReference c.Result ]
                 | _ -> []
 
             member _.Activate() = activate ()
@@ -523,7 +526,7 @@ module internal WholeFile =
                   | ValueSome(Kept k) ->
                       keptAt version k
                       |> ValueOption.map (fun r ->
-                          { Parsed = k.Key.Parsed
+                          { Parsed = k.Parsed
                             Result = r
                             Key = k.Key
                             Lock = ValueSome k.Lock
@@ -590,7 +593,7 @@ module internal WholeFile =
             member _.MayBuild = false
             member _.DeclarationObjects() = []
             member _.Activate() =
-                createEffect (fun () -> result.TryValue |> ignore)
+                GraphEffects.guarded (fun () -> result.TryValue |> ignore)
 
           interface ISignatureFile with
               member _.LatestCheck version = settledAt project file result version |> ValueOption.map snd }
