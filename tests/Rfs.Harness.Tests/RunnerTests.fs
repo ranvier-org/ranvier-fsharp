@@ -90,9 +90,14 @@ let private afterOpen (server: FakeServer) path =
         do! publish server path (Some 0)
     }
 
+// These tests assert elapsed milliseconds against delays the in-process server also waits on, so both sit on
+// the same thread pool. Run beside the other lists (about 20 pool threads blocked or queued, 10-20 work items
+// pending) a 150 ms server delay took 430 ms and a 400 ms quiet window closed before the second publish arrived.
+// Synchronous sequencing runs them with nothing else on the pool.
 [<Tests>]
 let tests =
-    testList
+    testSequenced
+    <| testList
         "Runner"
         [ test "latency waits for matching version" {
               let result, _, _ =
