@@ -23,10 +23,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable disposed = 0
     let workspace = new Workspace(host, client)
     let documents = Documents()
-    let publisher = new Publisher(workspace, client, documents)
+    let publisher = new Publisher(host, workspace, client, documents)
 
     do
-        workspace.OnSetText(fun graph path version lspVersion -> documents.Record(graph, path, version, lspVersion))
         workspace.OnLoaded publisher.Loaded
 
     let mutable rootPath: string option = None

@@ -116,7 +116,7 @@ let fixTests =
               do! eventually "the last publish" (fun () -> hasVersion s a 501)
           }
 
-          testTask "a document keeps one version per graph, not one per edit" {
+          testTask "a document keeps one row, one last list and one source, not one per edit" {
               let! s = startSession () |> within
               use _ = disposing s
               do! openAll s [ a ]
@@ -126,7 +126,8 @@ let fixTests =
                   do! s.Lsp.DidChange(a, v, atEnd s a "\n// ")
 
               do! eventually "the last edit's publish" (fun () -> hasVersion s a 5)
-              Expect.equal s.Server.Documents.VersionEntries 1 "one version for one graph"
+              let! retained = s.Server.Publisher.Retained()
+              Expect.equal retained 3 "one row, one last list, one source"
           }
 
           testTask "a foreign publish does not suppress the file's own" {
@@ -134,18 +135,19 @@ let fixTests =
               use _ = disposing s
               do! openAll s [ a ]
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
-              let hold = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              let hold = new ManualResetEventSlim false
               let entered = ref false
+              let armed = ref true
 
-              s.Server.Publisher.BeforePublish(fun lsp ->
-                  if lsp = 1 then
+              // Holds version 1's parse, so its own list is decided after the foreign one is queued
+              (s.Server.Workspace.ProjectOf a).Value.OnFlight(fun kind path _ ->
+                  if armed.Value && kind = "parse" && String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
+                      armed.Value <- false
                       entered.Value <- true
-                      hold.Task :> Task
-                  else
-                      Task.CompletedTask)
+                      hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
 
               do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
-              do! eventually "version 1 settled" (fun () -> entered.Value)
+              do! eventually "version 1's parse" (fun () -> entered.Value)
               let counts = s.Counts.Count
 
               let position = { Line = 0; Character = 0 }
@@ -160,7 +162,8 @@ let fixTests =
 
               // Version 1 is the document's current one while its own result is held
               do! s.Server.Publisher.PublishForeign(a, [ foreign ])
-              hold.SetResult()
+              do! eventually "the foreign list" (fun () -> publishesOf s a |> Array.exists (fun (_, v, d) -> v = Some 1 && d.Length = 1 && d.Head.Code = "FS9999"))
+              hold.Set()
               let! expected = oracleFor s [ a ] a
               Expect.isFalse (List.isEmpty expected) "the edit breaks A"
               do! eventually "A's own diagnostics" (fun () -> equalsOracle expected (lastOf s a))
@@ -232,7 +235,7 @@ let fixTests =
               Expect.equal s.Server.Publisher.RetainedGraphs before "state is kept for the live graph only"
           }
 
-          testTask "rapid edits: an older result held at the gate is not published" {
+          testTask "rapid edits: a list held in the outbox is replaced by a newer version's" {
               let! s = startSession () |> within
               use _ = disposing s
               do! openAll s [ a ]
@@ -253,9 +256,11 @@ let fixTests =
               do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
               do! eventually "version 1 settled" (fun () -> entered.ContainsKey 1)
               do! s.Lsp.DidChange(a, 2, replace s a "baseValue = \"s\"" "baseValue = 11")
-              do! eventually "version 2 settled" (fun () -> entered.ContainsKey 2)
+              // Version 2's list is queued behind the held one: its effect ran in the pump that settled it
+              let! _ = (s.Server.Workspace.ProjectOf a).Value.Diagnostics a |> within
+              do! s.Server.Publisher.Barrier()
               holds[1].SetResult()
-              do! Task.Delay 300
+              do! eventually "version 2 at the hook" (fun () -> entered.ContainsKey 2)
               holds[2].SetResult()
               do! eventually "version 2 published" (fun () -> hasVersion s a 2)
               Expect.isFalse (hasVersion s a 1) "the older result is dropped"
@@ -263,16 +268,20 @@ let fixTests =
 
           testTask "typing during promotion" {
               let hold = new ManualResetEventSlim false
+              let building = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
+              // Promotion is held inside its build, and the edits are sent once it is there
               let prepare (server: RanvierServer) =
                   server.Workspace.OnGraphCreated(fun graph ->
                       graph.OnBeginFile(fun path ->
                           if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
+                              building.TrySetResult() |> ignore
                               hold.Wait(TimeSpan.FromSeconds 90.) |> ignore))
 
               let! s = startSessionWith depsDir [ depsProject ] true prepare |> within
               use _ = disposing s
               do! openAll s [ a ]
+              do! building.Task.WaitAsync(TimeSpan.FromSeconds 120.)
               let graph = (s.Server.Workspace.ProjectOf a).Value
               let promoted = graph.WhenPromoted(a, CancellationToken.None)
 
@@ -331,3 +340,102 @@ let fixTests =
               do! eventually "the empty publish" (fun () -> (lastOf s cFile).IsEmpty)
           }
         ]
+
+/// The index of the first publish of `path` at `version`, in arrival order
+let private indexOf (s: Session) (path: string) (version: int option) =
+    s.Published.ToArray()
+    |> Array.findIndex (fun (p, v, _) -> v = version && String.Equals(p, LspClient.NormalizePath path, StringComparison.OrdinalIgnoreCase))
+
+[<Tests>]
+let rowTests =
+    testSequenced
+    <| testList
+        "Publish rows"
+        [ testTask "nothing is published for a closed document after its empty list" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              // Closed before version 1 has settled: the settled result comes after the close
+              do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
+              do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri a) ])
+              do! eventually "the empty publish" (fun () -> publishesOf s a |> Array.exists (fun (_, v, _) -> v = None))
+              let! _ = graph.Diagnostics a |> within
+              do! s.Server.Publisher.Flushed()
+              do! Task.Delay 500
+              do! s.Server.Publisher.Flushed()
+              let after = publishesOf s a |> Array.skipWhile (fun (_, v, _) -> v <> None)
+              Expect.equal after.Length 1 "the empty list is the last publish"
+              let _, _, last = after[0]
+              Expect.isEmpty last "and it is empty"
+          }
+
+          testTask "publishes leave in the order they were queued, across two files" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a; b ]
+              do! eventually "the open publishes" (fun () -> hasVersion s a 0 && hasVersion s b 0)
+              let hold = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              let entered = ref false
+
+              s.Server.Publisher.BeforePublish(fun lsp ->
+                  if lsp = 1 then
+                      entered.Value <- true
+                      hold.Task
+                  else
+                      Task.CompletedTask)
+
+              do! s.Lsp.DidChange(a, 1, atEnd s a "\n// a")
+              do! eventually "A's list at the hook" (fun () -> entered.Value)
+              do! s.Lsp.DidChange(b, 7, atEnd s b "\n// b")
+              let! _ = (s.Server.Workspace.ProjectOf b).Value.Diagnostics b |> within
+              do! s.Server.Publisher.Barrier()
+              do! Task.Delay 300
+              Expect.isFalse (hasVersion s b 7) "B's list waits behind A's"
+              hold.SetResult()
+              do! eventually "both lists" (fun () -> hasVersion s a 1 && hasVersion s b 7)
+              Expect.isLessThan (indexOf s a (Some 1)) (indexOf s b (Some 7)) "A's list, queued first, arrives first"
+          }
+
+          testTask "a fault in one project leaves another's publishes alone" {
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let first = (s.Server.Workspace.OwnersOf shared).Head
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              Expect.isFalse (obj.ReferenceEquals(first, second)) "S is published from P1, X from P2"
+              let hold = new ManualResetEventSlim false
+              let entered = ref false
+              let armed = ref true
+
+              // X's edit is waiting to settle when P1 fails
+              second.OnFlight(fun kind path _ ->
+                  if armed.Value && kind = "parse" && path.EndsWith "X.fs" then
+                      armed.Value <- false
+                      entered.Value <- true
+                      hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+              do! s.Lsp.DidChange(x, 1, replace s x "let y : int" "let y : string")
+              do! eventually "X's parse" (fun () -> entered.Value)
+              do! s.Server.Publisher.Barrier()
+              do! Task.Delay 200
+              first.FailRestart(InvalidOperationException "an injected restart fault")
+              do! s.Server.Publisher.Barrier()
+              do! s.Server.Publisher.Barrier()
+              hold.Set()
+              let! all = s.Oracle.Check p2 (Map [ x, s.Lsp.Text x ])
+              let expected = all |> List.filter (fun d -> d.File.EndsWith "X.fs")
+              Expect.isFalse (List.isEmpty expected) "the edit breaks X"
+              do! eventually "X's version 1" (fun () -> hasVersion s x 1)
+              Expect.isEmpty (Diagnostics.compare expected (lastOf s x)) "X equals the oracle"
+              let before = (publishesOf s shared).Length
+              do! s.Lsp.DidChange(shared, 1, atEnd s shared "\n// s")
+              do! s.Server.Publisher.Flushed()
+              do! Task.Delay 1000
+              do! s.Server.Publisher.Flushed()
+              Expect.equal (publishesOf s shared).Length before "S, in the failed project, gets nothing new"
+          } ]

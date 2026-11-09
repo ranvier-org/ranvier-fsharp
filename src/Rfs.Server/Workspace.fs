@@ -583,7 +583,14 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     /// The editor closed the document: the file on disk is the file's text again, which the caller reads
     /// Returns the graphs that own the file. A file that is gone from disk keeps its last text in the graph: the project
     /// no longer loads without it, and the watched-file change that reloads the project settles that.
-    member _.Close(path: string) : ProjectGraph list =
+    member this.Close(path: string) : ProjectGraph list =
+        this.Close(path, Workspace.ReadOnClose path)
+
+    /// <summary>
+    /// <c>Close</c> with the text on disk read already (<c>ReadOnClose</c>), so the caller may be the graph thread.
+    /// <c>None</c>, a file that could not be read, keeps the file's last text in the graphs.
+    /// </summary>
+    member _.Close(path: string, diskText: string option) : ProjectGraph list =
         let path = Path.GetFullPath path
 
         // One critical section with loadGraph and Open, so the disk text cannot overtake a newer open text
@@ -592,13 +599,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
             [ for e in Seq.toArray entries.Values do
                   if isSource e.Spec path then
-                      try
-                          e.Graph.SetText(path, File.ReadAllText path) |> ignore
-                      with
-                      | :? IOException
-                      | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read on close: %s{ex.Message}"
-
+                      diskText |> Option.iter (fun t -> e.Graph.SetText(path, t) |> ignore)
                       yield e.Graph ])
+
+    /// The text of `path` on disk, for <c>Close</c>; None, and a line on stderr, when it can't be read
+    static member ReadOnClose(path: string) : string option =
+        try
+            Some(File.ReadAllText(Path.GetFullPath path))
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException as ex ->
+            eprintfn "[ranvierautocomplete] %s could not be read on close: %s" path ex.Message
+            None
 
     /// Runs `hook` when a load or reload has finished, whether its projects loaded or not.
     member internal _.OnLoadEnd(hook: unit -> unit) : unit = onLoadEndHook <- hook

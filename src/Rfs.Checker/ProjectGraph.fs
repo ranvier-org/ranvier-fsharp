@@ -585,6 +585,19 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         settled (fun () ->
             readSettled i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d))))
 
+    /// <summary>
+    /// Graph thread, tracked: the file's diagnostics with the version of its text, as <c>SettledDiagnostics</c> gives
+    /// them, or ValueNone while they are not settled and once the graph is disposed. An effect that reads it runs again
+    /// when a guard that failed may pass. Raises InvalidOperationException when the file's check, or the project's
+    /// restart, failed.
+    /// </summary>
+    member _.TrySettledDiagnostics(file: string) : struct (int64 * FSharpDiagnostic[]) voption =
+        if Volatile.Read &disposed <> 0 then
+            ValueNone
+        else
+            let i = indexOf file
+            readSettled i (fun f version -> f.Settled version |> ValueOption.map (fun d -> struct (version, d)))
+
     /// The file's diagnostics once its result is for its latest text and the files it depends on are settled.
     member _.Diagnostics(file: string) : Task<FSharpDiagnostic[]> =
         let i = indexOf file
