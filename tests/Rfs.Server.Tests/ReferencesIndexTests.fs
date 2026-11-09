@@ -15,7 +15,7 @@ open Rfs.Server.Tests.PublishTests
 let private within (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
 /// A project of the given files in a directory of its own, with a scope over it alone.
-let private withProject (promote: bool) (files: (string * string) list) (body: ProjectGraph -> (string -> string) -> References.Scope -> Task<unit>) : Task<unit> =
+let private withProjectOn (promote: bool) (files: (string * string) list) (body: GraphHost -> ProjectGraph -> (string -> string) -> References.Scope -> Task<unit>) : Task<unit> =
     task {
         let dir = Directory.CreateTempSubdirectory "rfs-refs-index-"
 
@@ -49,7 +49,7 @@ let private withProject (promote: bool) (files: (string * string) list) (body: P
                   IsLoading = fun () -> false
                   BeforeRead = fun _ -> Task.CompletedTask }
 
-            do! body g path scope
+            do! body host g path scope
             g.Dispose()
         finally
             try
@@ -57,6 +57,46 @@ let private withProject (promote: bool) (files: (string * string) list) (body: P
             with :? IOException | :? UnauthorizedAccessException ->
                 ()
     }
+
+let private withProject (promote: bool) (files: (string * string) list) (body: ProjectGraph -> (string -> string) -> References.Scope -> Task<unit>) : Task<unit> =
+    withProjectOn promote files (fun _ g path scope -> body g path scope)
+
+let private collected (refs: WeakReference list) =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+
+    refs |> List.map (fun r -> not r.IsAlive)
+
+/// Drops the graph's event log, which a Debug build of Ranvier (RANVIER_TRACE) keeps with every value its nodes
+/// published: it would keep everything the graph ever computed alive. A no-op for an untraced Ranvier.
+let private dropTrace (host: GraphHost) : Task =
+    host.Read(fun () ->
+        let graph = host.Graph
+
+        let traceModule =
+            [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+            |> List.tryPick (fun name ->
+                match typeof<Ranvier.Graph>.Assembly.GetType name with
+                | null -> None
+                | t -> Option.ofObj (t.GetMethod "lastSeq") |> Option.map (fun m -> t, m))
+
+        match traceModule with
+        | Some(t, lastSeq) ->
+            let last = lastSeq.Invoke(null, [| box graph |])
+            t.GetMethod("checkpoint").Invoke(null, [| box graph; last; box "dropped" |]) |> ignore
+        | None -> ())
+
+/// A weak reference to the file's published result, made off this state machine so no local of it holds the result
+let private resultOf (g: ProjectGraph) (file: string) : WeakReference =
+    Task.Run(fun () -> g.ReadFile(file, (fun view -> WeakReference view.Result), CancellationToken.None).GetAwaiter().GetResult()).Result
+
+/// The same, through the file's index, which a read builds
+let private indexedResultOf (g: ProjectGraph) (file: string) : WeakReference =
+    Task.Run(fun () ->
+        let read = g.ReadUses(file, CancellationToken.None).GetAwaiter().GetResult()
+        WeakReference read.Result).Result
 
 let private aText = "module Proj.A\n\ntype T = { F: int }\n\nlet shared = 1\n"
 let private bText = "module Proj.B\n\nlet b = Proj.A.shared\n"
@@ -237,6 +277,52 @@ let tests =
                           let! _ = g.AllDiagnostics() |> within
                           let! (read: UsesRead) = reading |> within
                           Expect.isGreaterThan read.Uses.Keys 3000 "it has the file's uses"
+                      })
+          }
+
+          testTask "a superseded result is collected after its index was read, as one no index was read of is" {
+              do!
+                  withProjectOn false threeFiles (fun host g path _ ->
+                      task {
+                          let b, c = path "B.fs", path "C.fs"
+                          let indexed = indexedResultOf g b
+                          let control = resultOf g c
+
+                          for n in 1..2 do
+                              g.SetText(b, bText + $"\nlet more = %d{n}\n") |> ignore
+                              g.SetText(c, cText + $"\nlet more = %d{n}\n") |> ignore
+                              let! _ = g.AllDiagnostics() |> within
+                              ()
+
+                          do! dropTrace host
+                          Expect.equal (collected [ control ]) [ true ] "the control: a result nothing indexed is collected"
+                          Expect.equal (collected [ indexed ]) [ true ] "the indexed result is collected too"
+                          let! (read: UsesRead) = g.ReadUses(b, CancellationToken.None) |> within
+                          Expect.isGreaterThan read.Uses.Keys 0 "and the index answers for the new result"
+                      })
+          }
+
+          testTask "demoting a file after a request releases its declaration state, as for a file no index was read of" {
+              let twoRows (t: string) = t + "\nlet second = 2\n"
+
+              do!
+                  withProjectOn true [ "A.fs", aText; "B.fs", twoRows bText; "C.fs", twoRows cText ] (fun host g path _ ->
+                      task {
+                          let b, c = path "B.fs", path "C.fs"
+                          indexedResultOf g b |> ignore
+                          let! (indexed: WeakReference list) = g.DeclarationObjects b |> within
+                          let! (control: WeakReference list) = g.DeclarationObjects c |> within
+                          Expect.equal indexed.Length 3 "B's declaration state"
+                          Expect.equal control.Length 3 "C's declaration state"
+
+                          for f in [ b; c ] do
+                              g.Demote f
+                              g.SetText(f, twoRows (if f = b then bText else cText) + "\nlet third = 3\n") |> ignore
+
+                          let! _ = g.AllDiagnostics() |> within
+                          do! dropTrace host
+                          Expect.equal (collected control) [ true; true; true ] "the control: C's declaration state is collected"
+                          Expect.equal (collected indexed) [ true; true; true ] "B's too, its index read before"
                       })
           }
 

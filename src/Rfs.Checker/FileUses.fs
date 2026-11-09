@@ -41,14 +41,11 @@ type KeyUses =
 /// no check alive.
 /// </summary>
 [<Sealed>]
-type FileUses internal (source: WeakReference, version: int64, byKey: Dictionary<string, KeyUses>) =
+type FileUses internal (source: WeakReference, byKey: Dictionary<string, KeyUses>) =
     static let nothing = { Hits = [||]; Definitions = [||] }
 
     /// The result or signature this was made from, while something else holds it. Weak: holding it would keep the check
     member internal _.Source = source
-
-    /// The text version it was made at
-    member _.Version = version
 
     /// What the file says of exactly this key
     member _.Of(key: string) : KeyUses =
@@ -143,7 +140,10 @@ module SymbolUses =
     /// compiler looks up `Bind`, `Dispose`, `GetEnumerator`, `Item`, `GetSlice`, `op_Implicit` and so on by name, and a
     /// custom operation has another spelling; types, modules and namespaces, through abbreviations, `FooAttribute` and
     /// constructors; active patterns; anything not a plain identifier, as an operator is spelled otherwise than its name; a
-    /// value of a `NumericLiteralQ` module, which `1Q` calls with no text. A case's generated `IsCase` has a key of its own.
+    /// value of a `NumericLiteralQ` module, which `1Q` calls with no text. That guard is by the declaring module's name, and a
+    /// module abbreviation (`module NumericLiteralZ = Other`) gets past it, as the compiler resolves the module by its name
+    /// in the environment: it is safe only because FCS records the module at the literal and not the value. The shape
+    /// "written by name" pins that. A case's generated `IsCase` has a key of its own.
     /// FSharp.Core's values and cases (`Some` for an optional argument, `GetArraySlice` for a slice) are reached from no
     /// text too: `References` applies this only to what a loaded project defines.
     /// </remarks>
@@ -171,7 +171,7 @@ module SymbolUses =
 
         name |> Option.filter plainIdentifier
 
-    let private build (source: obj) (version: int64) (uses: seq<struct (string * range * bool * range voption)>) =
+    let private build (source: obj) (uses: seq<struct (string * range * bool * range voption)>) =
         let hits = Dictionary<string, List<struct (range * bool)>>()
         let definitions = Dictionary<string, List<range>>()
 
@@ -197,10 +197,10 @@ module SymbolUses =
                     | true, d -> d.ToArray()
                     | _ -> [||] }
 
-        FileUses(WeakReference source, version, byKey)
+        FileUses(WeakReference source, byKey)
 
     /// Indexes an implementation file's check.
-    let internal ofCheck (source: obj) (version: int64) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
+    let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
         let keys = keysIn check ct
 
         check.GetAllUsesOfAllSymbolsInFile ct
@@ -216,10 +216,10 @@ module SymbolUses =
                         ValueNone
 
                 struct (key, u.Range, u.IsFromDefinition, location)))
-        |> build source version
+        |> build source
 
     /// Indexes what a signature file's check resolved. It has no definitions to tell apart.
-    let internal ofSignature (source: obj) (version: int64) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
+    let internal ofSignature (source: obj) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
         // As in an implementation file (keysIn): a pattern's case names no value in the signature that lists the pattern
         let patterns =
             uses
@@ -244,4 +244,4 @@ module SymbolUses =
                 | _ -> keyOf symbol
 
             own |> Option.map (fun key -> struct (key, r, definition, ValueNone)))
-        |> build source version
+        |> build source

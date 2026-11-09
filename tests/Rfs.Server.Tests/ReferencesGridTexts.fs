@@ -113,10 +113,11 @@ let knownDifferences : (Scenario * int) list =
 
 /// What the filter applies to, in files with and without the name, and a value a literal's suffix calls with no text
 let writtenByName : Scenario list =
-    let a = "module Proj.A\n\ntype R = { Alpha: int; Beta: int }\ntype U =\n    | Uno\n    | Dos of int\n\nlet shared = 1\nlet other = 2\nlet rcd = { Alpha = 1; Beta = 2 }\n\n[<Literal>]\nlet Lit = 3\n\nlet inline gen x = x\n\nmodule NumericLiteralQ =\n    let FromZero () = 0\n    let FromOne () = 1\n    let FromInt32 (n: int) = n\n    let FromInt64 (n: int64) = int n\n    let FromString (s: string) = s.Length\n"
+    let a = "module Proj.A\n\ntype R = { Alpha: int; Beta: int }\ntype U =\n    | Uno\n    | Dos of int\n\nlet shared = 1\nlet other = 2\nlet rcd = { Alpha = 1; Beta = 2 }\n\n[<Literal>]\nlet Lit = 3\n\nlet inline gen x = x\n\nmodule NumericLiteralQ =\n    let FromZero () = 0\n    let FromOne () = 1\n    let FromInt32 (n: int) = n\n    let FromInt64 (n: int64) = int n\n    let FromString (s: string) = s.Length\n\nmodule Digits =\n    let FromZero () = 0\n    let FromOne () = 1\n    let FromInt32 (n: int) = n\n    let FromInt64 (n: int64) = int n\n"
     let b = "module Proj.B\n\nopen Proj.A\n\nlet a = shared + rcd.Alpha\nlet b = { rcd with Beta = 3 }\nlet c = Dos 1\nlet d = function Uno -> 1 | Dos n -> n\nlet e x = match x with Lit -> 1 | _ -> 0\nlet f = gen 1\nlet s = $\"{shared}\"\nlet n = nameof other\n"
     let c = "module Proj.C\n\nopen Proj.A\n\nlet unrelated = 5\n"
-    let d = "module Proj.D\n\nopen Proj.A\n\nlet z = 0Q\nlet o = 1Q\nlet n = 5Q\nlet big = 9999999999Q\nlet huge = 99999999999999999999999Q\n"
+    // `Z` reaches the values of Digits, a module whose name doesn't start with NumericLiteral, through an abbreviation
+    let d = "module Proj.D\n\nopen Proj.A\n\nmodule NumericLiteralZ = Proj.A.Digits\n\nlet z = 0Q\nlet o = 1Q\nlet n = 5Q\nlet big = 9999999999Q\nlet huge = 99999999999999999999999Q\nlet z2 = 0Z\nlet n2 = 7Z\n"
 
     [ { Name = "shape: written by name"
         Files = [ "A.fs", a; "B.fs", b; "C.fs", c; "D.fs", d ]

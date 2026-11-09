@@ -141,7 +141,7 @@ module internal WholeFile =
 
         match node.TryValue with
         | Ready v -> isOf v
-        | Failed e -> raise e
+        | Failed e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw e; ValueNone
         | _ -> isOf node.Peek
 
     let private wholeOnly (path: string) =
@@ -365,23 +365,32 @@ module internal WholeFile =
                       Identity = box r })
             | ValueNone -> ValueNone
 
+        /// The published result and the lock it is read under, with readableAt's guards. Nothing of the declaration state
+        /// besides: what an index's flight reads, its node keeps until it runs again, and release doesn't run it.
+        let resultAt (version: int64) : struct (FileResult * AsyncReaderWriterLock voption) voption =
+            match current version with
+            | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map (fun f -> struct (f.FileResult, ValueSome f.Start.Lock))
+            | ValueSome(Kept k) -> keptAt version k |> ValueOption.map (fun r -> struct (r, ValueSome k.Lock))
+            | ValueSome Whole -> settledAt project file whole version |> ValueOption.map (fun (_, r) -> struct (r, ValueNone))
+            | ValueNone -> ValueNone
+
         let uses =
             usesNode
                 (fun () ->
                     let version = file.Text.Value.Version
-                    readableAt version |> ValueOption.map (fun r -> struct (version, r)))
-                (fun (struct (_, r)) -> box r.Result)
-                (fun (struct (version, r)) ct ->
+                    resultAt version |> ValueOption.map (fun struct (r, l) -> struct (version, r, l)))
+                (fun (struct (_, r, _)) -> box r)
+                (fun (struct (version, result, lock)) ct ->
                     let index () =
                         Task.Run<FileUses>(
                             (fun () ->
-                                let u = SymbolUses.ofCheck (box r.Result) version r.Result.CheckResultsNotKept ct
+                                let u = SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct
                                 project.CountUsesBuilt()
                                 u),
                             ct
                         )
 
-                    match r.Lock with
+                    match lock with
                     | ValueNone ->
                         task {
                             let! u = index ()
@@ -398,8 +407,8 @@ module internal WholeFile =
                             let! still =
                                 graph.DispatchAsync(
                                     Func<bool>(fun () ->
-                                        match (try readableAt version with NotReadyException _ -> ValueNone) with
-                                        | ValueSome a -> obj.ReferenceEquals(a.Identity, r.Identity)
+                                        match (try resultAt version with NotReadyException _ -> ValueNone) with
+                                        | ValueSome(struct (now, _)) -> obj.ReferenceEquals(now, result)
                                         | ValueNone -> false)
                                 )
 
@@ -673,7 +682,7 @@ module internal WholeFile =
 
                     Task.Run<FileUses voption>(
                         (fun () ->
-                            let u = SymbolUses.ofSignature (box s) version (DeclarationChecker.SignatureUses(context, s)) ct
+                            let u = SymbolUses.ofSignature (box s) (DeclarationChecker.SignatureUses(context, s)) ct
                             project.CountUsesBuilt()
                             ValueSome u),
                         ct
