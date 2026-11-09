@@ -11,6 +11,7 @@
     <Compile Include="ShiftGraphTests.fs" />
     <Compile Include="RanvierWakeTests.fs" />
     <Compile Include="RecheckTests.fs" />
+    <Compile Include="AugmentationTests.fs" />
     <Compile Include="ReadFileTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="CrossProjectGraphTests.fs" />

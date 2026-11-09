@@ -128,12 +128,16 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
     member val InWindow = false with get, set
     /// Whether no variable of its window was open at the window's close: nothing later changes it in place
     member val Closed = false with get, set
+    /// Whether it was checked in a segment: the rows checked after it may have changed it in place (an augmentation adds
+    /// to the type, a later row solves a variable), so it is never a result for the row on its own
+    member val InSegment = false with get, set
 
     /// This result's window state, on a shift of it.
     member this.KeepingWindowOf(other: RowCheck) =
         this.Print <- other.Print
         this.InWindow <- other.InWindow
         this.Closed <- other.Closed
+        this.InSegment <- other.InSegment
         this
 
     /// The check this result came from: itself, or for a result shifted to another line (W1), the check it was
@@ -404,6 +408,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
                 && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
                 && not previous.InWindow
+                && not previous.InSegment
 
             // A shifted result holds the items of the declarations it depends on as they were when it was checked. When
             // one of them was checked again since, its new items replaced those, which kept their old lines: go to
@@ -635,6 +640,7 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                                         file.Project.CountCheck(r.Key, file.Path)
                                         let c = RowCheck(r.Key, decl, start, result, env, deps.Named, deps.Identity, laterKeys[i], null)
                                         c.InWindow <- window.IsSome
+                                        c.InSegment <- true
                                         results[r.Key] <- c
                                         inOrder.Add c
                                         let next = EnvNode(env, c, DeclarationChecker.ExtendEnv(env.Env, result))
