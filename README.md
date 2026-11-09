@@ -17,4 +17,4 @@ or edit `global.json` to the closest installed 10.0 SDK (keep the major version 
 
 - Every project uses the FCS fork's `FSharp.Core.dll` (see `Directory.Build.props`), never the
   FSharp.Core package. `tests/fixtures/*` are stand-alone and use the regular package.
-- Project specs are cached in `<project>/obj/rfs-spec.json` (format-versioned).
+- Project specs are cached in `<project>/obj/rfs-spec.v<format>.json` (the format version is in the name).

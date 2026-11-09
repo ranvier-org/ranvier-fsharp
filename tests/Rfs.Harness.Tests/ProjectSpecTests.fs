@@ -13,7 +13,7 @@ let private tinyDir =
     up (DirectoryInfo AppContext.BaseDirectory)
 
 let private tinyProject = Path.Combine(tinyDir, "Tiny.fsproj")
-let private cachePath = Path.Combine(tinyDir, "obj", "rfs-spec.json")
+let private cachePath = ProjectSpec.cachePath tinyProject
 
 type private TinyCopy(dir: string) =
     member _.Dir = dir
@@ -78,7 +78,7 @@ let tests =
           testTask "stale cache is ignored when the fsproj is newer" {
               use copy = copyTiny ()
               let! first = ProjectSpec.load copy.Project
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               File.WriteAllText(cache, (ProjectSpec.toJson { first with SourceFiles = [ "stale.fs" ] }))
               File.SetLastWriteTimeUtc(cache, DateTime.UtcNow.AddHours -1.0)
               File.SetLastWriteTimeUtc(copy.Project, DateTime.UtcNow)
@@ -89,7 +89,7 @@ let tests =
           testTask "cache with a missing or different format version is ignored" {
               use copy = copyTiny ()
               let! first = ProjectSpec.load copy.Project
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
@@ -106,7 +106,7 @@ let tests =
           // I5. A marked cache shows whether the next load read it or evaluated the project.
           testTask "a change to what the evaluation read is noticed across sessions" {
               use copy = copyTiny ()
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
 
               let mark () =
                   File.WriteAllText(cache, File.ReadAllText(cache).Replace("C.fs", "Marked.fs"))
@@ -149,7 +149,7 @@ let tests =
           testTask "the cache is fresh in the artifacts layout, until its assets file changes" {
               use copy = copyTiny ()
               File.WriteAllText(Path.Combine(copy.Dir, "Directory.Build.props"), "<Project><PropertyGroup><UseArtifactsOutput>true</UseArtifactsOutput></PropertyGroup></Project>")
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               let! _ = ProjectSpec.load copy.Project
               Expect.isFalse (File.Exists(Path.Combine(copy.Dir, "obj", "project.assets.json"))) "the assets file is elsewhere"
               let assets = Path.Combine(copy.Dir, "artifacts", "obj", "Tiny", "project.assets.json")
@@ -171,12 +171,147 @@ let tests =
           testTask "a cache that cannot be written does not fail load" {
               use copy = copyTiny ()
               // a directory where the cache file belongs makes the final move fail
-              Directory.CreateDirectory(Path.Combine(copy.Dir, "obj", "rfs-spec.json")) |> ignore
+              Directory.CreateDirectory(ProjectSpec.cachePath copy.Project) |> ignore
               let! spec = ProjectSpec.load copy.Project
               Expect.equal spec.SourceFiles.Length 4 "loaded anyway"
 
               let leftovers = Directory.GetFiles(Path.Combine(copy.Dir, "obj"), "*.tmp")
               Expect.isEmpty leftovers "temp file removed"
+          }
+
+          // The server picks its SDK itself: an exe outside the repo has no global.json pinning this runtime's SDK above it,
+          // and the highest installed SDK may be of a major version this process can't load.
+          testTask "loads from an exe outside the repo when a higher-major SDK is what a global.json above it names" {
+              let dotnetSdks =
+                  let psi = Diagnostics.ProcessStartInfo("dotnet", "--list-sdks", RedirectStandardOutput = true)
+                  let p = Diagnostics.Process.Start psi
+                  let text = p.StandardOutput.ReadToEnd()
+                  p.WaitForExit()
+                  [ for line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries) -> line.Split(' ').[0] ]
+
+              let higher =
+                  dotnetSdks |> List.filter (fun v -> int (v.Split('.').[0]) > Environment.Version.Major)
+
+              if higher.IsEmpty then
+                  skiptest $"no SDK above %d{Environment.Version.Major} is installed, so there is nothing to choose wrongly"
+
+              let root = Path.Combine(Path.GetTempPath(), "rfs-outside-" + Guid.NewGuid().ToString("N"))
+              let bin = Path.Combine(root, "bin")
+              let fixture = Path.Combine(root, "tests", "fixtures", "Tiny")
+
+              try
+                  Directory.CreateDirectory fixture |> ignore
+
+                  for f in Directory.GetFiles tinyDir do
+                      File.Copy(f, Path.Combine(fixture, Path.GetFileName f))
+
+                  let src = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar)
+
+                  for f in Directory.GetFiles(src, "*", SearchOption.AllDirectories) do
+                      let target = Path.Combine(bin, Path.GetRelativePath(src, f))
+                      Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+                      File.Copy(f, target)
+
+                  File.WriteAllText(
+                      Path.Combine(root, "global.json"),
+                      $"""{{ "sdk": {{ "version": "%s{List.head higher}", "rollForward": "disable", "allowPrerelease": true }} }}"""
+                  )
+
+                  let psi =
+                      Diagnostics.ProcessStartInfo(
+                          "dotnet",
+                          "\"" + Path.Combine(bin, "Rfs.Harness.Tests.dll") + "\" --filter-test-case \"loads Tiny\"",
+                          WorkingDirectory = root,
+                          RedirectStandardOutput = true,
+                          RedirectStandardError = true
+                      )
+
+                  // What an earlier load in this process set up would otherwise decide the child's MSBuild
+                  for v in [ "MSBUILD_EXE_PATH"; "MSBuildExtensionsPath"; "MSBuildSDKsPath"; "DOTNET_HOST_PATH"; "DOTNET_ROOT" ] do
+                      psi.Environment.Remove v |> ignore
+
+                  let p = Diagnostics.Process.Start psi
+                  let stdout = p.StandardOutput.ReadToEndAsync()
+                  let stderr = p.StandardError.ReadToEndAsync()
+
+                  if not (p.WaitForExit(TimeSpan.FromMinutes 4.0)) then
+                      p.Kill true
+                      failtest "the child did not finish"
+
+                  let output = Text.RegularExpressions.Regex.Replace(stdout.Result + stderr.Result, "\u001b\\[[0-9;?]*[a-zA-Z]", "")
+                  Expect.equal p.ExitCode 0 $"the load succeeded outside the repo:\n%s{output}"
+                  Expect.stringContains output "1 passed" "and it ran the test"
+              finally
+                  try
+                      Directory.Delete(root, true)
+                  with _ ->
+                      ()
+          }
+
+          // N5. Another version of the code on the same obj keeps its own cache, and neither evicts the other's.
+          testTask "the cache's file name holds the format version, and another version's cache is left alone" {
+              use copy = copyTiny ()
+              let objDir = Path.Combine(copy.Dir, "obj")
+              Directory.CreateDirectory objDir |> ignore
+              let other = Path.Combine(objDir, "rfs-spec.v0.json")
+              File.WriteAllText(other, "{}")
+              let! _ = ProjectSpec.load copy.Project
+              let cache = ProjectSpec.cachePath copy.Project
+              Expect.isTrue (Path.GetFileName(cache).StartsWith "rfs-spec.v") "named for its version"
+              Expect.isTrue (File.Exists cache) "written"
+              Expect.equal (File.ReadAllText other) "{}" "the other version's cache is untouched"
+              ProjectSpec.invalidate copy.Project
+              Expect.isFalse (File.Exists cache) "invalidate drops this version's"
+              Expect.isTrue (File.Exists other) "and not the other's"
+          }
+
+          test "the SDK is the highest of the runtime's major version, a release over a prerelease" {
+              let installed = [ "8.0.427"; "10.0.114"; "10.0.403"; "10.0.401"; "11.0.100-rc.1.26425.128" ]
+              Expect.equal (ProjectSpec.sdkForRuntime 10 installed) (Ok "10.0.403") "not the 11 prerelease"
+              Expect.equal (ProjectSpec.sdkForRuntime 11 installed) (Ok "11.0.100-rc.1.26425.128") "a prerelease when it is all there is"
+              Expect.equal (ProjectSpec.sdkForRuntime 10 [ "10.0.100-preview.1"; "10.0.100" ]) (Ok "10.0.100") "a release over a prerelease"
+          }
+
+          test "prereleases are ordered by semantic version, whatever the order they are listed in" {
+              for order in [ [ "11.0.100-rc.1.1"; "11.0.100-rc.2.1" ]; [ "11.0.100-rc.2.1"; "11.0.100-rc.1.1" ] ] do
+                  Expect.equal (ProjectSpec.sdkForRuntime 11 order) (Ok "11.0.100-rc.2.1") "rc.2 after rc.1"
+
+              Expect.equal
+                  (ProjectSpec.sdkForRuntime 11 [ "11.0.100-rc.10.1"; "11.0.100-rc.9.1" ])
+                  (Ok "11.0.100-rc.10.1")
+                  "numbers by value"
+
+              Expect.equal (ProjectSpec.sdkForRuntime 11 [ "11.0.100-rc.1.1"; "11.0.100-preview.7" ]) (Ok "11.0.100-rc.1.1") "words in order"
+          }
+
+          testTask "many writers of the SDK's global.json at once all succeed and leave it right" {
+              let dir = Path.Combine(Path.GetTempPath(), "rfs-sdk-race-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let writers =
+                      [ for _ in 1..16 ->
+                            Threading.Tasks.Task.Run(fun () ->
+                                for _ in 1..20 do
+                                    ProjectSpec.ensureGlobalJson dir "10.0.403") ]
+
+                  do! Threading.Tasks.Task.WhenAll writers
+                  Expect.stringContains (File.ReadAllText(Path.Combine(dir, "global.json"))) "10.0.403" "pins the version"
+                  Expect.isEmpty (Directory.GetFiles(dir, "*.tmp")) "no temp files left"
+              finally
+                  try
+                      Directory.Delete(dir, true)
+                  with _ ->
+                      ()
+          }
+
+          test "no SDK of the runtime's major version is an error naming the versions found" {
+              match ProjectSpec.sdkForRuntime 10 [ "8.0.427"; "9.0.320"; "11.0.100-rc.1.26425.128" ] with
+              | Ok v -> failtest $"chose %s{v}"
+              | Error message ->
+                  Expect.stringContains message "no .NET SDK 10" "says what is missing"
+                  Expect.stringContains message "8.0.427, 9.0.320, 11.0.100-rc.1.26425.128" "lists what was found"
+
+              Expect.isTrue (Result.isError (ProjectSpec.sdkForRuntime 10 [])) "none installed"
           }
 
           test "missingReferences names -r: paths that are not on disk" {

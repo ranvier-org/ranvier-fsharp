@@ -115,6 +115,25 @@ let tests =
                       })
           }
 
+          // N4. The fork's ScopeRange is read by reflection; with the member gone, nothing is shifted and the rows are checked again.
+          // The lookup is an argument, not process state, so other lists that shift rows are not affected.
+          testTask "with the fork's ScopeRange member missing, no pair of declarations counts as moved" {
+              let! s = start ()
+              use _ = (s :> IAsyncDisposable)
+              let before = DeclarationChecker.Split(DeclarationChecker.Parse(s.Fresh, a, s.Texts[a]))
+              let after = DeclarationChecker.Split(DeclarationChecker.Parse(s.Fresh, a, blankAbove "let area" s.Texts[a]))
+              Expect.equal after.Length before.Length "same rows"
+              let pairs = Array.zip before after
+              let missing = Nodes.scopeGetter "NoSuchScopeRange"
+              Expect.isNone missing "the lookup missed"
+
+              Expect.isTrue
+                  (pairs |> Array.exists (fun (x, y) -> Nodes.movedOnlyWith (Nodes.scopeGetter "ScopeRange") x y))
+                  "with the member, the rows below the blank line moved"
+
+              Expect.isFalse (pairs |> Array.exists (fun (x, y) -> Nodes.movedOnlyWith missing x y)) "without it, none did"
+          }
+
           testTask "a blank line under the header keeps the setup and shifts every row" {
               do!
                   withPromoted [ a ] (fun s ->
