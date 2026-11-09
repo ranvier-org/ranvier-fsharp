@@ -166,8 +166,8 @@ module Completion =
             FilterText = Some d.NameInList }
 
     /// The list at the position of `path`, once the graph has settled on the file's latest text: a request node
-    /// (ProjectGraph.ReadFile), run again on a new text. The lookup holds off the file's checks; a kept row may be checked again in it (FileView.CheckResultsAt). The items carry their names:
-    /// reading them reads no typed tree.
+    /// (ProjectGraph.ReadFile), run again on a new text. The lookup holds off the file's checks; a kept row may be
+    /// checked again in it (FileView.CheckResultsAt). The items carry their names: reading them reads no typed tree.
     let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<CompletionItem[]> =
         task {
             let! items =
