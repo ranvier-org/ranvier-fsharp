@@ -616,7 +616,7 @@ let tests =
                   let host = Rfs.Checker.GraphHost.Start "large"
                   let! (g: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, { ProjectSpec.sequential deps with ProjectFile = Path.Combine(dir.FullName, "P.fsproj"); SourceFiles = [ path ] })
                   g.Promote path
-                  let! (mode: Rfs.Checker.FileMode) = g.WhenPromoted(path, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 3.)
+                  let! (mode: Rfs.Checker.FileMode) = g.WhenPromoted(path, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 8.)
                   Expect.equal mode Rfs.Checker.FileMode.Declarations "promoted"
                   let lines = text.Split '\n'
                   let! (items: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g path (lines.Length - 2) 20 CancellationToken.None

@@ -87,11 +87,13 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
             let baseSpec = ProjectSpec.sequential deps
 
             // Each its own assembly: an App whose `-r` names no assembly Lib is called resolves nothing of Lib's
+            let options = baseSpec.OtherOptions |> List.filter (fun o -> not (o.StartsWith "-o:" || o.StartsWith "--out:"))
+
             let libSpec =
                 { baseSpec with
                     ProjectFile = Path.Combine(libDir, "Lib.fsproj")
                     SourceFiles = files
-                    OtherOptions = ("--out:" + Path.Combine(libDir, "Lib.dll")) :: baseSpec.OtherOptions }
+                    OtherOptions = ("--out:" + Path.Combine(libDir, "Lib.dll")) :: options }
 
             let appSpec =
                 { baseSpec with
@@ -99,7 +101,7 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
                     SourceFiles = [ appFile ]
                     ReferencedProjects = [ libSpec.ProjectFile ]
                     ReferencedFrameworks = [ "" ]
-                    OtherOptions = ("-r:" + Path.Combine(libDir, "Lib.dll")) :: ("--out:" + Path.Combine(appDir, "App.dll")) :: baseSpec.OtherOptions }
+                    OtherOptions = ("-r:" + Path.Combine(libDir, "Lib.dll")) :: ("--out:" + Path.Combine(appDir, "App.dll")) :: options }
 
             use host = GraphHost.Start "token grid"
             let! (libGraph: ProjectGraph) = ProjectGraph.Create(host, libSpec)

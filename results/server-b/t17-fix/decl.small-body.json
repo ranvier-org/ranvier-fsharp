@@ -1,0 +1,192 @@
+{
+  "server": "decl",
+  "scenario": "small-body",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-09T14:13:55.2352226Z",
+  "coldMs": 8365.0645,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #1 fwd",
+      "latencyMs": 77.6478,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #2 inv",
+      "latencyMs": 55.9266,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #3 fwd",
+      "latencyMs": 34.8527,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #4 inv",
+      "latencyMs": 40.931,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #5 fwd",
+      "latencyMs": 31.7005,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #6 inv",
+      "latencyMs": 35.7851,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #7 fwd",
+      "latencyMs": 40.6035,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #8 inv",
+      "latencyMs": 36.8473,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #9 fwd",
+      "latencyMs": 42.7543,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #10 inv",
+      "latencyMs": 48.3872,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #11 fwd",
+      "latencyMs": 56.3127,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #12 inv",
+      "latencyMs": 45.4172,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #13 fwd",
+      "latencyMs": 35.0534,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #14 inv",
+      "latencyMs": 65.8996,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #15 fwd",
+      "latencyMs": 48.3879,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #16 inv",
+      "latencyMs": 40.4379,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #17 fwd",
+      "latencyMs": 53.7744,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #18 inv",
+      "latencyMs": 51.1101,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #19 fwd",
+      "latencyMs": 44.3184,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/FSharp.Data.Adaptive/Core/Transaction.fs 339:39-339:40 #20 inv",
+      "latencyMs": 46.9623,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 262.00390625,
+  "allocatedMb": 2732.773780822754,
+  "gen2": 4
+}

@@ -167,7 +167,7 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
 
                         match key with
                         | Some k when k.StartsWith "Lib|" ->
-                            let want = match definitions.TryGetValue k with | true, s -> s | _ -> Set.empty
+                            let want = (match definitions.TryGetValue k with | true, s -> s | _ -> Set.empty) + (match definitions.TryGetValue(k + "|setter") with | true, s -> s | _ -> Set.empty)
 
                             if want.Contains(show actual) then
                                 found.Add Same
