@@ -197,6 +197,11 @@ let freshFingerprints (s: Session) =
 
         if file.EndsWith ".fsi" then
             before <- before @ [ DeclarationChecker.CheckSignatureFile(s.Fresh, before, parse) ]
+        elif DeclarationChecker.CountDeclarations parse <= 1 then
+            // Never checked by declaration: a fragment replayed row by row is not what a file like this means
+            let whole = DeclarationChecker.CheckFile(s.Fresh, before, parse)
+            result[file] <- (whole.Fingerprints, whole.Signature.Fingerprint)
+            before <- before @ [ whole.Signature ]
         else
             let start, env0 = DeclarationChecker.BeginFile(s.Fresh, before, parse)
 

@@ -218,6 +218,95 @@ let tests =
                   do! step s "both" (source 2 "let y = (1).F()") [ 39 ]
               }) ]
 
+let private fragment (name: string) (body: string) = $"namespace %s{name}\n\n%s{body}"
+let private fragments (name: string) (bodies: string list) = String.Join("\n", bodies |> List.map (fragment name))
+
+let private tType = "type T() =\n    member _.A = 1\n"
+let private tAugmented (body: string) = $"type T with\n    member _.%s{body}\n"
+let private reader = "module R =\n    let z = T().B\n"
+
+/// A file of several fragments with an augmentation anywhere inside them stays at file level: the tie between a type
+/// and its augmentation is read from one module's declarations, and a fragment is one row.
+[<Tests>]
+let fragmentTests =
+    testSequenced
+    <| testList
+        "AugmentationFragments"
+        [ for ns in [ "global"; "N" ] do
+              // In a named namespace an augmentation in another fragment is FS0644 whatever the graph does, and more
+              // follows from it: the oracle says what
+              let step (s: Session) (what: string) (text: string) (codes: int list) : Task =
+                  if ns = "global" then
+                      step s what text codes
+                  else
+                      task {
+                          let! r = edit s d text
+                          do! expectOracle s r.Diagnostics what
+                      }
+
+              let source = fragments ns [ tType; tAugmented "B = 2"; reader ]
+
+              inBothModes $"%s{ns}: the augmentation deleted" (fun s ->
+                  task {
+                      do! step s "the source" source []
+                      do! step s "deleted" (fragments ns [ tType; "module Q =\n    let q = 1\n"; reader ]) [ 39 ]
+                  })
+
+              inBothModes $"%s{ns}: its member renamed" (fun s ->
+                  task {
+                      do! step s "the source" source []
+                      do! step s "renamed" (fragments ns [ tType; tAugmented "C = 2"; reader ]) [ 39 ]
+                  })
+
+              inBothModes $"%s{ns}: its member's value edited" (fun s ->
+                  task {
+                      do! step s "the source" source []
+                      do! step s "= 3" (fragments ns [ tType; tAugmented "B = 3"; reader ]) []
+                      do! step s "= 4" (fragments ns [ tType; tAugmented "B = 4"; reader ]) []
+                  })
+
+              let earlier (v: int) = fragment "Z" $"type A() =\n    member _.V = %d{v}\n"
+              let rows (row: string) = fragment ns $"module R =\n    %s{row}\n"
+
+              inBothModes $"%s{ns}: a fragment with the type and its extension, replayed" (fun s ->
+                  let held = fragment ns $"%s{namesExtension}\n\n%s{staticClass}\n\ntype T with\n    [<Extension>] static member F(x: int) = x\n"
+                  let text (v: int) (row: string) = String.Join("\n", [ earlier v; held; rows row ])
+
+                  task {
+                      do! step s "the source" (text 1 "let z = 1") []
+                      do! step s "both" (text 2 "let z = (1).F()") [ 39 ]
+                      do! step s "the earlier fragment" (text 3 "let z = (1).F()") [ 39 ]
+                  })
+
+              inBothModes $"%s{ns}: a fragment opening the type before its augmentation, replayed" (fun s ->
+                  let held = fragment ns "module H =\n    let S = \"s\"\n\nopen H\n\ntype T() =\n    member _.A = 1\n\nopen type T\n\ntype T with\n    static member S = 1\n"
+                  let text (v: int) (row: string) = String.Join("\n", [ earlier v; held; rows row ])
+
+                  task {
+                      do! step s "the source" (text 1 "let z = 1") []
+                      do! step s "both" (text 2 "let z: string = S") []
+                      do! step s "the earlier fragment" (text 3 "let z: string = S") []
+                  })
+
+              inBothModes $"%s{ns}: an augmentation in a nested module keeps the file whole" (fun s ->
+                  task {
+                      do! step s "the source" (fragments ns [ tType; "module M =\n    type U() =\n        member _.A = 1\n\n    type U with\n        member _.B = 2\n"; "module R =\n    let z = M.U().B\n" ]) []
+                      let! mode = s.Graph.Mode d
+                      Expect.equal mode FileLevel "at file level"
+                  })
+
+              inBothModes $"%s{ns}: several fragments with no augmentation check by declaration" (fun s ->
+                  let text (v: int) = fragments ns [ $"type T() =\n    member _.A = %d{v}\n"; "type V() =\n    member _.B = 2\n"; "module R =\n    let z = V().B + 1\n" ]
+
+                  task {
+                      do! step s "the source" (text 1) []
+                      let! mode = s.Graph.Mode d
+                      Expect.equal mode Declarations "by declaration"
+                      let checks = s.Graph.FileLevelChecks
+                      do! step s "a body" (text 2) []
+                      Expect.equal (s.Graph.FileLevelChecks - checks) 0L "no file is checked whole"
+                  }) ]
+
 /// A file as the fuzz sees it: two types with augmentations whose members come and go, rows that read those members
 /// without naming the type, before, between and after, and opens of the type. An empty member list is no augmentation.
 type private Model =
@@ -294,6 +383,40 @@ let private render (m: Model) =
 
     if m.Blank then text.Replace("module Deps.D\n", "module Deps.D\n\n") else text
 
+/// The same model as several fragments of one namespace: the types, the augmentations, then the rows.
+let private renderFragments (name: string) (m: Model) =
+    let augmentation (type': string) (members: string list) =
+        match members with
+        | [] -> ""
+        | _ -> $"type %s{type'} with\n" + String.Join("\n", members |> List.map (fun x -> "    " + x)) + "\n"
+
+    let moduleOf (moduleName: string) (rows: string list) =
+        match rows with
+        | [] -> ""
+        | _ -> $"[<AutoOpen>]\nmodule %s{moduleName} =\n" + String.Join("\n", rows |> List.map (fun r -> "    " + r)) + "\n"
+
+    let types =
+        String.Join(
+            "\n",
+            [ namesExtension
+              "type U() =\n    member _.V = 1"
+              "type B() =\n    member _.Zero() = 0"
+              staticClass
+              "type P() =\n    member _.A = 1"
+              "type K =\n    static member F(x: int64) = 1\n    static member F(x: P) = 2"
+              moduleOf "Values" [ $"let a = %d{m.Literal}"; "let S = \"s\""; "let u = U()"; "let b = B()"; "let v = P()" ]
+              (if m.OpenBefore then "open type T" else "")
+              moduleOf "Between" m.Between ]
+        )
+
+    let augmentations = namesExtension + "\n\n" + augmentation "T" m.Extensions + "\n" + augmentation "P" m.Instance
+
+    let rows =
+        (if m.OpenAfter then "open type T\n\n" else "") + moduleOf "After" m.After
+
+    let text = fragments name [ types; augmentations; rows ]
+    if m.Blank then "\n" + text else text
+
 let private toggle (item: string) (items: string list) =
     if List.contains item items then List.except [ item ] items else items @ [ item ]
 
@@ -330,7 +453,7 @@ let private change (random: Random) (counter: int ref) (m: Model) : Model * stri
     | 12 -> { m with Extensions = [] }, "T's augmentation deleted"
     | _ -> { m with Instance = [] }, "P's augmentation deleted"
 
-let private runFuzz (mode: FileMode) (seed: int) (steps: int) : Task =
+let private runFuzzOf (rendered: Model -> string) (mode: FileMode) (seed: int) (steps: int) : Task =
     task {
         let! s = startWith mode
         use _ = (s :> IAsyncDisposable)
@@ -348,14 +471,14 @@ let private runFuzz (mode: FileMode) (seed: int) (steps: int) : Task =
               Extensions = [ extensionMembers[0] ]
               Instance = [ instanceMembers[0] ] }
 
-        let! _ = edit s d (render model)
+        let! _ = edit s d (rendered model)
 
         for i in 1..steps do
             let m1, what1 = change random counter model
             // Now and then two edits arrive in one text
             let m2, what2 = if random.Next 3 = 0 then change random counter m1 else m1, ""
             model <- m2
-            let text = render model
+            let text = rendered model
             let! r = edit s d text
             let! diff = oracleDiff s r.Diagnostics
 
@@ -367,6 +490,20 @@ let private runFuzz (mode: FileMode) (seed: int) (steps: int) : Task =
             if not fingerprints.IsEmpty then
                 failtest $"%A{mode} seed %d{seed}, step %d{i}: %s{what1}; %s{what2}\n%s{String.concat Environment.NewLine fingerprints}\n%s{text}"
     }
+
+let private runFuzz = runFuzzOf render
+
+[<Tests>]
+let fragmentFuzzTests =
+    testSequenced
+    <| testList
+        "OracleFuzzAugmentationFragments"
+        [ for mode in [ Declarations; FileLevel ] do
+              for name in [ "global"; "N" ] do
+                  for seed in [ 4242; 7919 ] ->
+                      testTask $"%A{mode} %s{name} seed %d{seed}: 80 edits of a file of fragments equal the oracle after each" {
+                          do! runFuzzOf (renderFragments name) mode seed 80
+                      } ]
 
 [<Tests>]
 let fuzzTests =

@@ -25,7 +25,9 @@ type internal KeptResult =
     { Version: int64
       /// The setup the finish was built on: kept only while the current one has the same files and fingerprints
       Key: SetupKey
-      Result: FileResult }
+      Result: FileResult
+      /// The lock of the FileStart it was finished on: a flight still running on that start can change the types it holds
+      Lock: AsyncReaderWriterLock }
 
 /// Which result of an implementation file is the published one.
 [<NoEquality; NoComparison>]
@@ -421,7 +423,8 @@ module internal WholeFile =
                             ValueSome
                                 { Version = f.Version
                                   Key = f.Start.Setup.Key
-                                  Result = f.FileResult }
+                                  Result = f.FileResult
+                                  Lock = f.Start.Lock }
                         | _ -> ValueNone
 
                     batch (fun () ->
@@ -497,7 +500,7 @@ module internal WholeFile =
                       |> ValueOption.map (fun r ->
                           { Parsed = k.Key.Parsed
                             Result = r
-                            Lock = ValueNone
+                            Lock = ValueSome k.Lock
                             Identity = box k })
                   | ValueSome Whole ->
                       settledAt project file whole version

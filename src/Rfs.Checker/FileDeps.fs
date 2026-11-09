@@ -64,7 +64,11 @@ type internal FileSig =
     /// Equal when they are the same signature: `Next` keeps it while nothing a later file reads of it changed.
     static member Comparer =
         { new IEqualityComparer<FileSig> with
-            member _.Equals(a, b) = obj.ReferenceEquals(a.Signature, b.Signature)
+            // Null while the memo has no value: a run pending before its first value compares that with itself
+            member _.Equals(a, b) =
+                obj.ReferenceEquals(a, b)
+                || (not (isNull (box a)) && not (isNull (box b)) && obj.ReferenceEquals(a.Signature, b.Signature))
+
             member _.GetHashCode _ = 0 }
 
 /// A declaration whose final fingerprint, after FinishFile, differs from the one its own check left (the D1 premise

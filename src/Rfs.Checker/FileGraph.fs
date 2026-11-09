@@ -407,7 +407,6 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
                 && identities |> Array.forall (fun (k, c) -> RowCheck.SameCheck(previous.Saw k, c))
                 && (not previous.Suggests || previous.EarlierKeys = file.KeysBefore key)
                 && (not previous.Result.DependsOnLaterDeclarations || previous.Later = later)
-                && not previous.InWindow
                 && not previous.InSegment
 
             // A shifted result holds the items of the declarations it depends on as they were when it was checked. When
