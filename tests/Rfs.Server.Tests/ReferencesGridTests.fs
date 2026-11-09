@@ -401,6 +401,12 @@ let tests =
                   let! (lost: string list) = run false s (unwritten (fun symbol -> Some symbol.DisplayName))
                   printfn "unguarded, %s loses %d: %s" s.Name lost.Length (String.Join("; ", lost |> List.truncate 60))
                   Expect.isNonEmpty lost $"%s{s.Name}"
+
+              // At `5Q` FCS records the module and not its value, and no `Some` at an optional argument, so those guards have no use
+              // to lose here: they stand on the compiler's source, which synthesises those names. The list is printed to look at
+              for s in ReferencesGridTexts.writtenByName do
+                  let! (lost: string list) = run false s (unwritten (fun symbol -> Some symbol.DisplayName))
+                  printfn "unguarded, %s loses %d: %s" s.Name lost.Length (String.Join("; ", lost |> List.truncate 60))
           }
 
           testList

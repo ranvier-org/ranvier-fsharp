@@ -375,7 +375,7 @@ module internal WholeFile =
                     let index () =
                         Task.Run<FileUses>(
                             (fun () ->
-                                let u = SymbolUses.ofCheck (box r.Result) version r.Result.CheckResults ct
+                                let u = SymbolUses.ofCheck (box r.Result) version r.Result.CheckResultsNotKept ct
                                 project.CountUsesBuilt()
                                 u),
                             ct
