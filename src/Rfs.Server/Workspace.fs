@@ -281,6 +281,9 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let showMessage (text: string) : Task =
         client.WindowShowMessage { Type = MessageType.Error; Message = text } |> Async.StartAsTask :> Task
 
+    let showWarning (text: string) : Task =
+        client.WindowShowMessage { Type = MessageType.Warning; Message = text } |> Async.StartAsTask :> Task
+
     let isSource (spec: ProjectSpec) (path: string) =
         spec.SourceFiles |> List.exists (fun f -> String.Equals(f, path, StringComparison.OrdinalIgnoreCase))
 
@@ -312,6 +315,23 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                             | true, e when ProjectSpec.isFSharpProject r && (String.IsNullOrEmpty framework || e.Spec.TargetFramework = framework) ->
                                 Some e.Graph
                             | _ -> None))
+
+                // A graph has one framework: this project's edits of them show only in a build
+                let otherFrameworks =
+                    lock gate (fun () ->
+                        List.zip spec.ReferencedProjects spec.ReferencedFrameworks
+                        |> List.choose (fun (r, framework) ->
+                            match entries.TryGetValue r with
+                            | true, e when ProjectSpec.isFSharpProject r && not (String.IsNullOrEmpty framework) && e.Spec.TargetFramework <> framework ->
+                                Some(r, framework, e.Spec.TargetFramework)
+                            | _ -> None))
+
+                for r, framework, loaded in otherFrameworks do
+                    let text =
+                        $"%s{spec.ProjectFile} reads %s{r} from its DLL on disk: it needs %s{framework}, and that project is loaded for %s{loaded}. Edits of it reach this project only through a build."
+
+                    log text
+                    do! showWarning text
 
                 let! graph = ProjectGraph.Create(host, spec, references)
                 created.Value <- Some graph

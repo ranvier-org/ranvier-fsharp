@@ -162,6 +162,23 @@ let tests =
               Expect.isNonEmpty typed "and checks against what it says"
           }
 
+          testTask "a Lib loaded for another framework than App resolved says App stays on the DLL" {
+              let lib = Path.Combine(multiDir, "Frameworks", "Lib", "FwLib.fsproj")
+              let app = Path.Combine(multiDir, "Frameworks", "App", "FwApp.fsproj")
+              Fixtures.build app
+              let! (s: Session) = startSessionWith multiDir [ app ] true ignore
+              use _ = (s :> IAsyncDisposable)
+              let messages = watchMessages s
+              do! s.Server.Workspace.Reload app
+              Expect.equal (List.ofSeq messages) [] "App loaded Lib for its framework: its assembly is in memory, and nothing to say"
+              // A reload evaluates Lib for its first framework, not the one App resolved
+              do! s.Server.Workspace.Reload lib
+              let shown = String.Join("\n", messages)
+              Expect.stringContains shown "FwApp" "the message names the project on its DLL"
+              Expect.stringContains shown "FwLib" "and the project it can't read in memory"
+              Expect.stringContains shown "net10.0" "and the framework it needs"
+          }
+
           testTask "an edit of Lib's AssemblyName reaches App's spec on a reload" {
               let root = copyMulti ()
               let lib, app = Path.Combine(root, "Lib", "Lib.fsproj"), Path.Combine(root, "App", "App.fsproj")

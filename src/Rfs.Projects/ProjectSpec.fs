@@ -25,7 +25,7 @@ type ProjectSpec =
 module ProjectSpec =
 
     // Bump when the cache content or the way `load` derives it changes; a mismatch is a cache miss.
-    let private formatVersion = 3
+    let private formatVersion = 5
 
     let toJson (spec: ProjectSpec) =
         let arr (xs: string list) =
@@ -92,8 +92,26 @@ module ProjectSpec =
     let private toolsPath =
         lazy (Init.init (DirectoryInfo AppContext.BaseDirectory) None)
 
+    /// What the SDK's AssemblyInfo and TargetFramework generators write: assembly attributes, in a namespace holding
+    /// nothing. Anything else in a file is a declaration a project's files or its referencing projects can read. A file
+    /// that is not there holds nothing yet: one that is gone is gone from the build too.
+    let private holdsOnlyAssemblyAttributes (file: string) =
+        not (File.Exists file)
+        || File.ReadLines file
+           |> Seq.forall (fun line ->
+               let t = line.Trim()
+
+               t = ""
+               || t.StartsWith "//"
+               || t.StartsWith "namespace "
+               || t.StartsWith "open "
+               || (t.StartsWith "[<" && t.EndsWith ">]")
+               || t = "do ()"
+               || t = "do()"
+               || t = "()")
+
     let private loadFresh (fsproj: string) (properties: (string * string) list) : ProjectSpec =
-        // AssemblyInfo and TargetFramework attribute files generated into obj do not take part in declaration checking.
+        // Attribute files generated into obj do not take part in declaration checking; what else a build generates there does
         let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
         let loader = WorkspaceLoader.Create(toolsPath.Value, properties)
 
@@ -105,7 +123,8 @@ module ProjectSpec =
             let details = String.Join("; ", notes)
             failwith $"Ionide.ProjInfo returned no project for {fsproj}: {details}"
         | Some p ->
-            let isGenerated (f: string) = f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase)
+            let isGenerated (f: string) =
+                f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase) && holdsOnlyAssemblyAttributes f
 
             let resolvedFramework (projectFile: string) (frameworks: string) =
                 match frameworks.Split(';', StringSplitOptions.RemoveEmptyEntries) with
@@ -193,7 +212,9 @@ module ProjectSpec =
             let cached =
                 if isFresh fsproj cache then
                     try
+                        // A build can write what it generates after the spec was cached
                         Some(ofJson (File.ReadAllText cache))
+                        |> Option.filter (fun spec -> spec.GeneratedFiles |> List.forall holdsOnlyAssemblyAttributes)
                     with _ ->
                         None
                 else

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GeneratedSource>obj\Generated.fs</GeneratedSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(GeneratedSource)" />
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+  <!-- What a resource or version generator does: declarations in a file under obj, written before the compile -->
+  <Target Name="WriteGeneratedSource" BeforeTargets="BeforeBuild;CoreCompile" Condition="!Exists('$(GeneratedSource)')">
+    <WriteLinesToFile File="$(GeneratedSource)" Lines="module GenObjLib.Generated;let answer = 42" Overwrite="true" />
+  </Target>
+</Project>

@@ -328,8 +328,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 return! DeclarationChecker.CreateProject(options, references) |> Async.StartAsTask
             }
 
-    /// What the build generates into obj, checked on their own: they add assembly attributes (a `namespace` holding
-    /// nothing), which later files don't read, only the assembly's referencing projects. Their diagnostics are dropped:
+    /// The attribute files the build generates into obj, checked on their own (ProjectSpec tells them by their content: a
+    /// generated file with declarations is a source file): they add assembly attributes (a `namespace` holding nothing),
+    /// which later files don't read, only the assembly's referencing projects. Their diagnostics are dropped:
     /// nothing is shown for a file the user has not written. Evaluating the project wrote them, so one that is gone
     /// is gone from the build too.
     static member private GeneratedResults(spec: ProjectSpec, ctx: ProjectContext) : Lazy<FileResult list> =

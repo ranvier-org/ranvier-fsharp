@@ -455,6 +455,33 @@ let tests =
               Expect.isEmpty expected $"the oracle's Lib has them: %A{expected}"
           }
 
+          testTask "a generated file under obj that holds declarations is seen by Lib's files and App" {
+              let dir = Path.Combine(multiDir, "GenObj")
+              let lib, app = Path.Combine(dir, "Lib", "GenObjLib.fsproj"), Path.Combine(dir, "App", "GenObjApp.fsproj")
+              // A real build writes the file and compiles against it
+              Fixtures.build app
+              let generated = Path.Combine(dir, "Lib", "obj", "Generated.fs")
+              let! (spec: ProjectSpec) = ProjectSpec.load lib
+              Expect.contains spec.SourceFiles generated "a file with declarations is a source file"
+              Expect.isFalse (List.contains generated spec.GeneratedFiles) "and nothing else"
+              let isAttributes (f: string) = f.EndsWith ".AssemblyInfo.fs" || f.EndsWith ".AssemblyAttributes.fs"
+              Expect.equal (spec.GeneratedFiles |> List.filter isAttributes).Length 2 "the SDK's two attribute files stay as they were"
+              Expect.isEmpty (spec.SourceFiles |> List.filter isAttributes) "and neither is a source file"
+              let host = GraphHost.Start "generated"
+              use _ = { new IAsyncDisposable with member _.DisposeAsync() = (host.Dispose(); ValueTask()) }
+              let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+              let! all = graph.AllDiagnostics() |> settle
+              let inLib = [ for KeyValue(_, ds) in all do yield! ds |> Seq.map FcsDiagnostics.ofFcs ]
+              Expect.isEmpty inLib $"as `dotnet build` compiled it: %A{inLib}"
+              let! actual = checkApp [ lib ] app
+              Expect.isEmpty actual $"App's CCU holds it: %A{actual}"
+              let! (oracle: OracleClient) = OracleClient.start ()
+              use _ = (oracle :> IAsyncDisposable)
+              let libFile = Path.Combine(dir, "Lib", "Lib.fs")
+              let! expected = oracle.Check app (Map [ libFile, File.ReadAllText libFile + "\nlet added = 1\n" ])
+              Expect.isEmpty expected $"the oracle's compile of Lib holds it: %A{expected}"
+          }
+
           testTask "a multi-target Lib is checked for the framework App resolved to" {
               let lib, app = Path.Combine(multiDir, "Frameworks", "Lib", "FwLib.fsproj"), Path.Combine(multiDir, "Frameworks", "App", "FwApp.fsproj")
               Fixtures.build app
