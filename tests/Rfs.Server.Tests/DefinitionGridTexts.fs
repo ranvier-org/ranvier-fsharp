@@ -586,6 +586,58 @@ let collisions =
      small "generic parameters" a "module Proj.U\nlet a = Proj.A.T<int>().M 1\nlet b<'q> (x: 'q) = Proj.A.f<'q> x\n" [ "blank above", blankAbove "type T" a ]) ]
 
 
+/// A signature pairs with its implementation by module name: here the file names differ
+let unmatched =
+    let si = "module N.M\n\nval v: int\n\nval f: x: int -> int\n\ntype T =\n    new: unit -> T\n    member P: int\n    member Q: x: int -> int\n\nval user: int\n"
+    let a = "module N.M\n\nlet v = 1\n\nlet f (x: int) = x + v\n\nlet hidden = 2\n\ntype T() =\n    member _.P = 1\n    member _.Q(x: int) = x + hidden\n\nlet user = f v + T().P + T().Q 1\n"
+    let u = "module U\n\nlet a = N.M.v + N.M.f 1\n\nlet b = N.M.T().P + N.M.T().Q 2\n"
+
+    { Name = "a signature of another file name"
+      Files = [ "Sig.fsi", si; "Impl.fs", a; "U.fs", u ]
+      Steps =
+        [ "blank line in the implementation", [ "Impl.fs", blankAbove "let v" a ]
+          "value re-checked, same print", [ "Impl.fs", rep "let f (x: int)" "let f (x:  int)" (blankAbove "let v" a) ]
+          "blank line in the signature", [ "Sig.fsi", blankAbove "val v" si ]
+          "blank line in both", [ "Impl.fs", blankAbove "type T" (blankAbove "let v" a); "Sig.fsi", blankAbove "type T" (blankAbove "val v" si) ] ] }
+
+/// The same file names, and modules that don't pair, as the SigUnmatched fixture has it. It doesn't compile.
+let unpaired =
+    let si = "module A\n\nval x: int\n"
+    let a = "module Ab\n\nlet f = 1\n\nlet g = f + 1\n"
+    let u = "module Z\n\nlet z = Ab.f + Ab.g\n"
+
+    { Name = "a signature whose module pairs with nothing"
+      Files = [ "X.fsi", si; "X.fs", a; "Z.fs", u ]
+      Steps =
+        [ "blank line in the implementation", [ "X.fs", blankAbove "let f" a ]
+          "blank line in the signature", [ "X.fsi", blankAbove "val x" si ] ] }
+
+/// What `conformed` answers: an implementation more generic than its signature
+let conformed =
+    let si = "module Proj.A\n\ntype T =\n    new: unit -> T\n    member One: x: int -> int\n    member Two: x: int -> int\n    member Two: x: int * y: int -> int\n    member Three: x: int -> int\n    member Three: x: string -> string\n    member Pr: int -> int with get\n\nval id2: x: int -> int\n\nval user: int\n"
+    let a = "module Proj.A\n\ntype T() =\n    member _.One(x) = x\n    member _.Hid(x) = x\n    member _.Two(x) = x\n    member _.Two(x: int, y: int) = x + y\n    member _.Three(x) = x\n    member _.Three(x: string) = x\n    member _.Pr with get (i: int) = i\n\nlet id2 x = x\n\nlet user = T().One 1 + T().Two 1 + T().Two(1, 2) + T().Three 1 + T().Hid 1 + id2 1 + T().Pr(1)\n"
+    let u = "module Proj.U\n\nopen Proj.A\n\nlet z = T().One 1 + T().Two 1 + T().Two(1, 2) + T().Three 1 + T().Three \"s\" + id2 1\n"
+
+    { Name = "implementations more generic than their signature"
+      Files = [ "A.fsi", si; "A.fs", a; "U.fs", u ]
+      Steps =
+        [ "blank line in the implementation", [ "A.fs", blankAbove "type T" a ]
+          "a re-check of a member, same print", [ "A.fs", rep "member _.One(x) = x" "member _.One(x) =  x" (blankAbove "type T" a) ]
+          "blank line in the signature", [ "A.fsi", blankAbove "type T" si ]
+          "overloads reordered in the signature", [ "A.fsi", (blankAbove "type T" si).Replace("    member Two: x: int -> int\n    member Two: x: int * y: int -> int\n", "    member Two: x: int * y: int -> int\n    member Two: x: int -> int\n") ] ] }
+
 let batteries = [ unsigned; signed ]
 
-let all = batteries @ collisions
+let libUnsigned =
+    { Name = "Lib, unsigned"
+      Files = [ "A.fs", aText ]
+      Steps = aSteps aText |> List.truncate 2 |> List.map (fun (n, t) -> n, [ "A.fs", t ]) }
+
+let libSigned =
+    { Name = "Lib, signed"
+      Files = [ "A.fsi", aSig; "A.fs", aText ]
+      Steps =
+        [ "blank line in the implementation", [ "A.fs", rep "let value = 1" "\nlet value = 1" aText ]
+          "blank line in the signature", [ "A.fsi", rep "val value" "\nval value" aSig ] ] }
+
+let all = batteries @ [ unmatched; unpaired; conformed ] @ collisions

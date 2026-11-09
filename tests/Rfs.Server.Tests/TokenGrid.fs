@@ -62,6 +62,109 @@ let tokensOf (text: string) : Token list =
                     EndColumn = endColumn }
               | _ -> () ]
 
+/// Runs a project of the scenario's files, and one file `App.fs` in a project referencing it in memory, both by
+/// declaration. `atState` gets the state of the referenced project, whose `OwnersOf` knows both, App's graph and App's file.
+let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectGraph -> string -> Task<'T list>) : Task<'T list> =
+    task {
+        let dir = Directory.CreateTempSubdirectory "rfs-token-grid-"
+
+        try
+            let libDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "Lib")).FullName
+            let appDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "App")).FullName
+            let paths = lib.Files |> List.map (fun (n, _) -> n, Path.Combine(libDir, n)) |> Map.ofList
+
+            for n, t in lib.Files do
+                File.WriteAllText(paths[n], t)
+
+            let appFile = Path.Combine(appDir, "App.fs")
+            File.WriteAllText(appFile, appText)
+            let files = lib.Files |> List.map (fun (n, _) -> paths[n])
+            let implementations = files |> List.filter (fun f -> not (f.EndsWith ".fsi"))
+            let! deps = ProjectSpec.load depsProject
+            let baseSpec = ProjectSpec.sequential deps
+            let libSpec = { baseSpec with ProjectFile = Path.Combine(libDir, "Lib.fsproj"); SourceFiles = files }
+
+            let appSpec =
+                { baseSpec with
+                    ProjectFile = Path.Combine(appDir, "App.fsproj")
+                    SourceFiles = [ appFile ]
+                    ReferencedProjects = [ libSpec.ProjectFile ]
+                    ReferencedFrameworks = [ "" ]
+                    OtherOptions = ("-r:" + Path.Combine(libDir, "Lib.dll")) :: baseSpec.OtherOptions }
+
+            use host = GraphHost.Start "token grid"
+            let! (libGraph: ProjectGraph) = ProjectGraph.Create(host, libSpec)
+            let! (appGraph: ProjectGraph) = ProjectGraph.Create(host, appSpec, [ libGraph ])
+
+            for f in implementations do
+                libGraph.Promote f
+
+            appGraph.Promote appFile
+            let mutable texts = lib.Files |> List.map (fun (n, t) -> paths[n], t) |> Map.ofList
+            let results = ResizeArray<'T>()
+
+            let owners (file: string) =
+                [ if List.exists (fun f -> String.Equals(f, file, StringComparison.OrdinalIgnoreCase)) files then yield libGraph
+                  if String.Equals(file, appFile, StringComparison.OrdinalIgnoreCase) then yield appGraph ]
+
+            let compareAt (step: string) =
+                task {
+                    let! _ = libGraph.AllDiagnostics() |> wait
+                    let! _ = appGraph.AllDiagnostics() |> wait
+
+                    for f in implementations do
+                        let! _ = libGraph.WhenPromoted(f, CancellationToken.None) |> wait
+                        ()
+
+                    let! _ = appGraph.WhenPromoted(appFile, CancellationToken.None) |> wait
+                    let current = texts
+                    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions libSpec)
+                    let reader (f: string) = (let t = current[f] in hash t, lazy t)
+
+                    let reference (file: string) =
+                        task {
+                            let! _, c, _ =
+                                checker.ParseAndCheckFileInProject(libSpec.ProjectFile, Array.ofList files, reader, file)
+                                |> Async.StartAsTask
+
+                            return c
+                        }
+
+                    let! found =
+                        atState
+                            { Scenario = lib.Name
+                              Step = step
+                              Graph = libGraph
+                              Files = files
+                              Implementations = implementations
+                              TextOf = fun f -> current[f]
+                              Reference = reference
+                              OwnersOf = owners }
+                            appGraph
+                            appFile
+
+                    results.AddRange found
+                }
+
+            do! compareAt "as checked"
+
+            for step, changes in lib.Steps do
+                for n, t in changes do
+                    texts <- texts.Add(paths[n], t)
+                    libGraph.SetText(paths[n], t) |> ignore
+
+                do! compareAt step
+
+            appGraph.Dispose()
+            libGraph.Dispose()
+            return List.ofSeq results
+        finally
+            try
+                dir.Delete true
+            with :? IOException | :? UnauthorizedAccessException ->
+                ()
+    }
+
 /// Runs the scenario, by declaration when `promote` and file level otherwise, and collects what `atState` says of the
 /// first text and of the text after each step.
 let run (promote: bool) (scenario: Scenario) (atState: State -> Task<'T list>) : Task<'T list> =

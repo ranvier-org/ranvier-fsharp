@@ -343,16 +343,22 @@ let locationDiffs (s: Session) (files: string list) : Task<string list> =
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
         let differences = ResizeArray<string>()
+        let references = Dictionary<string, FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>(StringComparer.OrdinalIgnoreCase)
 
-        for file in files do
-            let results = graph[file].CheckResults
-            let! signatureOf = currentSignatures s file results
-
+        // Over every implementation file: a use in one file reads a tie in the file that defines it
+        for file in s.Spec.SourceFiles |> List.filter (fun f -> not (f.EndsWith ".fsi")) do
             let! _, reference, _ =
                 checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
                 |> Async.StartAsTask
 
-            let ties = tiesIn reference
+            references[file] <- reference
+
+        let ties = references.Values |> Seq.map tiesIn |> Set.unionMany
+
+        for file in files do
+            let results = graph[file].CheckResults
+            let! signatureOf = currentSignatures s file results
+            let reference = references[file]
             let actual = locationsOf ties signatureOf file results
             let expected = locationsOf ties _.Symbol.SignatureLocation file reference
             let name = IO.Path.GetFileName file

@@ -27,19 +27,33 @@ let private show (r: range option) =
     | None -> "none"
     | Some r -> sprintf "%s %d,%d-%d,%d" (Path.GetFileName r.FileName) r.StartLine r.StartColumn r.EndLine r.EndColumn
 
-/// Why answering nothing is allowed here, if it is:
-/// - a parameter: the symbol's own location is stale in a signature or from another file, and a parameter has no key;
-/// - a namespace: every file that opens a fragment of it declares it, and which FCS names depends on the check order;
-/// - a tie: in a file that doesn't compile, a key that two definitions share, which nothing current can tell apart.
-let private limitOf (check: FSharpCheckFileResults) (ties: HashSet<string>) (token: Token) =
+/// Why answering nothing is allowed here, if it is. A parameter or local in the asking file, outside a signature, is not
+/// excused, nor a namespace token of the file's own header.
+/// - "signed parameter": FCS lands in a signature, whose parameter has no key to look it up by;
+/// - "named argument": its parameter is another row's or another file's, with no key either;
+/// - "namespace": elsewhere than its own header: every file that opens a fragment of it declares it;
+/// - "tie": in a file that doesn't compile, a key that two definitions share, which nothing current can tell apart;
+/// - "generic overload": an implementation more generic than its signature, with another overload of as many arguments
+///   there: nothing says which it conformed to.
+let private limitOf (check: FSharpCheckFileResults) (file: string) (ties: HashSet<string>) (token: Token) (expected: range option) =
+    let isNamespace (s: FSharpSymbol) = match s with :? FSharpEntity as e -> e.IsNamespace | _ -> false
+
+    let isHeader () =
+        check.GetAllUsesOfAllSymbolsInFile()
+        |> Seq.exists (fun d -> d.IsFromDefinition && d.Range.EndLine = token.Line + 1 && d.Range.EndColumn = token.EndColumn && isNamespace d.Symbol)
+
+    let inSignature = expected |> Option.exists (fun r -> r.FileName.EndsWith ".fsi")
+    let elsewhere = expected |> Option.exists (fun r -> not (String.Equals(r.FileName, file, StringComparison.OrdinalIgnoreCase)))
+
     match check.GetSymbolUseAtLocation(token.Line + 1, token.EndColumn, token.LineText, token.Names) with
     | None -> None
     | Some u ->
         match u.Symbol, DeclarationChecker.SymbolKey u.Symbol with
-        | :? FSharpEntity as e, _ when e.IsNamespace -> Some "namespace"
+        | s, _ when isNamespace s -> if isHeader () then None else Some "namespace"
         | _, Some key when ties.Contains key -> Some "tie"
-        | :? FSharpParameter, None -> Some "parameter"
-        | :? FSharpMemberOrFunctionOrValue, None -> Some "parameter"
+        | :? FSharpParameter, None -> Some "named argument"
+        | :? FSharpMemberOrFunctionOrValue, None when inSignature || elsewhere -> Some "signed parameter"
+        | :? FSharpMemberOrFunctionOrValue as v, Some _ when inSignature && v.IsMember && v.GenericParameters.Count > 0 -> Some "generic overload"
         | _ -> None
 
 /// The keys that two definitions of a file with errors share
@@ -82,7 +96,7 @@ let private compareState (state: State) : Task<Outcome list> =
                 else
                     let where = sprintf "%s / %s: %s %d,%d %A [%s]" state.Scenario state.Step (Path.GetFileName file) (token.Line + 1) token.EndColumn token.Names (token.LineText.Trim())
 
-                    match actual, limitOf check ties token with
+                    match actual, limitOf check file ties token expected with
                     | None, Some limit -> outcomes.Add(Limit limit)
                     | _ -> outcomes.Add(Different $"%s{where}: ours %s{show actual}, FCS %s{show expected}")
 
@@ -114,11 +128,74 @@ let private stressFiles =
     let later = "module Proj.U\n\nlet a = Proj.S.O().M 1\n\nlet b = Proj.S.O().M [ Proj.S.v ]\n\nlet c = Proj.S.O().M Proj.S.v\n"
     types, signature, implementation, later
 
+/// App on Lib in memory, at every token of App. FCS can't check App on Lib's unbuilt text, so a token whose key is Lib's
+/// must answer where FCS on Lib says that key's definition is; a token in App itself only has to stay in App.
+let private expectAcrossProjects (lib: Scenario) (appText: string) =
+    task {
+        let! outcomes =
+            runReferencing lib appText (fun state app appFile ->
+                task {
+                    let definitions = Dictionary<string, Set<string>>()
+
+                    for file in state.Implementations do
+                        let! check = state.Reference file
+
+                        for u in check.GetAllUsesOfAllSymbolsInFile() do
+                            match u.IsFromDefinition, DeclarationChecker.SymbolKey u.Symbol with
+                            | true, Some key ->
+                                let here = show u.Symbol.SignatureLocation
+                                definitions[key] <- (match definitions.TryGetValue key with | true, s -> s.Add here | _ -> Set.singleton here)
+                            | _ -> ()
+
+                    let found = ResizeArray<Outcome>()
+
+                    for token in tokensOf appText do
+                        let! key =
+                            (app: Rfs.Checker.ProjectGraph).ReadFile(
+                                appFile,
+                                (fun view ->
+                                    view.Result.CheckResults.GetSymbolUseAtLocation(token.Line + 1, token.EndColumn, token.LineText, token.Names)
+                                    |> Option.bind (fun u ->
+                                        match u.Symbol with
+                                        | :? FSharpEntity as e when e.IsNamespace -> None
+                                        | :? FSharpParameter -> None
+                                        | s -> DeclarationChecker.SymbolKey s)),
+                                CancellationToken.None
+                            )
+
+                        let! actual = Definition.at state.OwnersOf app appFile token.Line token.Character CancellationToken.None
+
+                        match key with
+                        | Some k when k.StartsWith "Lib|" ->
+                            let want = match definitions.TryGetValue k with | true, s -> s | _ -> Set.empty
+
+                            if want.Contains(show actual) then
+                                found.Add Same
+                            else
+                                found.Add(Different $"%s{state.Step}: %d{token.Line + 1},%d{token.EndColumn} %A{token.Names} [%s{token.LineText.Trim()}]: ours %s{show actual}, FCS on Lib %A{Set.toList want}")
+                        | _ ->
+                            match actual with
+                            | Some r when not (String.Equals(r.FileName, appFile, StringComparison.OrdinalIgnoreCase)) ->
+                                found.Add(Different $"%s{state.Step}: %d{token.Line + 1},%d{token.EndColumn} %A{token.Names}: no key of Lib's, and ours %s{show actual}")
+                            | _ -> found.Add Same
+
+                    return List.ofSeq found
+                })
+
+        let different = outcomes |> List.choose (function Different d -> Some d | _ -> None)
+        printfn "grid %s, App on Lib: %d tokens, %d differ" lib.Name outcomes.Length different.Length
+        let shown = different |> List.truncate 25 |> String.concat "\n  "
+        Expect.isTrue different.IsEmpty $"%d{different.Length} of %d{outcomes.Length} tokens differ:\n  %s{shown}"
+    }
+
 [<Tests>]
 let tests =
     testList
         "DefinitionGrid"
-        [ testTask "requests into a signature file end while the files its types reach are edited" {
+        [ testTask "App on Lib, unsigned" { do! expectAcrossProjects DefinitionGridTexts.libUnsigned DefinitionGridTexts.uses }
+          testTask "App on Lib, signed" { do! expectAcrossProjects DefinitionGridTexts.libSigned DefinitionGridTexts.uses }
+
+          testTask "requests into a signature file end while the files its types reach are edited" {
               let types, signature, implementation, later = stressFiles
 
               let scenario =

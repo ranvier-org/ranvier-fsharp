@@ -680,7 +680,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 let! fromImplementation = inImplementation implementation
 
                 match fromImplementation with
-                | Some r when isSignature r.FileName -> return! (if holds signature then inSignature signature true else Task.FromResult None)
+                // The range's own file: a signature pairs with its implementation by module name, not by file name
+                | Some r when isSignature r.FileName -> return! (if holds r.FileName then inSignature r.FileName true else Task.FromResult None)
                 | _ -> return fromImplementation
             elif holds signature then
                 return! inSignature signature false
