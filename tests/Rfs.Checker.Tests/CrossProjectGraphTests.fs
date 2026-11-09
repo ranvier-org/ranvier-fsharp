@@ -133,6 +133,21 @@ let tests =
               do! expectOracle s r.Diagnostics "C.fs edited after: A.fs's new Shape, B.fs's old"
           }
 
+          testTask "a body edit of a promoted file checks nothing whole" {
+              let! s = start ()
+              use _ = (s :> IAsyncDisposable)
+              let a = fileOf "A.fs"
+              s.Graph.Promote a
+              let! _ = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+              let! _ = s.Graph.AllDiagnostics() |> settle
+              let whole = s.Graph.FileLevelChecks
+              let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+              s.Graph.OnScopedCheck(fun f -> seen.Enqueue(Path.GetFileName f))
+              let! r = replace s a "baseValue = 10" "baseValue = 11"
+              do! expectOracle s r.Diagnostics "a body"
+              Expect.equal (s.Graph.FileLevelChecks - whole) 0L $"no file is checked whole: %A{List.ofSeq seen}"
+          }
+
           testTask "signature edit in Lib updates App without build" {
               let! s = startMulti FileLevel
               use _ = (s :> IAsyncDisposable)
@@ -278,6 +293,25 @@ let tests =
               Expect.equal old 0 "the reader's result is the one it was given"
               let! now = s.App.ReadFile(useFs, (fun (view: FileView) -> view.Result.Diagnostics.Length), CancellationToken.None) |> settle
               Expect.equal now (List.length broken) "the next read is on the new context"
+          }
+
+          // No oracle here: a project that does not compile has no assembly to compare with
+          testTask "a Lib that does not check still gives App an assembly" {
+              let! s = startMulti FileLevel
+              use _ = (s :> IAsyncDisposable)
+              let original = s.Texts[libFs]
+              change s libFs "let shapeOf ()" "let unknown = undefinedName\n\nlet rec inferred x = nope x\n\nlet shapeOf ()"
+              let! typeErrors = settled s
+              Expect.isEmpty typeErrors "App reads what Lib did define"
+              change s useFs "let z = g 2" "let z = g 2\n\nlet u: string = unknown"
+              let! _ = settled s
+              set s libFs (original.Replace("let f (x: int) : int = x + 1", "let f (x: int) : int ="))
+              let! syntaxError = settled s
+              Expect.isNonEmpty syntaxError "App reports what Lib lost"
+              set s useFs (File.ReadAllText useFs)
+              set s libFs original
+              let! fixedAgain = expectAppOracle s "Lib as on disk again"
+              Expect.isEmpty fixedAgain "clean again"
           }
 
           testTask "disposing Lib ends App's waits and App" {

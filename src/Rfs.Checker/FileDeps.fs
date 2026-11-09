@@ -48,14 +48,13 @@ type internal FileSig =
     /// after it hold its entities, by identity, for as long as they keep their results, so its signature may not move
     /// to a new entity of the same print under them. A new setup or a new fingerprint gives the new signature: the
     /// files that depend on this one (transitively, by FileDependencies) were set up from the same files and are being
-    /// checked again. A fingerprint not yet taken is not taken here: the file had no dependents when it was checked.
+    /// checked again. The new fingerprint is taken only when the last one was: nothing has read this file's otherwise.
     static member Next(previous: FileSig voption, signature: FileSignature, before: FileSignature list) =
         match previous with
         | ValueSome p when
             obj.ReferenceEquals(p.Signature, signature)
             || (FileSig.SameBefore(p.Before, before)
                 && p.Signature.HasFingerprint
-                && signature.HasFingerprint
                 && String.Equals(p.Fingerprint, signature.Fingerprint, StringComparison.Ordinal))
             ->
             p

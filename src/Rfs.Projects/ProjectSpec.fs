@@ -73,9 +73,10 @@ module ProjectSpec =
                 failwith $"dotnet restore failed for {fsproj}:\n{stdout.Result}{stderr.Result}"
         }
 
-    // MSBuildLocator may register only once per process.
+    // MSBuildLocator may register only once per process. The SDK is found from the application's directory: under `dotnet`
+    // the process's own is the dotnet install, which ignores the repo's global.json and finds an SDK this runtime can't load.
     let private toolsPath =
-        lazy (Init.init (DirectoryInfo(Path.GetDirectoryName(Environment.ProcessPath))) None)
+        lazy (Init.init (DirectoryInfo AppContext.BaseDirectory) None)
 
     let private loadFresh (fsproj: string) : ProjectSpec =
         // AssemblyInfo and TargetFramework attribute files generated into obj do not take part in declaration checking.

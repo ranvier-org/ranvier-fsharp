@@ -323,6 +323,41 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             createRoot (fun o ->
                 filesNow <- createSignal files
 
+                if not references.IsEmpty then
+                    // The context for the references as they stand; the current one while they settle or keep their fingerprints
+                    contextMemo <-
+                        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                            let states = Nodes.valuesOf (references |> List.map (fun (r: ProjectGraph) -> r.Assembly) |> Array.ofList)
+
+                            let built =
+                                states
+                                |> Array.choose (function
+                                    | Built a -> Some a
+                                    | Unsettled -> None)
+
+                            if built.Length < states.Length || (built |> Array.map _.Fingerprint) = seen.Fingerprints then
+                                Task.FromResult seen
+                            else
+                                let started = Diagnostics.Stopwatch.GetTimestamp()
+
+                                task {
+                                    let! ctx = ProjectGraph.MakeContext(options, paths, built)
+                                    project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
+                                    return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
+                                })
+
+                    createEffect (fun () ->
+                        match contextMemo.TryValue with
+                        | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> this.Restart next)
+                        | _ -> ())
+
+                o)
+
+    /// The assembly's nodes, made when a project that references this one first asks: a project nothing references
+    /// takes no fingerprint for them. Graph thread.
+    member private _.AssemblyNodes() : Memo<AssemblyState> =
+        if isNull (box assemblyMemo) then
+            runWithOwner linkOwner (fun () ->
                 // Off the graph thread: taking a fingerprint no check asked for describes the file, and hashes them all
                 assemblyFlight <-
                     createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
@@ -367,37 +402,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                                 | _ -> false
 
                             member _.GetHashCode _ = 0 }
-                        (fun _ -> assemblyFlight.Value)
+                        (fun _ -> assemblyFlight.Value))
 
-                if not references.IsEmpty then
-                    // The context for the references as they stand; the current one while they settle or keep their fingerprints
-                    contextMemo <-
-                        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
-                            let states = Nodes.valuesOf (references |> List.map (fun (r: ProjectGraph) -> r.Assembly) |> Array.ofList)
-
-                            let built =
-                                states
-                                |> Array.choose (function
-                                    | Built a -> Some a
-                                    | Unsettled -> None)
-
-                            if built.Length < states.Length || (built |> Array.map _.Fingerprint) = seen.Fingerprints then
-                                Task.FromResult seen
-                            else
-                                let started = Diagnostics.Stopwatch.GetTimestamp()
-
-                                task {
-                                    let! ctx = ProjectGraph.MakeContext(options, paths, built)
-                                    project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
-                                    return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
-                                })
-
-                    createEffect (fun () ->
-                        match contextMemo.TryValue with
-                        | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> this.Restart next)
-                        | _ -> ())
-
-                o)
+        assemblyMemo
 
     /// Every file starts again on `next`'s context, on its current text, with what is wanted wanted. Graph thread.
     member private _.Restart(next: ReferencesSeen) =
@@ -424,11 +431,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     member internal _.Spec: ProjectSpec = spec
     member internal _.References: ProjectGraph list = references
-    member internal _.Assembly: Memo<AssemblyState> = assemblyMemo
+    member internal this.Assembly: Memo<AssemblyState> = this.AssemblyNodes()
 
     /// The project's assembly once every write posted to its files is applied, they are settled and so are the projects
     /// it references. Graph thread.
-    member internal _.SettledAssembly() : ProjectAssembly voption =
+    member internal this.SettledAssembly() : ProjectAssembly voption =
         let mutable applied = true
 
         for j in 0 .. files.Length - 1 do
@@ -436,7 +443,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 applied <- false
 
         if applied && referencesCurrent () then
-            match assemblyMemo.TryValue with
+            match this.AssemblyNodes().TryValue with
             | Ready(Built a) -> ValueSome a
             | Failed e -> raise (InvalidOperationException($"%s{spec.ProjectFile}: its assembly failed", e))
             | _ -> ValueNone
