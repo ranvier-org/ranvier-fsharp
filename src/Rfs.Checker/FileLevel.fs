@@ -136,22 +136,23 @@ module internal WholeFile =
         let graphOwner = getOwner ()
 
         let whole =
-            Setup.build
-                project
-                path
-                index
-                deps
-                signatureOf
-                scopedKey
-                (fun key ->
-                    // A file nothing depends on takes its signature's fingerprint only if something asks for it later
-                    let r =
-                        project.Measure("checkFile", fun () -> DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse, key.HasDependents))
-                    project.AddFinishPhaseTicks r.PhaseTicks
-                    project.AddPartsAllocated("checkFile.", r.PhaseAllocated)
-                    project.CountFileLevelCheck()
-                    r)
-                (fun r -> Some r.Diagnostics)
+            Labels.named (fun () -> $"filelevel %s{path}") (fun () ->
+                Setup.build
+                    project
+                    path
+                    index
+                    deps
+                    signatureOf
+                    scopedKey
+                    (fun key ->
+                        // A file nothing depends on takes its signature's fingerprint only if something asks for it later
+                        let r =
+                            project.Measure("checkFile", fun () -> DeclarationChecker.CheckFile(ctx, key.Before, key.Parsed.Parse, key.HasDependents))
+                        project.AddFinishPhaseTicks r.PhaseTicks
+                        project.AddPartsAllocated("checkFile.", r.PhaseAllocated)
+                        project.CountFileLevelCheck()
+                        r)
+                    (fun r -> Some r.Diagnostics))
 
         let wanted = createSignal false
         let decl = createSignal (ValueNone: DeclFile voption)
@@ -414,6 +415,13 @@ module internal WholeFile =
                 | ValueSome g -> g.SegmentRows()
                 | ValueNone -> 0
 
+#if RANVIER_TRACE
+            member _.CheckNode key =
+                match decl.Peek with
+                | ValueSome g -> g.CheckNodeOf key
+                | ValueNone -> ValueNone
+#endif
+
             member _.Promote() =
                 if not wanted.Peek then
                     batch (fun () ->
@@ -562,6 +570,9 @@ module internal WholeFile =
             member _.Results _ = raise (wholeOnly file.Path)
             member _.FileResult _ = ValueNone
             member _.SegmentRows() = 0
+#if RANVIER_TRACE
+            member _.CheckNode _ = ValueNone
+#endif
             member _.Promote() = ()
             member _.Demote() = ()
             member _.Promoted version = if file.Version = version then ValueSome FileLevel else ValueNone

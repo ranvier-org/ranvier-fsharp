@@ -215,6 +215,20 @@ type internal SegmentCheck(span: DeclarationKey[], start: StartInfo, rows: IRead
             seen[k] <- c
             c
 
+/// The names a traced build gives the graph's nodes. Without RANVIER_TRACE `named` is the node's creation and nothing
+/// else: the label is a lambda that is never called, and both inline away.
+module internal Labels =
+    /// The key as the labels and the answer of `rfs/why` write it
+    let key (k: DeclarationKey) : string =
+        String.Join(".", k.ModulePath @ [ k.Name ]) + (if k.Ordinal > 0 then $"(%d{k.Ordinal})" else "")
+
+#if RANVIER_TRACE
+    let inline named ([<InlineIfLambda>] label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T =
+        Trace.named (label ()) create
+#else
+    let inline named ([<InlineIfLambda>] _label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T = create ()
+#endif
+
 /// A declaration's nodes, created when its key enters the file and disposed when it leaves.
 [<AllowNullLiteral>]
 type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDeclaration) as this =
@@ -259,16 +273,18 @@ type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDec
 
     do
         check <-
-            createMemo (fun _ ->
-                match role.Value with
-                | Role.Single -> own.Value
-                | Role.Leader _ -> segment.Value.Rows[key]
-                | Role.Member leader -> (file.RowOf leader).Segment.Value.Rows[key])
+            Labels.named (fun () -> $"check %s{file.Path} %s{Labels.key key}") (fun () ->
+                createMemo (fun _ ->
+                    match role.Value with
+                    | Role.Single -> own.Value
+                    | Role.Leader _ -> segment.Value.Rows[key]
+                    | Role.Member leader -> (file.RowOf leader).Segment.Value.Rows[key]))
 
     let latest = Nodes.latestOfMemo check
 
     let token =
-        createMemoWithComparer StringComparer.Ordinal (fun _ -> latest.Value.Print)
+        Labels.named (fun () -> $"fingerprint %s{file.Path} %s{Labels.key key}") (fun () ->
+            createMemoWithComparer StringComparer.Ordinal (fun _ -> latest.Value.Print))
 
     let origin =
         createMemoWithComparer HashIdentity.Reference (fun _ -> latest.Value.Origin)
@@ -887,6 +903,11 @@ type internal IFileNode =
     abstract DeclarationObjects: unit -> WeakReference list
     /// Creates the effects that keep the file checked. Called once every file's nodes exist.
     abstract Activate: unit -> unit
+#if RANVIER_TRACE
+    /// The node holding declaration `key`'s check, when the file is checked by declaration and has the declaration.
+    /// Graph thread.
+    abstract CheckNode: key: DeclarationKey -> INode voption
+#endif
 
 /// The nodes that check an implementation file one declaration at a time: created when the file is promoted, and
 /// disposed with their owner when it is demoted.
@@ -915,6 +936,11 @@ type internal DeclFile
     member _.SegmentRows() = segmentRows ()
     /// Each declaration's role as they stand. A tracked read; graph thread.
     member _.Roles() = roles ()
+
+#if RANVIER_TRACE
+    /// The node whose value is the declaration's check, for Trace.why. Graph thread.
+    member val CheckNodeOf: DeclarationKey -> INode voption = (fun _ -> ValueNone) with get, set
+#endif
 
     static member ResultsOf(finished: Finished) : IReadOnlyDictionary<DeclarationKey, DeclarationResult> =
         let d = Dictionary<DeclarationKey, DeclarationResult>(HashIdentity.Structural)
@@ -1066,23 +1092,24 @@ module internal FileNodes =
         let self = ref Unchecked.defaultof<AsyncMemo<StartInfo>>
 
         let start =
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
-                let s = setup.Value
-                let previous = self.Value.Peek
+            Labels.named (fun () -> $"start %s{path}") (fun () ->
+                createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
+                    let s = setup.Value
+                    let previous = self.Value.Peek
 
-                if not (isNull previous) && Nodes.same previous.Setup s then
-                    Task.FromResult previous
-                else
-                    // The current parse and snapshot: `s` keeps the key it was first read with
-                    let key = scopedKey.Value
-                    let hook = project.BeginFileHook
+                    if not (isNull previous) && Nodes.same previous.Setup s then
+                        Task.FromResult previous
+                    else
+                        // The current parse and snapshot: `s` keeps the key it was first read with
+                        let key = scopedKey.Value
+                        let hook = project.BeginFileHook
 
-                    Task.Run<StartInfo>(fun () ->
-                        // A flight superseded before it began does not set the file up
-                        ct.ThrowIfCancellationRequested()
-                        hook path
-                        let fileStart, env0 = whileStale ct (fun () -> DeclarationChecker.BeginFile(ctx, key.Before, key.Parsed.Parse))
-                        StartInfo(fileStart, env0, s)))
+                        Task.Run<StartInfo>(fun () ->
+                            // A flight superseded before it began does not set the file up
+                            ct.ThrowIfCancellationRequested()
+                            hook path
+                            let fileStart, env0 = whileStale ct (fun () -> DeclarationChecker.BeginFile(ctx, key.Before, key.Parsed.Parse))
+                            StartInfo(fileStart, env0, s))))
 
         self.Value <- start
         shared.Start <- start
@@ -1120,27 +1147,28 @@ module internal FileNodes =
         let stableInputs = Nodes.latestOfMemo inputs
 
         let finish =
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
-                let i = stableInputs.Value
+            Labels.named (fun () -> $"finish %s{path}") (fun () ->
+                createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                    let i = stableInputs.Value
 
-                Task.Run<Finished>(fun () ->
-                    task {
-                        use! _ = i.Start.Lock.WriteAsync()
-                        let watch = Diagnostics.Stopwatch.StartNew()
-                        // The parse of the text being finished: its diagnostics and #nowarn scopes are the ones published.
-                        let fileResult =
-                            DeclarationChecker.FinishFile(i.Start.Start, i.Checks |> Array.map (fun (_, c) -> c.Result), i.Parsed.Parse)
+                    Task.Run<Finished>(fun () ->
+                        task {
+                            use! _ = i.Start.Lock.WriteAsync()
+                            let watch = Diagnostics.Stopwatch.StartNew()
+                            // The parse of the text being finished: its diagnostics and #nowarn scopes are the ones published.
+                            let fileResult =
+                                DeclarationChecker.FinishFile(i.Start.Start, i.Checks |> Array.map (fun (_, c) -> c.Result), i.Parsed.Parse)
 
-                        project.AddFinishTicks watch.ElapsedTicks
-                        project.AddFinishReused fileResult.Reused
-                        project.AddFinishPhaseTicks fileResult.PhaseTicks
-                        project.AddPartsAllocated("finish.", fileResult.PhaseAllocated)
+                            project.AddFinishTicks watch.ElapsedTicks
+                            project.AddFinishReused fileResult.Reused
+                            project.AddFinishPhaseTicks fileResult.PhaseTicks
+                            project.AddPartsAllocated("finish.", fileResult.PhaseAllocated)
 
-                        return
-                            { Version = i.Parsed.Version
-                              Inputs = i
-                              FileResult = fileResult }
-                    }))
+                            return
+                                { Version = i.Parsed.Version
+                                  Inputs = i
+                                  FileResult = fileResult }
+                        })))
 
         shared.FinishLatest <- Nodes.latestOf finish
 
@@ -1241,15 +1269,26 @@ module internal FileNodes =
                 if not (live.Contains k) then
                     published.Remove k |> ignore
 
-        DeclFile(
-            parsed,
-            setup,
-            current,
-            unresolved,
-            publish,
-            (fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length),
-            (fun () -> shared.Roles.Value)
-        )
+        let declFile =
+            DeclFile(
+                parsed,
+                setup,
+                current,
+                unresolved,
+                publish,
+                (fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length),
+                (fun () -> shared.Roles.Value)
+            )
+
+#if RANVIER_TRACE
+        declFile.CheckNodeOf <-
+            fun key ->
+                match shared.Rows.TryGetValue key with
+                | true, row -> ValueSome(row.Check :> INode)
+                | _ -> ValueNone
+#endif
+
+        declFile
 
 /// Check results for a position in a file checked by declaration: a kept declaration was checked against the results
 /// before it as they were, so the names its sink captured can be older than those results. Off the graph thread, holding

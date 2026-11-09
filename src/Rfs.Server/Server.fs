@@ -108,6 +108,11 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 return LspResult.internalError ex.Message
         }
 
+    /// `rfs/why`: why the declaration at the position was checked again. Waits like the queries do.
+    member _.RfsWhy(p: WhyParams) : Async<LspResult<WhyAnswer option>> =
+        reading "rfs/why" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            Why.at graph path (int p.Position.Line) (int p.Position.Character) ct)
+
     interface ILspServer with
         member _.Initialize(p: InitializeParams) =
             async {
@@ -418,6 +423,7 @@ module Server =
         |> Map.filter (fun name _ -> implemented.Contains name)
         |> Map.add "fsharp/workspacePeek" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspacePeek p))
         |> Map.add "fsharp/workspaceLoad" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspaceLoad p))
+        |> Map.add "rfs/why" (serverRequestHandling (fun (s: RanvierServer) p -> s.RfsWhy p))
 
     /// Runs the server, telling `created` about the server the connection makes. For tests.
     let internal runWith (created: RanvierServer -> unit) (input: Stream) (output: Stream) : int =
