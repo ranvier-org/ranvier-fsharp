@@ -392,8 +392,12 @@ module internal WholeFile =
                     let index () =
                         Task.Run<FileUses>(
                             (fun () ->
-                                project.FlightHook "uses" path ct
-                                let u = SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct
+                                // Building a whole-checked result's check results refuses while the file's #line
+                                // directives are another parse's, as a check does. The hook is inside, as that build is
+                                let u =
+                                    Setup.runWhileDirectivesCurrent project ct (fun () ->
+                                        project.FlightHook "uses" path ct
+                                        SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct)
                                 project.CountUsesBuilt()
                                 u),
                             ct

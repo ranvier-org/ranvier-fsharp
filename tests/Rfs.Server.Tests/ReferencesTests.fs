@@ -864,6 +864,26 @@ let tests =
               Expect.stringContains (log.ToString()) "an injected index fault" "logged"
           }
 
+          testTask "an index build refused for another parse's #line directives is tried again, and the request answers" {
+              let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
+              use _ = disposing s
+              let aFile = file "A.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              let refusals = ref 3
+
+              graph.OnFlight(fun kind path _ ->
+                  if kind = "uses" && path.EndsWith "D.fs" && Interlocked.Decrement refusals >= 0 then
+                      raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives"))
+
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let! (answer: Answer) = (references s aFile at true).WaitAsync(TimeSpan.FromSeconds 30.)
+              Expect.isLessThan refusals.Value 0 "the build was refused, and tried again"
+
+              Expect.isTrue
+                  (answer |> Seq.exists (fun (path, _, _, _, _) -> path.EndsWith("D.fs", StringComparison.OrdinalIgnoreCase)))
+                  "D's use is in the answer"
+          }
+
           testTask "a member more generic than its signature answers nothing" {
               let! (s: Session) = start depsDir depsProject []
               use _ = disposing s
@@ -998,6 +1018,9 @@ let tests =
                   g.SetText(path, deep) |> ignore
                   let! (inner: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g path (deep.Split('\n').Length - 2) 6 CancellationToken.None
                   Expect.isNonEmpty inner "a row of 4000 lets answers"
+                  let first = inner |> Array.find (fun i -> i.Label = "a0")
+                  let! (resolved: Ionide.LanguageServerProtocol.Types.CompletionItem) = Completion.resolve g first path (deep.Split('\n').Length - 2) 6 CancellationToken.None
+                  Expect.isSome resolved.Detail "and so does its resolve"
                   g.Dispose()
                   (host :> IDisposable).Dispose()
               finally

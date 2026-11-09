@@ -247,4 +247,6 @@ module References =
                 | Keyed(key, landed, spelled) -> return! everywhere scope graph key landed spelled ct
             with
             | :? OperationCanceledException when not ct.IsCancellationRequested -> return Answer.Moved
+            // A file's #line directives stayed another parse's for as long as building its index waits for them
+            | :? SupersededLineDirectivesException when not ct.IsCancellationRequested -> return Answer.Moved
         }
