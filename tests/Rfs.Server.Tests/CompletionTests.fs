@@ -390,14 +390,13 @@ let tests =
               for line, character in [ fst (after text "let g" 0), 0; fst (after text "let h" 0), 0; fst (after text "    inner" 0), 4 ] do
                   let! (items: JsonObject[] option) = completionItems s efs (line, character)
 
-                  for label, own, other in [ "f", "Adds one", "Doc of g"; "g", "Doc of g", "Adds one" ] do
+                  for label, other in [ "f", "Doc of g"; "g", "Adds one" ] do
                       match items.Value |> Array.tryFind (fun i -> i["label"].GetValue<string>() = label) with
                       | None -> ()
                       | Some item ->
                           let! (back: JsonObject) = resolved s item
                           let doc = back["documentation"].["value"].GetValue<string>()
                           Expect.isFalse (doc.Contains other) $"%s{label} at (%d{line},%d{character}) shows no other item's doc: %s{doc}"
-                          ignore own
 
               Expect.isGreaterThan graph.AdHocChecks 0L "rows were checked again"
           }
