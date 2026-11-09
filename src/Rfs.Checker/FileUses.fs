@@ -40,7 +40,9 @@ type KeyUses =
 /// read of its symbol.
 [<Struct; NoComparison; NoEquality>]
 type DefinitionSite =
-    { Key: string
+    { /// The raw key, which only a signature's lookup reads (the exact match among what conformed); null in an
+      /// implementation's table, whose entries are by the key already
+      Key: string
       /// The symbol's signature location
       Location: range voption
       IsGetter: bool
@@ -94,11 +96,12 @@ module internal DefinitionSites =
           IsGetter = getter
           IsSetter = setter }
 
-    let group (by: string -> string) (sites: DefinitionSite seq) : Dictionary<string, DefinitionSite[]> =
+    /// The sites by `by` of each one's key, keeping the key in each site only when `keepKey`
+    let group (by: string -> string) (keepKey: bool) (sites: DefinitionSite seq) : Dictionary<string, DefinitionSite[]> =
         let d = Dictionary<string, DefinitionSite[]>()
 
         for key, g in sites |> Seq.groupBy (fun s -> by s.Key) do
-            d[key] <- Array.ofSeq g
+            d[key] <- g |> Seq.map (fun s -> if keepKey then s else { s with Key = null }) |> Array.ofSeq
 
         d
 
@@ -150,7 +153,7 @@ type FileUses
 
     /// An estimate of the bytes it holds (entries, key strings, arrays, ranges), for measuring: the uses by key, then the
     /// definitions by raw key
-    member _.Footprint: struct (int64 * int64) =
+    member internal _.Footprint: struct (int64 * int64) =
         // A range is two int64s; arrays hold structs inline
         let rangeBytes = 16L
         let text (s: string) = 22L + 2L * int64 s.Length
@@ -167,7 +170,7 @@ type FileUses
                 raw <- raw + entry + text k + 24L
 
                 for site in sites do
-                    raw <- raw + 8L + (8L + rangeBytes) + 8L + text site.Key
+                    raw <- raw + 8L + (8L + rangeBytes) + 8L + (if isNull site.Key then 0L else text site.Key)
 
         struct (keyed, raw)
 
@@ -311,9 +314,20 @@ module SymbolUses =
 
     let private noSites = Dictionary<string, DefinitionSite[]>()
 
-    /// Each definition's site by its raw key, constructors included
+    /// Each definition's site by its raw key, constructors included. A union case's or exception's fields too: the
+    /// compiler reports a definition only for a named one, and an unnamed one (`Item1`, `Data0`) can be named in a use.
     let private sitesOf (definitions: seq<FSharpSymbol>) : DefinitionSite list =
-        [ for symbol in definitions do
+        let withFields (symbol: FSharpSymbol) : FSharpSymbol seq =
+            seq {
+                yield symbol
+
+                match symbol with
+                | :? FSharpUnionCase as c -> yield! c.Fields |> Seq.cast<FSharpSymbol>
+                | :? FSharpEntity as e when e.IsFSharpExceptionDeclaration -> yield! e.FSharpFields |> Seq.cast<FSharpSymbol>
+                | _ -> ()
+            }
+
+        [ for symbol in definitions |> Seq.collect withFields do
               match DeclarationChecker.SymbolKey symbol with
               | Some key -> DefinitionSites.siteOf key symbol
               | None -> () ]
@@ -324,7 +338,7 @@ module SymbolUses =
         let all = check.GetAllUsesOfAllSymbolsInFile ct |> Seq.toArray
 
         let definitions =
-            all |> Seq.filter _.IsFromDefinition |> Seq.map _.Symbol |> sitesOf |> DefinitionSites.group DefinitionSites.withoutSetter
+            all |> Seq.filter _.IsFromDefinition |> Seq.map _.Symbol |> sitesOf |> DefinitionSites.group DefinitionSites.withoutSetter false
 
         all
         |> Seq.choose (fun u ->
@@ -344,11 +358,35 @@ module SymbolUses =
     /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
     /// no locations to tell apart in the uses.
     let internal ofSignature (source: obj) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
+        // What SignatureLocation walks is the file's own module type. A module's enclosing namespaces are in it, with no
+        // definition use; a `type System.String with` augmentation's use is a definition of what another file defines.
+        let enclosing (symbol: FSharpSymbol) : FSharpSymbol seq =
+            seq {
+                yield symbol
+
+                match symbol with
+                | :? FSharpEntity as e ->
+                    let mutable parent = e.DeclaringEntity
+
+                    while parent |> Option.exists _.IsNamespace do
+                        yield parent.Value :> FSharpSymbol
+                        parent <- parent.Value.DeclaringEntity
+                | _ -> ()
+            }
+
+        let file =
+            uses |> Array.tryPick (fun (struct (r, definition, _)) -> if definition then Some r.FileName else None)
+
         let conforming =
             uses
             |> Seq.choose (fun (struct (_, definition, symbol)) -> if definition then Some symbol else None)
+            |> Seq.collect enclosing
             |> sitesOf
-            |> DefinitionSites.group DefinitionSites.conformance
+            |> List.filter (fun s ->
+                match s.Location, file with
+                | ValueSome r, Some f -> String.Equals(r.FileName, f, StringComparison.OrdinalIgnoreCase)
+                | _ -> true)
+            |> DefinitionSites.group DefinitionSites.conformance true
 
         // As in an implementation file (keysIn): a pattern's case names no value in the signature that lists the pattern
         let patterns =

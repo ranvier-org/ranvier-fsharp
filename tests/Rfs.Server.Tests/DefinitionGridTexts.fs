@@ -444,6 +444,9 @@ let uses =
       "let u42 = u1.Equals u1"
       "let u43 = u3.IsCaseA"
       "let u44 = typeof<Rec>"
+      "let u45 = CaseC(Item1 = 2, Item2 = \"x\")"
+      "let u46 = match u3d with CaseC(Item1 = i, Item2 = _) -> i | _ -> 0"
+      "let u47 = match u13 with Boom(Data0 = d) -> d | _ -> 0"
       ""
     ]
 
