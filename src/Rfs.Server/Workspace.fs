@@ -302,7 +302,16 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             let created = ref None
 
             try
-                let! graph = ProjectGraph.Create(host, spec)
+                // The ones that are not loaded (they failed to) stay the files on disk
+                let references =
+                    lock gate (fun () ->
+                        spec.ReferencedProjects
+                        |> List.choose (fun r ->
+                            match entries.TryGetValue r with
+                            | true, e -> Some e.Graph
+                            | _ -> None))
+
+                let! graph = ProjectGraph.Create(host, spec, references)
                 created.Value <- Some graph
                 onGraphCreated graph
 
@@ -410,15 +419,36 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         task {
             let project = Path.GetFullPath project
 
-            match remove project with
-            | Some e -> (e.Graph :> IDisposable).Dispose()
-            | None -> ()
+            // A referencing project's context holds the old graph's assembly, and disposing it disposes theirs: they
+            // are hidden with it, and load again after it, on its new graph or, if it no longer loads, the file on disk
+            let referencing =
+                let all = snapshot ()
+                let found = List<string>()
+
+                let rec visit (file: string) =
+                    for e in all do
+                        if e.Spec.ReferencedProjects |> List.exists (fun r -> String.Equals(r, file, StringComparison.OrdinalIgnoreCase))
+                           && not (found.Contains e.Spec.ProjectFile) then
+                            found.Add e.Spec.ProjectFile
+                            visit e.Spec.ProjectFile
+
+                visit project
+                List.ofSeq found
+
+            for p in project :: referencing do
+                match remove p with
+                | Some e -> (e.Graph :> IDisposable).Dispose()
+                | None -> ()
 
             ProjectSpec.invalidate project
             let visited = HashSet<string>(StringComparer.OrdinalIgnoreCase)
             let results = Dictionary<string, LoadResult>(StringComparer.OrdinalIgnoreCase)
             do! notifyWorkspace (Responses.workspaceLoad false)
             do! visit visited results project
+
+            for p in referencing do
+                do! visit visited results p
+
             do! notifyWorkspace (Responses.workspaceLoad true)
             onLoadEnd ()
         }

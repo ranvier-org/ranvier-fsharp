@@ -33,24 +33,38 @@ type internal Parsed =
 /// What later files are checked against: a file's signature.
 [<ReferenceEquality>]
 type internal FileSig =
-    { Signature: FileSignature }
+    { Signature: FileSignature
+      /// The signatures the file was set up from
+      Before: FileSignature list }
 
     member s.Fingerprint = s.Signature.Fingerprint
 
-    static member Of(signature: FileSignature) = { Signature = signature }
+    /// Whether two setups read the same signature objects, and so the same entities.
+    static member SameBefore(a: FileSignature list, b: FileSignature list) =
+        a.Length = b.Length && List.forall2 (fun (x: FileSignature) (y: FileSignature) -> obj.ReferenceEquals(x, y)) a b
 
-    /// Equal when the file signatures' fingerprints are, compared structurally, or when they are the same signature. A
-    /// fingerprint not yet taken compares unequal: what depends on the file compares the fingerprints it reads.
+    /// What later files are checked against, given the last value. The last one stays while the file's fingerprint
+    /// (compared structurally) and its setup's signature objects are the same, whatever the new check made: the files
+    /// after it hold its entities, by identity, for as long as they keep their results, so its signature may not move
+    /// to a new entity of the same print under them. A new setup or a new fingerprint gives the new signature: the
+    /// files that depend on this one (transitively, by FileDependencies) were set up from the same files and are being
+    /// checked again. A fingerprint not yet taken is not taken here: the file had no dependents when it was checked.
+    static member Next(previous: FileSig voption, signature: FileSignature, before: FileSignature list) =
+        match previous with
+        | ValueSome p when
+            obj.ReferenceEquals(p.Signature, signature)
+            || (FileSig.SameBefore(p.Before, before)
+                && p.Signature.HasFingerprint
+                && signature.HasFingerprint
+                && String.Equals(p.Fingerprint, signature.Fingerprint, StringComparison.Ordinal))
+            ->
+            p
+        | _ -> { Signature = signature; Before = before }
+
+    /// Equal when they are the same signature: `Next` keeps it while nothing a later file reads of it changed.
     static member Comparer =
         { new IEqualityComparer<FileSig> with
-            member _.Equals(a, b) =
-                obj.ReferenceEquals(a.Signature, b.Signature)
-                // A fingerprint no one has asked for is not taken here: the file had no dependents when it was checked
-                || (a.Signature.HasFingerprint
-                    && b.Signature.HasFingerprint
-                    && String.Equals(a.Fingerprint, b.Fingerprint, StringComparison.Ordinal))
-
-            // Constant: equality changes once a fingerprint is taken, so no hash of either is stable over a value's life
+            member _.Equals(a, b) = obj.ReferenceEquals(a.Signature, b.Signature)
             member _.GetHashCode _ = 0 }
 
 /// A declaration whose final fingerprint, after FinishFile, differs from the one its own check left (the D1 premise
@@ -89,6 +103,7 @@ type internal Subject<'T>() =
 /// Shared by every file of a project.
 [<Sealed>]
 type internal ProjectShared(ctx: ProjectContext) =
+    let mutable context = ctx
     let mutable checkedCount = 0L
     let mutable adoptedCount = 0L
     let mutable shiftedCount = 0L
@@ -111,7 +126,11 @@ type internal ProjectShared(ctx: ProjectContext) =
     let published = Subject<DeclarationKey * string>()
     let ran = Subject<DeclarationKey * string>()
 
-    member _.Context = ctx
+    /// The context the project's current nodes capture when they are made. A restart replaces it, with the nodes.
+    member _.Context
+        with get () = Volatile.Read &context
+        and set (value: ProjectContext) = Volatile.Write(&context, value)
+
     member _.CheckedCount = Interlocked.Read &checkedCount
     member _.FinishTicks = Interlocked.Read &finishTicks
     member _.PremiseBreaks = Interlocked.Read &premiseBreaks
@@ -346,9 +365,9 @@ type internal Gate() =
 
 /// A source file's text and its parse.
 [<Sealed>]
-type internal FileText(project: ProjectShared, path: string, initial: string) =
+type internal FileText(project: ProjectShared, path: string, initial: string, version: int64) =
     let ctx = project.Context
-    let text = createSignal { Text = initial; Version = 0L }
+    let text = createSignal { Text = initial; Version = version }
     let gate = Gate()
 
     let parsed =
@@ -525,12 +544,17 @@ module internal Setup =
         diagnostics
         |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error && unresolvedCodes.Contains d.ErrorNumber)
 
-    /// A file checked whole reads all of its parse, and the signatures by their fingerprints.
-    let same (a: SetupKey) (b: SetupKey) =
-        Nodes.same a.Parsed b.Parsed
-        && a.Files = b.Files
+    /// The same setup apart from the parse: the same signature objects (FileSig.Next), and so the same entities, with
+    /// the same files of the same name.
+    let sameFiles (a: SetupKey) (b: SetupKey) =
+        a.Files = b.Files
         && a.Fingerprints = b.Fingerprints
         && a.SameName = b.SameName
+        && FileSig.SameBefore(a.Before, b.Before)
+
+    /// A file checked whole reads all of its parse, and the signatures.
+    let same (a: SetupKey) (b: SetupKey) =
+        Nodes.same a.Parsed b.Parsed && sameFiles a b
 
     /// The setup of file `index` from its dependencies, or from every earlier file when `chain`. Every signature it
     /// holds is the current one: it reads them pending, before any check starts. Kept as the same object while `same`
@@ -576,10 +600,6 @@ module internal Setup =
             match previous with
             | ValueSome p when same p key -> p
             | _ -> key)
-
-    /// The same setup apart from the parse: the files, their fingerprints and the files of the same name.
-    let sameFiles (a: SetupKey) (b: SetupKey) =
-        a.Files = b.Files && a.Fingerprints = b.Fingerprints && a.SameName = b.SameName
 
     /// A file's result, checked off the graph thread from the setup its dependencies give (`scopedKey`, as `key`
     /// makes it), and from every earlier file when the checker refuses that setup (its dependency snapshot went stale)

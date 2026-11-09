@@ -1,0 +1,32 @@
+{
+  "name": "mid-crossproject",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "signature",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/AdaptiveExtensions.fs"
+    },
+    {
+      "open": "src/FsAutoComplete.Logging/FsLibLog.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Logging/FsLibLog.fs",
+        "range": {
+          "start": {
+            "line": 276,
+            "character": 79
+          },
+          "end": {
+            "line": 276,
+            "character": 79
+          }
+        },
+        "text": " |> ignore",
+        "repeat": 10,
+        "mode": "toggle"
+      }
+    }
+  ]
+}

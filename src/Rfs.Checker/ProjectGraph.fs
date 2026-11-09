@@ -38,6 +38,89 @@ module private ReadSupport =
 
 open ReadSupport
 
+/// A project's assembly as it stands.
+[<NoEquality; NoComparison>]
+type internal AssemblyState =
+    /// A file is not settled, or the project's own references have moved on
+    | Unsettled
+    | Built of ProjectAssembly
+
+/// The referenced assemblies' fingerprints a project context was made with, by reference.
+[<ReferenceEquality>]
+type internal ReferencesSeen =
+    { Fingerprints: string[]
+      Context: ProjectContext }
+
+module private ProjectNodes =
+    /// Every file's nodes, in a root of their own so disposing it takes them all. `texts` are each file's path, text and
+    /// version; `wanted` are the indexes of the files to promote. Graph thread.
+    let build (project: ProjectShared) (texts: (string * string * int64)[]) (wanted: HashSet<int>) : Owner * IFileNode[] =
+        createRoot (fun owner ->
+            let isSignature (path: string) =
+                path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+
+            let fileTexts =
+                texts |> Array.map (fun (path, text, version) -> FileText(project, path, text, version))
+
+            let nodes = ResizeArray<IFileNode>()
+            let deps = FileDeps.create project fileTexts
+            let signatureOf (j: int) = nodes[j].Signature
+
+            fileTexts
+            |> Array.iteri (fun i file ->
+                nodes.Add(
+                    if isSignature file.Path then
+                        WholeFile.signature project i file deps signatureOf
+                    else
+                        WholeFile.impl project i file deps signatureOf
+                ))
+
+            // One build at a time: the file building stays the builder while it may still be building (its state
+            // pending included), so neither an edit nor an earlier file starts a second build beside it; then the
+            // first file, in file order, that may build
+            project.Builder <-
+                createMemo (fun previous ->
+                    match previous with
+                    | ValueSome(ValueSome b) when nodes[b].MayBuild -> ValueSome b
+                    | _ -> nodes |> Seq.tryFindIndex _.MayBuild |> ValueOption.ofOption)
+
+            let failed =
+                nodes
+                // The last settled answer while the file is being checked again, so the files set up from its signature
+                // file do not wait for it: when the answer changes they are checked again before they settle
+                |> Seq.map (fun node ->
+                    createMemoWithComparer HashIdentity.Structural (fun previous ->
+                        match node.Signature.TryValue, previous with
+                        | Ready s, _ -> s.Signature.Failed
+                        | Pending, ValueSome known -> known
+                        | Pending, ValueNone -> false
+                        | _ -> node.Signature.Value.Signature.Failed))
+                |> Array.ofSeq
+
+            project.FailedOf <- fun i -> failed[i]
+            project.CurrentOf <- fun i -> nodes[i].Current
+
+            // The dependencies read every file's parse, so effects start once every file's nodes exist
+            for node in nodes do
+                node.Activate()
+
+            for i in wanted do
+                nodes[i].Promote()
+
+            owner, nodes.ToArray())
+
+    /// The projects `references` reach, each once, nearest first.
+    let closure (direct: 'G list) (next: 'G -> 'G list) : 'G list =
+        let seen = HashSet<'G>(HashIdentity.Reference)
+
+        let rec visit (g: 'G) =
+            [ if seen.Add g then
+                  yield g
+                  for r in next g do
+                      yield! visit r ]
+
+        direct |> List.collect visit
+
 /// A file's settled result with the parse and text it is for.
 type FileView =
     { Result: FileResult
@@ -73,11 +156,31 @@ type FileView =
 /// its dependency list or its header: R16's restart), it is checked whole for that state, and built by declaration
 /// again while it is still wanted.
 /// </para>
+/// <para>
+/// References: a project's assembly is a memo over its files' settled signatures, cut off by its fingerprint. A project
+/// that references loaded projects holds a project context made from their assemblies, every project it reaches
+/// transitively, since a referenced assembly's pickle names the assemblies it references. When one of their fingerprints
+/// changes, a new context is made and every file restarts on it, file-level (and promoted again if wanted): the file's
+/// nodes capture the context, and its results hold the imported entities. A file of such a project is settled only
+/// once the projects it references are, and its context is for their assemblies. A disposed graph disposes the graphs
+/// that reference it, which would otherwise wait for it for ever.
+/// </para>
 /// </remarks>
 [<Sealed>]
-type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, files: IFileNode[], owner: Owner) =
-    let requested = Array.zeroCreate<int64> files.Length
+type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, initialFiles: IFileNode[], initialOwner: Owner, references: ProjectGraph list, firstSeen: ReferencesSeen, initialWanted: HashSet<int>) =
+    let requested = Array.zeroCreate<int64> initialFiles.Length
     let lifetime = new CancellationTokenSource()
+    let wanted = initialWanted
+    // Replaced together by a restart, on the graph thread
+    let mutable files = initialFiles
+    let mutable owner = initialOwner
+    let mutable seen = firstSeen
+    let mutable filesNow: Signal<IFileNode[]> = Unchecked.defaultof<_>
+    let mutable assemblyFlight: AsyncMemo<AssemblyState> = Unchecked.defaultof<_>
+    let mutable assemblyMemo: Memo<AssemblyState> = Unchecked.defaultof<_>
+    let mutable contextMemo: AsyncMemo<ReferencesSeen> = Unchecked.defaultof<_>
+    let mutable linkOwner: Owner = Unchecked.defaultof<_>
+    let dependents = ResizeArray<ProjectGraph>()
     let mutable disposed = 0
     let mutable afterSettle: unit -> Task = fun () -> Task.CompletedTask
 
@@ -86,7 +189,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     let byPath =
         let d = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
-        files |> Array.iteri (fun i f -> d[Path.GetFullPath f.Path] <- i)
+        initialFiles |> Array.iteri (fun i f -> d[Path.GetFullPath f.Path] <- i)
         d
 
     let indexOf (file: string) =
@@ -102,9 +205,21 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     let linesContext =
         lazy (DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.RunSynchronously)
 
+    /// Whether the projects this one references are settled, and its context is for their assemblies. Graph thread.
+    let referencesCurrent () =
+        references.IsEmpty
+        || (match contextMemo.TryValue with
+            | Failed e -> raise (InvalidOperationException($"%s{spec.ProjectFile}: making its project context failed", e))
+            | _ -> ()
+
+            let assemblies = references |> List.map (fun (r: ProjectGraph) -> r.SettledAssembly())
+
+            assemblies |> List.forall _.IsSome
+            && (assemblies |> List.map (fun a -> a.Value.Fingerprint)) = List.ofArray seen.Fingerprints)
+
     /// Reads file `i` once it is settled on its latest text, with every write posted to it and to the files before it
-    /// applied. Its result being settled means the files it was set up from are current too, transitively
-    /// (IFileNode.Current).
+    /// applied, and the projects it references settled. Its result being settled means the files it was set up from are
+    /// current too, transitively (IFileNode.Current).
     let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
         let mutable applied = true
 
@@ -112,7 +227,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             if files[j].Text.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
-        if applied then read files[i] (Volatile.Read &requested[i]) else ValueNone
+        if applied && referencesCurrent () then read files[i] (Volatile.Read &requested[i]) else ValueNone
 
     /// Reads every file once each is settled on its latest text.
     let settledAll (read: IFileNode -> int64 -> 'T voption) : 'T[] voption =
@@ -133,89 +248,213 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     static member Create(host: GraphHost, spec: ProjectSpec) : Task<ProjectGraph> =
         ProjectGraph.CreateWithMode(host, spec, FileLevel)
 
+    /// A graph whose every file starts file-level, whose `-r:` to each of `references` (graphs on the same host) and the
+    /// projects they reach is that project's assembly as it stands in memory. A reference to any other project stays
+    /// the file on disk. Completes once the references' assemblies have settled for the first context.
+    static member Create(host: GraphHost, spec: ProjectSpec, references: ProjectGraph list) : Task<ProjectGraph> =
+        ProjectGraph.CreateWithMode(host, spec, FileLevel, references)
+
     /// A graph whose every file starts file-level; with `Declarations`, every implementation file is also promoted.
     static member internal CreateWithMode(host: GraphHost, spec: ProjectSpec, mode: Rfs.Checker.FileMode) : Task<ProjectGraph> =
+        ProjectGraph.CreateWithMode(host, spec, mode, [])
+
+    static member internal CreateWithMode(host: GraphHost, spec: ProjectSpec, mode: Rfs.Checker.FileMode, references: ProjectGraph list) : Task<ProjectGraph> =
         task {
+            let options = ProjectSpec.toFcsOptions spec
+
+            // Only the projects whose output `spec` references by path: the rest of the closure is not an assembly to it
+            let linked =
+                ProjectNodes.closure references (fun (g: ProjectGraph) -> g.References)
+                |> List.choose (fun g -> ProjectSpec.referencePath spec g.Spec |> Option.map (fun path -> path, g))
+
+            let! (first: ProjectAssembly[]) =
+                if linked.IsEmpty then
+                    Task.FromResult [||]
+                else
+                    host.WhenSettled(fun () ->
+                        let all = linked |> List.map (fun (_, g: ProjectGraph) -> g.SettledAssembly())
+
+                        if all |> List.forall _.IsSome then
+                            ValueSome(all |> List.map _.Value |> Array.ofList)
+                        else
+                            ValueNone)
+
             let allocated = GC.GetTotalAllocatedBytes true
             let started = Diagnostics.Stopwatch.GetTimestamp()
-            let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec) |> Async.StartAsTask
+            let! ctx = ProjectGraph.MakeContext(options, linked |> List.map fst, first)
             let project = ProjectShared ctx
             project.Post <- host.Post
 
             // Nothing else of the graph runs yet, so the process's allocations are the context's
             project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, GC.GetTotalAllocatedBytes true - allocated)
-            let texts = spec.SourceFiles |> List.map (fun f -> f, File.ReadAllText f) |> Array.ofList
+            let texts = spec.SourceFiles |> List.map (fun f -> f, File.ReadAllText f, 0L) |> Array.ofList
+            let wanted = HashSet<int>()
 
-            // The nodes belong to a root of their own, so disposing the root takes the whole graph of the project
-            let build () =
-                    let isSignature (path: string) =
-                        path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+            if mode = Declarations then
+                for i in 0 .. texts.Length - 1 do
+                    wanted.Add i |> ignore
 
-                    let fileTexts =
-                        texts |> Array.map (fun (path, text) -> FileText(project, path, text))
+            let seen = { Fingerprints = first |> Array.map _.Fingerprint; Context = ctx }
+            let directs = linked |> List.map snd
 
-                    let nodes = ResizeArray<IFileNode>()
-                    let deps = FileDeps.create project fileTexts
-                    let signatureOf (j: int) = nodes[j].Signature
+            return!
+                host.Read(fun () ->
+                    let owner, files = ProjectNodes.build project texts wanted
+                    let graph = new ProjectGraph(host, project, spec, files, owner, directs, seen, wanted)
+                    graph.Link(options, linked |> List.map fst)
 
-                    fileTexts
-                    |> Array.iteri (fun i file ->
-                        nodes.Add(
-                            if isSignature file.Path then
-                                WholeFile.signature project i file deps signatureOf
-                            else
-                                WholeFile.impl project i file deps signatureOf
-                        ))
+                    for r in directs do
+                        r.AddDependent graph
 
-                    // One build at a time: the file building stays the builder while it may still be building (its state
-                    // pending included), so neither an edit nor an earlier file starts a second build beside it; then the
-                    // first file, in file order, that may build
-                    project.Builder <-
-                        createMemo (fun previous ->
-                            match previous with
-                            | ValueSome(ValueSome b) when nodes[b].MayBuild -> ValueSome b
-                            | _ -> nodes |> Seq.tryFindIndex _.MayBuild |> ValueOption.ofOption)
-
-                    let failed =
-                        nodes
-                        // The last settled answer while the file is being checked again, so the files set up from its signature
-                        // file do not wait for it: when the answer changes they are checked again before they settle
-                        |> Seq.map (fun node ->
-                            createMemoWithComparer HashIdentity.Structural (fun previous ->
-                                match node.Signature.TryValue, previous with
-                                | Ready s, _ -> s.Signature.Failed
-                                | Pending, ValueSome known -> known
-                                | Pending, ValueNone -> false
-                                | _ -> node.Signature.Value.Signature.Failed))
-                        |> Array.ofSeq
-
-                    project.FailedOf <- fun i -> failed[i]
-                    project.CurrentOf <- fun i -> nodes[i].Current
-
-                    // The dependencies read every file's parse, so effects start once every file's nodes exist
-                    for node in nodes do
-                        node.Activate()
-
-                    if mode = Declarations then
-                        for node in nodes do
-                            node.Promote()
-
-                    nodes.ToArray()
-
-            let! owner, files = host.Read(fun () -> createRoot (fun owner -> owner, build ()))
-            return ProjectGraph(host, project, spec, files, owner)
+                    graph)
         }
+
+    static member private MakeContext(options: FSharpProjectOptions, paths: string list, assemblies: ProjectAssembly[]) : Task<ProjectContext> =
+        if paths.IsEmpty then
+            DeclarationChecker.CreateProject options |> Async.StartAsTask
+        else
+            let references = Dictionary<string, ProjectAssembly>(StringComparer.Ordinal)
+            List.iteri (fun i path -> references[path] <- assemblies[i]) paths
+            DeclarationChecker.CreateProject(options, references) |> Async.StartAsTask
+
+    /// Makes the nodes that link this project to the ones it references and to those that reference it. Graph thread.
+    member private this.Link(options: FSharpProjectOptions, paths: string list) =
+        linkOwner <-
+            createRoot (fun o ->
+                filesNow <- createSignal files
+
+                // Off the graph thread: taking a fingerprint no check asked for describes the file, and hashes them all
+                assemblyFlight <-
+                    createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                        let nodes = filesNow.Value
+
+                        // Until a restart, this project's files are checked against older assemblies
+                        let current =
+                            references
+                            |> List.map (fun (r: ProjectGraph) ->
+                                match r.Assembly.Value with
+                                | Built a -> a.Fingerprint
+                                | Unsettled -> "")
+                            |> Array.ofList
+                            |> (=) seen.Fingerprints
+
+                        let results =
+                            nodes
+                            |> Array.map (fun f ->
+                                let version = f.Text.Text.Value.Version
+
+                                if f.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                                    f.Settled version |> ValueOption.map (fun _ -> None)
+                                else
+                                    f.FileResult version |> ValueOption.map Some)
+
+                        if not current || results |> Array.exists _.IsNone then
+                            Task.FromResult Unsettled
+                        else
+                            let signatures = nodes |> Array.map (fun f -> f.Signature.Value.Signature) |> List.ofArray
+                            let results = results |> Array.choose _.Value |> List.ofArray
+                            let ctx = project.Context
+                            Task.Run<AssemblyState>(fun () -> Built(DeclarationChecker.ProjectAssembly(ctx, results, signatures))))
+
+                // The cutoff at the project boundary
+                assemblyMemo <-
+                    createMemoWithComparer
+                        { new IEqualityComparer<AssemblyState> with
+                            member _.Equals(a, b) =
+                                match a, b with
+                                | Unsettled, Unsettled -> true
+                                | Built x, Built y -> String.Equals(x.Fingerprint, y.Fingerprint, StringComparison.Ordinal)
+                                | _ -> false
+
+                            member _.GetHashCode _ = 0 }
+                        (fun _ -> assemblyFlight.Value)
+
+                if not references.IsEmpty then
+                    // The context for the references as they stand; the current one while they settle or keep their fingerprints
+                    contextMemo <-
+                        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                            let states = Nodes.valuesOf (references |> List.map (fun (r: ProjectGraph) -> r.Assembly) |> Array.ofList)
+
+                            let built =
+                                states
+                                |> Array.choose (function
+                                    | Built a -> Some a
+                                    | Unsettled -> None)
+
+                            if built.Length < states.Length || (built |> Array.map _.Fingerprint) = seen.Fingerprints then
+                                Task.FromResult seen
+                            else
+                                let started = Diagnostics.Stopwatch.GetTimestamp()
+
+                                task {
+                                    let! ctx = ProjectGraph.MakeContext(options, paths, built)
+                                    project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
+                                    return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
+                                })
+
+                    createEffect (fun () ->
+                        match contextMemo.TryValue with
+                        | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> this.Restart next)
+                        | _ -> ())
+
+                o)
+
+    /// Every file starts again on `next`'s context, on its current text, with what is wanted wanted. Graph thread.
+    member private _.Restart(next: ReferencesSeen) =
+        if Volatile.Read &disposed = 0 && not (next.Fingerprints = seen.Fingerprints) then
+            let texts =
+                files
+                |> Array.map (fun f ->
+                    let t = f.Text.Text.Peek
+                    f.Path, t.Text, t.Version)
+
+            let shiftHook = project.Context.ShiftRefusedHook
+            let refuseShifts = project.Context.RefuseShifts
+            owner.Dispose()
+            next.Context.ShiftRefusedHook <- shiftHook
+            next.Context.RefuseShifts <- refuseShifts
+            project.Context <- next.Context
+            // A root attaches to the scope it is made in: the links', not the effect's that asked for the restart, whose
+            // next run would dispose the nodes
+            let newOwner, nodes = runWithOwner linkOwner (fun () -> ProjectNodes.build project texts wanted)
+            owner <- newOwner
+            files <- nodes
+            seen <- next
+            filesNow.Value <- nodes
+
+    member internal _.Spec: ProjectSpec = spec
+    member internal _.References: ProjectGraph list = references
+    member internal _.Assembly: Memo<AssemblyState> = assemblyMemo
+
+    /// The project's assembly once every write posted to its files is applied, they are settled and so are the projects
+    /// it references. Graph thread.
+    member internal _.SettledAssembly() : ProjectAssembly voption =
+        let mutable applied = true
+
+        for j in 0 .. files.Length - 1 do
+            if files[j].Text.Version <> Volatile.Read &requested[j] then
+                applied <- false
+
+        if applied && referencesCurrent () then
+            match assemblyMemo.TryValue with
+            | Ready(Built a) -> ValueSome a
+            | Failed e -> raise (InvalidOperationException($"%s{spec.ProjectFile}: its assembly failed", e))
+            | _ -> ValueNone
+        else
+            ValueNone
+
+    member internal _.AddDependent(graph: ProjectGraph) = lock dependents (fun () -> dependents.Add graph)
 
     /// The first and last line (1-based) of each declaration `text` splits into as the file's text. Call it when the
     /// graph is idle, and never from the graph thread: it waits for the graph thread to read the file's parse. A text
     /// other than the one the graph holds is parsed on a second project context, created the first time and kept for
     /// the graph's lifetime (as much memory as the project's references take).
     member _.DeclarationLines(file: string, text: string) : (int * int)[] =
-        let node = files[indexOf file]
+        let i = indexOf file
 
         let current =
             (host.Read(fun () ->
-                match node.Text.Parsed.TryValue with
+                match files[i].Text.Parsed.TryValue with
                 | Ready p when p.Text = text -> Some p.Parse
                 | _ -> None))
                 .GetAwaiter()
@@ -229,7 +468,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 let parse = DeclarationChecker.Parse(ctx, file, text)
                 // The line directives of a file are kept per process, by the latest parse of it: parse the text the
                 // graph holds again, so its diagnostics render with its own.
-                let held = (host.Read(fun () -> node.Text.Text.Peek.Text)).GetAwaiter().GetResult()
+                let held = (host.Read(fun () -> files[i].Text.Text.Peek.Text)).GetAwaiter().GetResult()
                 DeclarationChecker.Parse(ctx, file, held) |> ignore
                 parse
 
@@ -239,11 +478,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     member _.SetText(file: string, text: string) : int64 =
         let i = indexOf file
         let version = Interlocked.Increment &requested[i]
-        let node = files[i]
 
         // A disposed graph checks nothing
         if Volatile.Read &disposed = 0 then
-            host.Post(fun () -> node.Text.SetText(text, version))
+            host.Post(fun () -> files[i].Text.SetText(text, version))
 
         version
 
@@ -294,7 +532,6 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         if isSignatureFile files[i] then
             invalidArg (nameof file) $"%s{file} is a signature file"
 
-        let node = files[i] :?> IReadableFile
         let fileLock = fileLockOf project.Context files[i].Path
 
         // m2: reading CheckResults takes the FileStart's lock and then the file's check lock; never the other way round
@@ -304,7 +541,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         guard ()
 
-        let readable () = readSettled i (fun _ version -> node.Readable version)
+        let readable () = readSettled i (fun f version -> (f :?> IReadableFile).Readable version)
 
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
@@ -345,22 +582,28 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
     member _.Mode(file: string) : Task<Rfs.Checker.FileMode> =
-        let node = files[indexOf file]
-        host.Read(fun () -> node.Mode)
+        let i = indexOf file
+        host.Read(fun () -> files[i].Mode)
 
     /// Marks an implementation file wanted (a signature file is never promoted): it is built by declaration in the
     /// background, one file of the project at a time, and checked by declaration once that build has finished for
     /// its current text and setup. Until then, and after any change of its setup, it is checked whole. A file whose
     /// text splits into one declaration (module rec, namespace rec) stays file-level. Posts; graph thread.
     member _.Promote(file: string) : unit =
-        let node = files[indexOf file]
-        host.Post(fun () -> node.Promote())
+        let i = indexOf file
+
+        host.Post(fun () ->
+            wanted.Add i |> ignore
+            files[i].Promote())
 
     /// Clears wanted: the file's declaration results and nodes are dropped, its last result stays published until its
     /// text or setup changes, and from then on it is checked whole. Posts; graph thread.
     member _.Demote(file: string) : unit =
-        let node = files[indexOf file]
-        host.Post(fun () -> node.Demote())
+        let i = indexOf file
+
+        host.Post(fun () ->
+            wanted.Remove i |> ignore
+            files[i].Demote())
 
     /// Completes, with the mode it settled in, once promoting the file has settled for its latest text: Declarations
     /// once it is checked by declaration for that text; FileLevel when it can not be for that text and setup (its text
@@ -398,8 +641,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// How many declarations of the file are checked in segments (R11 and R12 spans), as the roles stand now. Blocks
     /// until the graph thread answers: never call it from the graph thread.
     member _.SegmentRows(file: string) : int =
-        let node = files[indexOf file]
-        (host.Read(fun () -> node.SegmentRows())).GetAwaiter().GetResult()
+        let i = indexOf file
+        (host.Read(fun () -> files[i].SegmentRows())).GetAwaiter().GetResult()
 
     /// How many declarations of the project are checked in segments, as the roles stand now. Blocks until the graph
     /// thread answers: never call it from the graph thread.
@@ -480,8 +723,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         if Interlocked.Exchange(&disposed, 1) = 0 then
             lifetime.Cancel()
 
+            for d in lock dependents (fun () -> dependents.ToArray()) do
+                d.Dispose()
+
             try
-                host.Post(fun () -> owner.Dispose())
+                host.Post(fun () ->
+                    owner.Dispose()
+                    linkOwner.Dispose())
             with :? ObjectDisposedException ->
                 ()
 
@@ -513,5 +761,5 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Weak references to a declaration result of the file, the environment it was checked in, and the FileStart of
     /// its published declaration results; empty while none are published. For tests.
     member internal _.DeclarationObjects(file: string) : Task<WeakReference list> =
-        let node = files[indexOf file]
-        host.Read(fun () -> node.DeclarationObjects())
+        let i = indexOf file
+        host.Read(fun () -> files[i].DeclarationObjects())

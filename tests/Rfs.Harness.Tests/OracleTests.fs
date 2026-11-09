@@ -166,4 +166,33 @@ let tests =
               Expect.isTrue failed "check failed"
               let! diagnostics = oracle.Check tinyProject Map.empty
               Expect.isEmpty diagnostics "still serving"
+          }
+
+          testTask "oracle honours referenced overrides" {
+              let multi = Path.Combine(Path.GetDirectoryName tinyDir, "Multi")
+              let app = Path.Combine(multi, "App", "App.fsproj")
+              let lib = Path.Combine(multi, "Lib", "Lib.fs")
+              let shapes = Path.Combine(multi, "Lib", "Shapes.fs")
+              let psi = System.Diagnostics.ProcessStartInfo("dotnet", $"build \"{app}\" -v q --nologo")
+              psi.RedirectStandardOutput <- true
+              let build = System.Diagnostics.Process.Start psi
+              let! _ = build.StandardOutput.ReadToEndAsync()
+              do! build.WaitForExitAsync()
+              use! (oracle: OracleClient) = OracleClient.start ()
+              let! clean = oracle.Check app Map.empty
+              Expect.isEmpty clean "as built"
+              let text = File.ReadAllText lib
+              let edited = text.Replace("let f (x: int) : int = x + 1", "let f (x: int) : string = string x")
+              let! broken = oracle.Check app (Map [ lib, edited ])
+              let useFile = LspClient.NormalizePath(Path.Combine(multi, "App", "Use.fs"))
+              Expect.exists broken (fun (d: Diagnostic) -> d.File = useFile && d.Code = "FS0001") $"App reads the override: %A{broken}"
+              // Another file of Lib, kept on disk, compiles with it: Lib's signature file pairs with its implementation
+              let! both = oracle.Check app (Map [ lib, edited; shapes, File.ReadAllText shapes + "\nlet extra = 1\n" ])
+              Expect.equal (List.length both) (List.length broken) "the same errors with a second override"
+              // Lib's internals, through the compiled DLL's attribute
+              let closed = text.Replace("InternalsVisibleTo(\"App\")", "InternalsVisibleTo(\"Other\")")
+              let! hidden = oracle.Check app (Map [ lib, closed ])
+              Expect.exists hidden (fun (d: Diagnostic) -> d.File = useFile) $"g is out of reach: %A{hidden}"
+              let! again = oracle.Check app Map.empty
+              Expect.isEmpty again "nothing carried over"
           } ]

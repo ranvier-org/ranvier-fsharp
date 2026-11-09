@@ -9,6 +9,7 @@
     <Compile Include="PublishTests.fs" />
     <Compile Include="PublishFixTests.fs" />
     <Compile Include="HoverTests.fs" />
+    <Compile Include="CrossProjectTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

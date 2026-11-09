@@ -97,6 +97,24 @@ module ProjectSpec =
               OtherOptions = p.OtherOptions
               ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName) }
 
+    /// The path `spec` references `referenced`'s assembly by, as it appears in its `-r:`: the file of the name the
+    /// project outputs (its reference assembly has the same name).
+    let referencePath (spec: ProjectSpec) (referenced: ProjectSpec) : string option =
+        let output =
+            referenced.OtherOptions
+            |> List.tryPick (fun o ->
+                if o.StartsWith "-o:" then Some(Path.GetFileName(o.Substring 3))
+                elif o.StartsWith "--out:" then Some(Path.GetFileName(o.Substring 6))
+                else None)
+            |> Option.defaultValue (Path.GetFileNameWithoutExtension referenced.ProjectFile + ".dll")
+
+        spec.OtherOptions
+        |> List.tryPick (fun o ->
+            if o.StartsWith "-r:" && String.Equals(Path.GetFileName(o.Substring 3), output, StringComparison.OrdinalIgnoreCase) then
+                Some(o.Substring 3)
+            else
+                None)
+
     /// The `-r:` assemblies that are not on disk. A project reference whose project was never built shows up here.
     let missingReferences (spec: ProjectSpec) : string list =
         spec.OtherOptions

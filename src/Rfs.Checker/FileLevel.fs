@@ -250,11 +250,13 @@ module internal WholeFile =
         // Cut off by fingerprint. CheckFile and FinishFile give one text and setup the same fingerprint,
         // compiler-generated names included (M2), so a promotion or a restart changes nothing after the file.
         let signature =
-            createMemoWithComparer FileSig.Comparer (fun _ ->
+            createMemoWithComparer FileSig.Comparer (fun previous ->
                 match published.Value with
-                | ByDeclaration(_, f) -> FileSig.Of f.FileResult.Signature
-                | Kept k -> FileSig.Of k.Result.Signature
-                | Whole -> FileSig.Of (snd whole.Value).Signature)
+                | ByDeclaration(_, f) -> FileSig.Next(previous, f.FileResult.Signature, f.Start.Setup.Key.Before)
+                | Kept k -> FileSig.Next(previous, k.Result.Signature, k.Key.Before)
+                | Whole ->
+                    let key, r = whole.Value
+                    FileSig.Next(previous, r.Signature, key.Before))
 
         // The setup of the published result
         let publishedKey =
@@ -530,7 +532,9 @@ module internal WholeFile =
 
         // Cut off by fingerprint
         let signature =
-            createMemoWithComparer FileSig.Comparer (fun _ -> FileSig.Of(snd result.Value))
+            createMemoWithComparer FileSig.Comparer (fun previous ->
+                let key, s = result.Value
+                FileSig.Next(previous, s, key.Before))
 
         let isCurrent = currentOf project signature (createMemo (fun _ -> fst result.Value))
 
