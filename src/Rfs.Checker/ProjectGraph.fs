@@ -695,7 +695,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
         let i = indexOf file
         host.Read(fun () -> files[i].Mode)
 
-    /// A declaration's key as the trace labels and `Why`'s answers write it: its module path and name, then `(n)` for the nth
+    /// A declaration's key as the trace labels and `Why`'s answers write it: its module path and name, then `:Kind`, then `(n)` for the nth
     /// of the same module path, name and kind after the first. Ranvier writes a label in a node's path with `/ # [ ] @ \`
     /// each prefixed by a backslash.
     static member DescribeKey(key: DeclarationKey) : string = Labels.key key
@@ -711,7 +711,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Why declaration `key` of `file` last checked: the cause chain of its check, as Ranvier renders it, with the
     /// fingerprints and texts that changed named by the labels `fingerprint <file> <key>`. Read on the graph thread like any
     /// other read, after the posts already queued. None in an untraced build, for a file not checked by declaration, for a
-    /// declaration it does not have, and for one whose check the log holds no run of.
+    /// declaration it does not have, and for one whose check the log holds no run of. It is a graph turn of its own after the
+    /// settle that found the key, so an edit between the two is asked about under the older key; and it renders the whole
+    /// retained log on the graph thread, which stalls every other query meanwhile: a traced (Debug) build's cost.
     member _.Why(file: string, key: DeclarationKey) : Task<string option> =
 #if RANVIER_TRACE
         let i = indexOf file
@@ -721,13 +723,30 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             | ValueSome node ->
                 let graph = Graph.Current
 
-                try
-                    Some(Trace.render graph (box (Trace.why graph node)))
-                with :? ArgumentException ->
-                    None
+                // Only `why` raises ArgumentException for a node with no run in the log; `render` is left to fail loudly
+                let chain =
+                    try
+                        ValueSome(Trace.why graph node)
+                    with :? ArgumentException ->
+                        ValueNone
+
+                chain |> ValueOption.map (fun c -> Trace.render graph (box c)) |> ValueOption.toOption
             | ValueNone -> None)
 #else
         Task.FromResult None
+#endif
+
+#if RANVIER_TRACE
+    /// For tests: the label Ranvier's log holds for each node the labels `start`, `finish` and `filelevel` are meant
+    /// for, by that word, in `file`.
+    member internal _.TracedLabels(file: string) : Task<(string * string option) list> =
+        let i = indexOf file
+
+        host.Read(fun () ->
+            let graph = Graph.Current
+
+            files[i].TracedNodes()
+            |> List.map (fun (role, node) -> role, (Trace.origin graph node).Label))
 #endif
 
     /// Marks an implementation file wanted (a signature file is never promoted): it is built by declaration in the

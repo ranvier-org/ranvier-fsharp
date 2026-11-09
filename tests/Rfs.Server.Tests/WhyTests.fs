@@ -58,6 +58,11 @@ let private openA () =
     }
 
 #if RANVIER_TRACE
+/// How a node's path writes the label of the fingerprint of `key`: Ranvier doubles a label's backslashes
+let private fingerprintOf (path: string) (key: string) =
+    let escaped = path.Replace("\\", "\\\\")
+    $"fingerprint %s{escaped} %s{key}"
+
 /// `scale` given another return type, which `doubled` uses and `grouped` does not
 let private afterScaleEdit () =
     task {
@@ -84,11 +89,34 @@ let tests =
               Expect.isTrue (answer["traced"].GetValue<bool>()) "the build is traced"
               Expect.stringContains (answer["declaration"].GetValue<string>()) "doubled" "the declaration is named"
               let chain = answer["chain"].GetValue<string>()
-              // A node's path writes a label's backslashes doubled
-              let escaped = a.Replace("\\", "\\\\")
-              let label (key: string) = $"fingerprint %s{escaped} %s{key}"
-              Expect.stringContains chain (label "Deps.A.scale") "the chain names the dependency that changed"
-              Expect.isFalse (chain.Contains(label "Deps.A.baseValue")) "and not one that did not"
+              Expect.stringContains chain (fingerprintOf a "Deps.A.scale:Value") "the chain names the dependency that changed"
+              Expect.isFalse (chain.Contains(fingerprintOf a "Deps.A.baseValue:Value")) "and not one that did not"
+          }
+          testTask "a type and a value of one name are told apart" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let text = "module Deps.A\n\ntype Thing = { X: int }\n\nlet Thing = 1\n\nlet useType (t: Thing) : int = t.X\n"
+              do! s.Lsp.DidOpen(a, text)
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              do! promoted s a
+              do! s.Lsp.DidChange(a, 1, replace s a "{ X: int }" "{ X: int; Y: int }")
+              do! eventually "the edit's publish" (fun () -> hasVersion s a 1)
+              do! promoted s a
+              let! (answer: JsonNode) = why s a (position (s.Lsp.Text a) "let useType" 0 5)
+              Expect.isNotNull answer "a declaration answers"
+              let chain = answer["chain"].GetValue<string>()
+              Expect.stringContains chain (fingerprintOf a "Deps.A.Thing:Type") "the type changed"
+              Expect.isFalse (chain.Contains(fingerprintOf a "Deps.A.Thing:Value")) "and the value of its name did not"
+          }
+          testTask "start, finish and filelevel label the nodes they name" {
+              let! s = openA ()
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let! labels = graph.TracedLabels a |> within
+              Expect.equal (List.sort labels) [ "filelevel", Some $"filelevel %s{a}"; "finish", Some $"finish %s{a}"; "start", Some $"start %s{a}" ] "an implementation file checked by declaration"
+              let fsi = file "E.fsi"
+              let! signature = graph.TracedLabels fsi |> within
+              Expect.equal signature [ "filelevel", Some $"filelevel %s{fsi}" ] "a signature file"
           }
 #else
           testTask "untraced build says so" {
@@ -115,10 +143,18 @@ let tests =
               let! (answer: JsonNode) = why s fsi (position (s.Lsp.Text fsi) "val" 0 0)
               Expect.isNull answer "a signature file has no declaration nodes"
           }
-          testTask "a file checked whole answers nothing" {
+          testTask "a file checked whole: nothing when traced, an untraced answer otherwise" {
               let! s = startSession () |> within
               use _ = disposing s
               // Never opened, so never promoted
-              let! (answer: JsonNode) = why s c (position (File.ReadAllText c) "let total" 0 5)
-              Expect.isNull answer "a file checked whole has no declaration nodes"
+              let d = file "D.fs"
+              let! (answer: JsonNode) = why s d (position (File.ReadAllText d) "let after" 0 5)
+#if RANVIER_TRACE
+              Expect.isNull answer "a file checked whole has no declaration nodes to ask"
+#else
+              Expect.isNotNull answer "an untraced build answers for any declaration"
+              Expect.isFalse (answer["traced"].GetValue<bool>()) "untraced"
+              Expect.stringContains (answer["declaration"].GetValue<string>()) "after" "the declaration is named"
+              Expect.equal (answer["chain"].GetValue<string>()) "" "with no chain"
+#endif
           } ]

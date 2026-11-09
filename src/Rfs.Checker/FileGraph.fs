@@ -215,20 +215,6 @@ type internal SegmentCheck(span: DeclarationKey[], start: StartInfo, rows: IRead
             seen[k] <- c
             c
 
-/// The names a traced build gives the graph's nodes. Without RANVIER_TRACE `named` is the node's creation and nothing
-/// else: the label is a lambda that is never called, and both inline away.
-module internal Labels =
-    /// The key as the labels and the answer of `rfs/why` write it
-    let key (k: DeclarationKey) : string =
-        String.Join(".", k.ModulePath @ [ k.Name ]) + (if k.Ordinal > 0 then $"(%d{k.Ordinal})" else "")
-
-#if RANVIER_TRACE
-    let inline named ([<InlineIfLambda>] label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T =
-        Trace.named (label ()) create
-#else
-    let inline named ([<InlineIfLambda>] _label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T = create ()
-#endif
-
 /// A declaration's nodes, created when its key enters the file and disposed when it leaves.
 [<AllowNullLiteral>]
 type internal Row(file: ImplShared, key: DeclarationKey, item: unit -> ParsedDeclaration) as this =
@@ -907,6 +893,8 @@ type internal IFileNode =
     /// The node holding declaration `key`'s check, when the file is checked by declaration and has the declaration.
     /// Graph thread.
     abstract CheckNode: key: DeclarationKey -> INode voption
+    /// For tests: the nodes the labels `start`, `finish` and `filelevel` are meant for, by that word. Graph thread.
+    abstract TracedNodes: unit -> (string * INode) list
 #endif
 
 /// The nodes that check an implementation file one declaration at a time: created when the file is promoted, and
@@ -940,6 +928,8 @@ type internal DeclFile
 #if RANVIER_TRACE
     /// The node whose value is the declaration's check, for Trace.why. Graph thread.
     member val CheckNodeOf: DeclarationKey -> INode voption = (fun _ -> ValueNone) with get, set
+    /// The file's `start` and `finish` nodes, by that word
+    member val TracedNodes: (string * INode) list = [] with get, set
 #endif
 
     static member ResultsOf(finished: Finished) : IReadOnlyDictionary<DeclarationKey, DeclarationResult> =
@@ -1286,6 +1276,8 @@ module internal FileNodes =
                 match shared.Rows.TryGetValue key with
                 | true, row -> ValueSome(row.Check :> INode)
                 | _ -> ValueNone
+
+        declFile.TracedNodes <- [ "start", start :> INode; "finish", finish :> INode ]
 #endif
 
         declFile
