@@ -452,31 +452,39 @@ let tests =
               let at = position (s.Lsp.Text d) "Pick" 0 1
               do! expectLikeFcs s depsProject [ d, "Pick", 0, 1 ] "as checked"
 
-              let whileWaiting (version: int) (text: string) =
-                  task {
-                      let gate = new ManualResetEventSlim(false)
-                      let! held = holdingRead s a gate
+              let graph = (s.Server.Workspace.ProjectOf a).Value
 
-                      try
-                          // The request looks the key up in D, then waits for A, whose text then changes under the key
-                          let pending = definition s d at
-                          do! Task.Delay 500
-                          Expect.isFalse pending.IsCompleted "it waits for the target"
-                          do! whole s a version text
-                          do! Task.Delay 200
-                          gate.Set()
-                          let! _ = held |> within
-                          return! pending
-                      finally
-                          gate.Set()
+              // A request reads D and then A's index in one turn each, so a key only goes stale between those two turns:
+              // this asks with the key D gave before A's edits, once A has settled on them
+              let! (key: string) =
+                  graph.ReadFile(
+                      d,
+                      (fun v ->
+                          let line, character = at
+                          let lines = v.Text.Split '\n'
+                          let lineText = lines[line].TrimEnd '\r'
+
+                          v.Result.CheckResults.GetSymbolUseAtLocation(line + 1, character + 3, lineText, [ "Pick" ])
+                          |> Option.bind (fun u -> FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol)
+                          |> Option.get),
+                      CancellationToken.None
+                  )
+                  |> within
+
+              let afterEdit (version: int) (text: string) =
+                  task {
+                      do! whole s a version text
+                      do! eventually "A's edit published" (fun () -> hasVersion s a version)
+                      do! promoted s a
+                      let! (found: FSharp.Compiler.Text.range option) = graph.CurrentLocation(d, a, key, CancellationToken.None) |> within
+                      return found |> Option.map (fun r -> r.StartLine - 1)
                   }
 
-              let! (shifted: Answer) = whileWaiting 2 (overloaded "    member _.Pick(a: char) = a\n")
+              let! shifted = afterEdit 2 (overloaded "    member _.Pick(a: char) = a\n")
               let line = fst (position (s.Lsp.Text a) "Pick(a: string" 0 0)
-              Expect.equal (shifted |> Option.map (fun (_, l, _, _, _) -> l)) (Some line) "an overload added before it: the same overload at its line, where an index would give the one before"
-              do! promoted s d
+              Expect.equal shifted (Some line) "an overload added before it: the same overload at its line, where an index would give the one before"
               // The overload it names goes: nothing, not its neighbour
-              let! (gone: Answer) = whileWaiting 3 (s.Lsp.Text a |> fun t -> t.Replace("    member _.Pick(a: string) = a\n", ""))
+              let! gone = afterEdit 3 (s.Lsp.Text a |> fun t -> t.Replace("    member _.Pick(a: string) = a\n", ""))
               Expect.isNone gone "the key finds nothing"
           }
 

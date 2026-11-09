@@ -397,4 +397,47 @@ let tests =
                   other.Dispose()
                   graph.Host.TakePostErrors() |> ignore
           }
+
+          testTask "a definition's current location is read from the indexes in one turn, with no read of the file" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let efs = file "E.fs"
+              let efsi = file "E.fsi"
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+
+              let keyIn (path: string) (name: string) =
+                  graph.ReadFile(
+                      path,
+                      (fun v ->
+                          let u =
+                              v.Result.CheckResults.GetAllUsesOfAllSymbolsInFile()
+                              |> Seq.find (fun u -> u.IsFromDefinition && u.Symbol.DisplayName = name)
+
+                          (FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
+                      CancellationToken.None
+                  )
+                  |> within
+
+              let! (baseValue: string) = keyIn a "baseValue"
+              let! (compute: string) = keyIn efs "compute"
+              let held = TaskCompletionSource()
+              // Every file read now waits after its settle
+              graph.OnReadSettled(fun () -> held.Task)
+
+              try
+                  let answered (t: Task<FSharp.Compiler.Text.range option>) (what: string) : Task<FSharp.Compiler.Text.range option> =
+                      task {
+                          let! first = Task.WhenAny(t, Task.Delay(TimeSpan.FromSeconds 20.))
+                          Expect.isTrue (obj.ReferenceEquals(first, t)) $"%s{what} answers while file reads wait"
+                          return t.Result
+                      }
+
+                  let! inImplementation = answered (graph.CurrentLocation(c, a, baseValue, CancellationToken.None)) "an implementation's definition"
+                  Expect.equal (inImplementation |> Option.map (fun (r: FSharp.Compiler.Text.range) -> Path.GetFileName r.FileName, r.StartLine)) (Some("A.fs", 3)) "baseValue in A.fs"
+                  let! fromItsFile = answered (graph.CurrentLocation(efs, efs, compute, CancellationToken.None)) "a definition in its own signed file"
+                  Expect.equal (fromItsFile |> Option.map (fun (r: FSharp.Compiler.Text.range) -> Path.GetFileName r.FileName)) (Some "E.fsi") "the signature's location"
+              finally
+                  held.SetResult()
+                  graph.OnReadSettled(fun () -> Task.CompletedTask)
+          }
         ]
