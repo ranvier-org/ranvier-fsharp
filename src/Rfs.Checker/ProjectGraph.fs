@@ -756,6 +756,30 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             return! Request.run host body linked.Token
         }
 
+    /// <summary>
+    /// The `///` comments of the file's latest parse (FileDocs), a request node that answers once that parse is made. No
+    /// check is read or waited for: a comment is current for the latest text even when the file's check isn't.
+    /// </summary>
+    /// Whether the project has the file
+    member _.Holds(file: string) : bool =
+        try
+            byPath.ContainsKey(Path.GetFullPath file)
+        with :? ArgumentException | :? NotSupportedException | :? PathTooLongException ->
+            false
+
+    member _.DocsOf(file: string, ct: CancellationToken) : Task<FileDocs> =
+        let i = indexOf file
+
+        let body (flight: CancellationToken) =
+            match (try ValueSome files[i].Text.Docs.Value with NotReadyException _ -> ValueNone) with
+            | ValueSome docs -> Task.FromResult docs
+            | ValueNone -> Request.waitForNextTurn flight
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
     member internal _.Host: GraphHost = host
 
     /// Whether Dispose has begun. Read on the graph thread inside a turn, after which none of its nodes changes.

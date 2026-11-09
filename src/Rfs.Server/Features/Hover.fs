@@ -2,6 +2,8 @@ namespace Rfs.Server
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
+open System.Runtime.CompilerServices
 open System.IO
 open System.Net
 open System.Text.RegularExpressions
@@ -21,7 +23,7 @@ open Rfs.Checker
 /// </summary>
 /// <remarks>
 /// Not ported (hover answers nothing, or shows less): keyword and hash-directive tooltips, the parameter, returns and
-/// remarks sections and FSAC's comment-style modes, generic type mappings, <c>inheritdoc</c>, and documentation links.
+/// remarks sections and FSAC's comment-style modes, generic type mappings, and documentation links.
 /// The identifier under the cursor is found with the tokenizer, as FSAC's <c>Lexer.findLongIdents</c> does: operators
 /// answer, and strings and comments do not.
 /// </remarks>
@@ -197,18 +199,100 @@ module Hover =
     let tooltipOf (check: FSharpCheckFileResults) (text: string) (line: int) (character: int) : string option =
         lookupOf text line character |> Option.bind (toolTip check line >> format)
 
+    /// A tooltip without the documentation FCS knows the source of, and those sources (GetToolTipParts)
+    type internal Signature = ToolTipText * FSharpDocSource option list
+
+    /// Each check's signatures by what was asked of it: a hover again at the same place of the same result renders
+    /// nothing. Nothing in a signature depends on a `///` comment, so an edit of one alone keeps them.
+    let private signatures =
+        ConditionalWeakTable<FSharpCheckFileResults, ConcurrentDictionary<struct (int * int * string * string), Signature>>()
+
+    let mutable private rendered = 0L
+
+    /// How many signatures have been rendered. For tests.
+    let internal signaturesRendered () = Interlocked.Read &rendered
+
+    let private signatureOf (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
+        let cache = signatures.GetValue(check, fun _ -> ConcurrentDictionary())
+
+        cache.GetOrAdd(
+            struct (line, endColumn, lineStr, String.Join("\n", names)),
+            fun _ ->
+                Interlocked.Increment &rendered |> ignore
+                check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+        )
+
+    /// The tooltip with each element's documentation made from the current comments of the declarations it is read
+    /// from, as `commentOf` gives them
+    let internal compose (commentOf: FSharpDocOwner -> FSharp.Compiler.Xml.XmlDoc voption) ((ToolTipText elements, sources): Signature) : ToolTipText =
+        let mutable rest = sources
+
+        let next () =
+            match rest with
+            | s :: tail ->
+                rest <- tail
+                s
+            | [] -> None
+
+        elements
+        |> List.map (function
+            | ToolTipElement.Group items ->
+                ToolTipElement.Group(
+                    items
+                    |> List.map (fun item ->
+                        match next () with
+                        | Some source -> { item with XmlDoc = source.Compose commentOf }
+                        | None -> item)
+                )
+            | other -> other)
+        |> ToolTipText
+
+    /// <summary>
     /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
-    /// ProjectGraph.ReadFile). Only the check is asked under the lock, which holds off the file's checks: the tokenizer
-    /// reads the file from the top, before the lock, and `format` may load an XML file, after the read.
-    let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
+    /// ProjectGraph.ReadFile). The signature is the check's, cached by the check and position; the documentation is
+    /// made from the comments of the latest parse of each file it is read from (ProjectGraph.DocsOf), in this project,
+    /// a later file, or another project `owners` names: a `///` edit is seen at once, with no check of anything.
+    /// </summary>
+    /// <remarks>
+    /// Only the check is asked under the lock, which holds off the file's checks: the tokenizer reads the file from the
+    /// top, before the lock, and `format` may load an XML file, after the read. A declaration in no file of the
+    /// workspace, as in a referenced assembly, keeps the documentation FCS gives.
+    /// </remarks>
+    let at (owners: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
         task {
-            let! tip =
+            let! signature =
                 graph.ReadFile(
                     path,
                     (fun view -> lookupOf view.Text line character),
-                    (fun view lookup -> lookup |> Option.map (toolTip view.Result.CheckResults line)),
+                    (fun view lookup -> lookup |> Option.map (signatureOf view.Result.CheckResults line)),
                     ct
                 )
 
-            return tip |> Option.bind format
+            match signature with
+            | None -> return None
+            | Some((_, sources) as signature) ->
+                let docs = Dictionary<string, FileDocs>(StringComparer.OrdinalIgnoreCase)
+
+                let files =
+                    sources
+                    |> List.choose id
+                    |> List.collect (fun s -> s.Owners @ s.InheritOwners)
+                    |> List.map _.FileName
+                    |> List.filter (fun f -> f <> "")
+                    |> List.distinct
+
+                for file in files do
+                    match owners file |> List.filter (fun g -> g.Holds file) with
+                    | g :: _ ->
+                        let! d = g.DocsOf(file, ct)
+                        docs[file] <- d
+                    | [] -> ()
+
+                let commentOf =
+                    FileDocs.CommentOf(fun file ->
+                        match docs.TryGetValue file with
+                        | true, d -> ValueSome d
+                        | _ -> ValueNone)
+
+                return format (compose commentOf signature)
         }

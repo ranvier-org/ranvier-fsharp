@@ -209,7 +209,7 @@ let private demotedAsFresh (before: string) (after: string) =
 
             let answers (graph: Rfs.Checker.ProjectGraph) (s: ProjectSpec) (p: string) (l: int) (c: int) =
                 task {
-                    let! hover = Hover.at graph p l c CancellationToken.None
+                    let! hover = Hover.at (fun _ -> [ graph ]) graph p l c CancellationToken.None
                     let! definition = Definition.at (fun _ -> [ graph ]) graph p l c CancellationToken.None
                     let! completion = Completion.at graph p l c CancellationToken.None
                     let! references = References.find (scope graph s) graph p l c CancellationToken.None

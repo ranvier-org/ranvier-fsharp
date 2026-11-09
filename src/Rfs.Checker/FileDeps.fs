@@ -427,9 +427,14 @@ type internal FileText(project: ProjectShared, path: string, initial: string, ve
                       Declarations = [||]
                       Prologue = t.Text })))
 
+    // The comments of the latest parse: plain data, which no check reads
+    let docs = createMemoWithComparer HashIdentity.Reference (fun _ -> FileDocs.OfParse parsed.Value.Parse.ParseTree)
+
     member _.Path = path
     member _.Text = text
     member _.Parsed: AsyncMemo<Parsed> = parsed
+    /// The `///` comments of the latest parse, by declaration path
+    member _.Docs: Memo<FileDocs> = docs
     /// The version of the text set last. Graph thread.
     member _.Version = text.Peek.Version
 
