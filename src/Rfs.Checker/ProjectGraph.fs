@@ -113,7 +113,12 @@ type FileView =
       Version: int64
       /// The signatures the result was set up from
       Before: FileSignature list
-      At: int -> int -> FSharpCheckFileResults }
+      At: int -> int -> FSharpCheckFileResults
+      /// The same object while the same result is published (ProjectGraph.DocsInTurn)
+      Identity: obj
+      /// The result of the declaration that holds the 1-based line, and its first line: the same object while that
+      /// declaration's result is kept. None outside every declaration, and for a file checked whole.
+      RowAt: int -> struct (obj * int) voption }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
     /// checked by declaration, a kept declaration holds the names as they were when it was checked: when an earlier result
@@ -650,6 +655,17 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
               Text = r.Parsed.Text
               Version = r.Parsed.Version
               Before = r.Key.Before
+              Identity = r.Identity
+              RowAt =
+                fun line ->
+                    match r.Declarations with
+                    | ValueSome(f, _) ->
+                        f.Checks
+                        |> Array.tryFind (fun (_, c) -> c.Decl.Range.StartLine <= line && line <= c.Decl.Range.EndLine)
+                        |> function
+                            | Some(_, c) -> ValueSome(struct (box c.Result, c.Decl.Range.StartLine))
+                            | None -> ValueNone
+                    | ValueNone -> ValueNone
               At =
                 fun line column ->
                     match r.Declarations with
@@ -756,10 +772,6 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             return! Request.run host body linked.Token
         }
 
-    /// <summary>
-    /// The `///` comments of the file's latest parse (FileDocs), a request node that answers once that parse is made. No
-    /// check is read or waited for: a comment is current for the latest text even when the file's check isn't.
-    /// </summary>
     /// Whether the project has the file
     member _.Holds(file: string) : bool =
         try
@@ -767,13 +779,40 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         with :? ArgumentException | :? NotSupportedException | :? PathTooLongException ->
             false
 
-    member _.DocsOf(file: string, ct: CancellationToken) : Task<FileDocs> =
-        let i = indexOf file
+    /// Whether the two graphs share a host, so one turn reads both
+    member _.SharesHost(other: ProjectGraph) : bool = obj.ReferenceEquals(host, other.Host)
+
+    /// Graph thread, inside one turn: the `///` comments of the file's latest parse, or ValueNone while it is pending
+    member internal _.DocsNow(file: string) : FileDocs voption =
+        try
+            ValueSome files[indexOf file].Text.Docs.Value
+        with NotReadyException _ ->
+            ValueNone
+
+    /// <summary>
+    /// The `///` comments of each of `files` (a graph that holds it, and the file), read in one graph turn in which the
+    /// file `asking` still publishes the result `identity` names (FileView.Identity): a request node. Each is of that
+    /// file's latest parse (FileDocs), which no check is waited for. ValueNone when `asking` publishes another result by
+    /// then, or none, so its read is to be made again.
+    /// </summary>
+    /// <remarks>
+    /// One turn is one state across the host's graphs: a file whose latest parse changed its signature leaves `asking`
+    /// unsettled in that turn, so the docs read with a settled `asking` have the declarations its check named. Every
+    /// graph in `files` must be on this one's host.
+    /// </remarks>
+    member _.DocsInTurn(asking: string, identity: obj, files: (ProjectGraph * string)[], ct: CancellationToken) : Task<FileDocs[] voption> =
+        let i = indexOf asking
 
         let body (flight: CancellationToken) =
-            match (try ValueSome files[i].Text.Docs.Value with NotReadyException _ -> ValueNone) with
-            | ValueSome docs -> Task.FromResult docs
-            | ValueNone -> Request.waitForNextTurn flight
+            match (try readSettled i (fun f version -> (f :?> IReadableFile).Readable version) with NotReadyException _ -> ValueNone) with
+            | ValueSome r when obj.ReferenceEquals(r.Identity, identity) ->
+                let docs = files |> Array.map (fun (g, f) -> g.DocsNow f)
+
+                if docs |> Array.forall _.IsSome then
+                    Task.FromResult(ValueSome(docs |> Array.map _.Value))
+                else
+                    Request.waitForNextTurn flight
+            | _ -> Task.FromResult ValueNone
 
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)

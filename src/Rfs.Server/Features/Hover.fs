@@ -202,24 +202,33 @@ module Hover =
     /// A tooltip without the documentation FCS knows the source of, and those sources (GetToolTipParts)
     type internal Signature = ToolTipText * FSharpDocSource option list
 
-    /// Each check's signatures by what was asked of it: a hover again at the same place of the same result renders
-    /// nothing. Nothing in a signature depends on a `///` comment, so an edit of one alone keeps them.
-    let private signatures =
-        ConditionalWeakTable<FSharpCheckFileResults, ConcurrentDictionary<struct (int * int * string * string), Signature>>()
+    /// Signatures by the declaration result that answers the position and the position in it, or for a file checked
+    /// whole by its check: a hover again at the same place of a kept declaration renders nothing, after any edit that
+    /// keeps it. Nothing in a signature depends on a `///` comment.
+    let private signatures = ConditionalWeakTable<obj, ConcurrentDictionary<struct (int * int * string * string), Signature>>()
 
-    let mutable private rendered = 0L
+    let private rendered = ConcurrentDictionary<string, int64>(StringComparer.OrdinalIgnoreCase)
 
-    /// How many signatures have been rendered. For tests.
-    let internal signaturesRendered () = Interlocked.Read &rendered
+    /// How many signatures have been rendered for hovers in the file. For tests.
+    let internal signaturesRendered (path: string) =
+        match rendered.TryGetValue path with
+        | true, n -> n
+        | _ -> 0L
 
-    let private signatureOf (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
-        let cache = signatures.GetValue(check, fun _ -> ConcurrentDictionary())
+    let private signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
+        let owner, row =
+            match view.RowAt(line + 1) with
+            | ValueSome(struct (result, first)) -> result, line + 1 - first
+            | ValueNone -> box view.Result.CheckResults, line
+
+        let cache = signatures.GetValue(owner, fun _ -> ConcurrentDictionary())
 
         cache.GetOrAdd(
-            struct (line, endColumn, lineStr, String.Join("\n", names)),
+            struct (row, endColumn, lineStr, String.Join("
+", names)),
             fun _ ->
-                Interlocked.Increment &rendered |> ignore
-                check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+                rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
+                view.Result.CheckResults.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
         )
 
     /// The tooltip with each element's documentation made from the current comments of the declarations it is read
@@ -247,10 +256,13 @@ module Hover =
             | other -> other)
         |> ToolTipText
 
+    /// Runs between a hover's signature and its docs, with the file. For tests.
+    let mutable internal afterSignature: string -> Task = fun _ -> Task.CompletedTask
+
     /// <summary>
     /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
-    /// ProjectGraph.ReadFile). The signature is the check's, cached by the check and position; the documentation is
-    /// made from the comments of the latest parse of each file it is read from (ProjectGraph.DocsOf), in this project,
+    /// ProjectGraph.ReadFile). The signature is the check's, cached by the declaration result and position; the documentation is
+    /// made from the comments of the latest parse of each file it is read from (ProjectGraph.DocsInTurn), in this project,
     /// a later file, or another project `owners` names: a `///` edit is seen at once, with no check of anything.
     /// </summary>
     /// <remarks>
@@ -259,40 +271,51 @@ module Hover =
     /// workspace, as in a referenced assembly, keeps the documentation FCS gives.
     /// </remarks>
     let at (owners: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
-        task {
-            let! signature =
-                graph.ReadFile(
-                    path,
-                    (fun view -> lookupOf view.Text line character),
-                    (fun view lookup -> lookup |> Option.map (signatureOf view.Result.CheckResults line)),
-                    ct
-                )
+        let rec attempt () =
+            task {
+                let! signature =
+                    graph.ReadFile(
+                        path,
+                        (fun view -> lookupOf view.Text line character),
+                        (fun view lookup -> lookup |> Option.map (fun l -> signatureOf path view line l, view.Identity)),
+                        ct
+                    )
 
-            match signature with
-            | None -> return None
-            | Some((_, sources) as signature) ->
-                let docs = Dictionary<string, FileDocs>(StringComparer.OrdinalIgnoreCase)
+                match signature with
+                | None -> return None
+                | Some(((_, sources) as signature), identity) ->
+                    let held =
+                        sources
+                        |> List.choose id
+                        |> List.collect (fun s -> s.Owners @ s.InheritOwners)
+                        |> List.map _.FileName
+                        |> List.filter (fun f -> f <> "")
+                        |> List.distinctBy (fun f -> f.ToUpperInvariant())
+                        |> List.choose (fun file ->
+                            owners file
+                            |> List.tryFind (fun g -> g.Holds file && g.SharesHost graph)
+                            |> Option.map (fun g -> g, file))
+                        |> Array.ofList
 
-                let files =
-                    sources
-                    |> List.choose id
-                    |> List.collect (fun s -> s.Owners @ s.InheritOwners)
-                    |> List.map _.FileName
-                    |> List.filter (fun f -> f <> "")
-                    |> List.distinct
+                    do! afterSignature path
 
-                for file in files do
-                    match owners file |> List.filter (fun g -> g.Holds file) with
-                    | g :: _ ->
-                        let! d = g.DocsOf(file, ct)
-                        docs[file] <- d
-                    | [] -> ()
+                    // The docs in one turn with the signature's result still published: an edit that lands between
+                    // them reads the file again
+                    match! graph.DocsInTurn(path, identity, held, ct) with
+                    | ValueNone -> return! attempt ()
+                    | ValueSome read ->
+                        let docs = Dictionary<string, FileDocs>(StringComparer.OrdinalIgnoreCase)
 
-                let commentOf =
-                    FileDocs.CommentOf(fun file ->
-                        match docs.TryGetValue file with
-                        | true, d -> ValueSome d
-                        | _ -> ValueNone)
+                        for (_, file), d in Array.zip held read do
+                            docs[file] <- d
 
-                return format (compose commentOf signature)
-        }
+                        let commentOf =
+                            FileDocs.CommentOf(fun file ->
+                                match docs.TryGetValue file with
+                                | true, d -> ValueSome d
+                                | _ -> ValueNone)
+
+                        return format (compose commentOf signature)
+            }
+
+        attempt ()

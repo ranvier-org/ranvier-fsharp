@@ -26,8 +26,6 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
 
     member _.Count = docs.Count
 
-    member _.Keys = docs.Keys
-
     static member Empty = empty
 
     static member OfParse(input: ParsedInput) : FileDocs =
@@ -50,6 +48,15 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             add ("M:" + key + "#" + string n) doc
 
         let join (path: string) (name: string) = if path = "" then name else path + "." + name
+
+        // A type's name with its number of type parameters, as `Box` and `Box<'T>` are two types
+        let typeName (info: SynComponentInfo) =
+            let (SynComponentInfo(typeParams = typars)) = info
+            let name = (List.last info.LongIdent).idText
+
+            match typars with
+            | Some t when not t.TyparDecls.IsEmpty -> name + "`" + string t.TyparDecls.Length
+            | _ -> name
 
         let rec namesOf (pat: SynPat) : string list =
             match pat with
@@ -119,12 +126,17 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynMemberDefn.AutoProperty(ident = id; xmlDoc = doc) -> addMember typePath ("property " + id.idText) doc
             | SynMemberDefn.Interface(members = Some ms) -> ms |> List.iter (memberDefn typePath)
             | SynMemberDefn.ValField(fieldInfo = f) -> fields typePath [ f ]
+            // A class `let`: a value of the type
+            | SynMemberDefn.LetBindings(bindings = bs) ->
+                for SynBinding(xmlDoc = doc; headPat = pat) in bs do
+                    for name in namesOf pat do
+                        add ("V:" + typePath + "." + name) doc
             | SynMemberDefn.NestedType(typeDefn = t) -> typeDefn typePath t
             | _ -> ()
 
         and typeDefn (path: string) (SynTypeDefn(typeInfo = info; typeRepr = repr; members = members; implicitConstructor = ctor)) =
             let (SynComponentInfo(xmlDoc = doc)) = info
-            let typePath = join path (List.last info.LongIdent).idText
+            let typePath = join path (typeName info)
 
             match repr with
             | SynTypeDefnRepr.ObjectModel(kind = SynTypeDefnKind.Augmentation _) -> ()
@@ -182,7 +194,7 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | _ -> ()
 
         let typeSig (path: string) (SynTypeDefnSig(typeInfo = SynComponentInfo(xmlDoc = doc) as info; typeRepr = repr; members = members)) =
-            let typePath = join path (List.last info.LongIdent).idText
+            let typePath = join path (typeName info)
 
             match repr with
             | SynTypeDefnSigRepr.ObjectModel(kind = SynTypeDefnKind.Augmentation _) -> ()

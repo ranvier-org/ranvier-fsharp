@@ -54,12 +54,28 @@ type Derived() =
 
 /// A calculator
 type Calc() =
+    /// The changes
+    let changed = Event<int>()
+    /// Fires on change
+    [<CLIEvent>]
+    member _.Changed = changed.Publish
     /// Adds an int
     member _.Add(a: int, b: int) = a + b
     /// Adds a float
     member _.Add(a: float, b: float) = a + b
     /// Says hello
     member _.Greet(name: string) = "hi " + name
+    member _.Fire() = changed.Trigger 1
+
+/// A plain box
+type Box() =
+    /// plain Get
+    member _.Get() = 1
+
+/// A generic box
+type Box<'T>() =
+    /// generic Get
+    member _.Get() = 2
 
 let here = scale 2 baseValue + Calc().Add(1, 2) + (match Circle(radius = 1.0) with Circle r -> int r | Square _ -> 0)
 """
@@ -74,6 +90,8 @@ let area = match Circle(radius = 1.0) with Circle r -> r | Square s -> s
 let p = { X = 1; Y = 2 }.X
 let r = Derived().Run 1
 let c = Calc().Greet(name = "x") + string (Calc().Add(1.0, 2.0)) + string (Calc().Add(1, 2))
+let e = Calc().Changed
+let boxes = Box().Get() + Box<int>().Get()
 let v = scale 3 baseValue
 let shape: Shape = Square 2.0
 """
@@ -89,6 +107,8 @@ let s = Circle(radius = 2.0)
 let q = { X = 1; Y = 2 }.Y
 let d = Derived().Run 2
 let k = Calc().Add(1, 2) + Calc().Greet(name = "y").Length
+let ev = Calc().Changed
+let bx = Box<string>().Get() + Box().Get()
 let t: Point option = None
 """
 
@@ -110,7 +130,10 @@ let private docEdit (text: string) =
           "/// its radius", "/// how far out"
           "/// across", "/// left to right"
           "/// Does it", "/// Runs it"
-          "/// Adds an int", "/// Adds two ints" ]
+          "/// Adds an int", "/// Adds two ints"
+          "/// The changes", "/// What changed"
+          "/// Fires on change", "/// Fires on any change"
+          "/// generic Get", "/// generic Get of a T" ]
 
 let private lineInsert (text: string) = edits text [ "/// Some shape", "\n/// Some shape" ]
 
@@ -134,6 +157,60 @@ let private scenario =
         [ "a doc edit", [ "A.fs", a1 ]
           "a line insert above", [ "A.fs", a2 ]
           "a doc edit after it", [ "A.fs", a3 ] ] }
+
+/// A signature that documents a type's overloads in another order than its implementation, and leaves out an overload
+/// the implementation keeps private (the review's shapes)
+let private signedFsi =
+    normalizedText
+        """module Lib.S
+
+type Calc =
+    new: unit -> Calc
+    /// Adds floats (fsi)
+    member Add: a: float * b: float -> float
+    /// Adds ints (fsi)
+    member Add: a: int * b: int -> int
+
+type Hidden =
+    new: unit -> Hidden
+    /// Joins ints (fsi)
+    member Join: a: int * b: int -> int
+
+val here: int
+"""
+
+let private signedFs =
+    normalizedText
+        """module Lib.S
+
+type Calc() =
+    member _.Add(a: int, b: int) = a + b
+    member _.Add(a: float, b: float) = a + b
+
+type Hidden() =
+    member private _.Join(a: string, b: string) = a + b
+    member _.Join(a: int, b: int) = a + b
+
+let here = int (Calc().Add(1.0, 2.0)) + Calc().Add(1, 2) + Hidden().Join(1, 2)
+"""
+
+let private signedLater =
+    normalizedText
+        """module Lib.U
+
+open Lib.S
+
+let u = Calc().Add(1, 2) + int (Calc().Add(1.0, 2.0)) + Hidden().Join(3, 4)
+"""
+
+let private signedScenario =
+    let f1 = edits signedFsi [ "Adds ints (fsi)", "Adds two ints (fsi)"; "Joins ints (fsi)", "Joins two ints (fsi)" ]
+    let f2 = edits f1 [ "type Hidden =", "
+type Hidden =" ]
+
+    { Name = "signed docs"
+      Files = [ "S.fsi", signedFsi; "S.fs", signedFs; "U.fs", signedLater ]
+      Steps = [ "a signature doc edit", [ "S.fsi", f1 ]; "a line insert in the signature", [ "S.fsi", f2 ] ] }
 
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
@@ -173,6 +250,23 @@ let tests =
         "HoverGrid"
         [ for promote in [ true; false ] do
               yield
+               testTask $"""hover equals FCS at every token of a signed file and a later file after signature doc edits (%s{if promote then "by declaration" else "file level"})""" {
+                  let! results =
+                      run promote signedScenario (fun state ->
+                          task {
+                              let results = ResizeArray()
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              return List.ofSeq results
+                          })
+
+                  expectNoDifferences results
+              }
+
+              yield
                testTask $"""hover equals FCS at every token after doc edits, the same file and a later file (%s{if promote then "by declaration" else "file level"})""" {
                   let! results =
                       run promote scenario (fun state ->
@@ -202,8 +296,8 @@ let tests =
           }
 
           yield
-           // Pending: a declaration's text, which decides whether it is checked again, includes its own `///` (the fork's
-           // ParsedDeclaration.Text), so a doc edit checks the edited declarations again, though nothing after them
+           // Pending: a declaration's text, which decides whether it is checked again, includes every `///` inside it (the
+           // fork's ParsedDeclaration.Text), so a doc edit checks the edited declarations again, and what depends on them
            ptestTask "a doc-only edit checks no declaration and renders no signature again" {
               let mutable last = None
               let after = docEdit libA
@@ -212,7 +306,7 @@ let tests =
                   run true { scenario with Steps = [ "a doc edit", [ "A.fs", after ] ] } (fun state ->
                       task {
                           let counts () =
-                              state.Graph.CheckedCount, state.Graph.FileLevelChecks, state.Graph.AdHocChecks, Hover.signaturesRendered ()
+                              state.Graph.CheckedCount, state.Graph.FileLevelChecks, state.Graph.AdHocChecks, state.Implementations |> List.sumBy Hover.signaturesRendered
 
                           let before = counts ()
                           let results = ResizeArray()
@@ -242,6 +336,94 @@ let tests =
 
                           last <- Some again
                           return List.ofSeq results
+                      })
+
+              expectNoDifferences results
+          }
+
+          yield
+           testTask "an edit of one declaration renders no signature again in the declarations it keeps" {
+              let mutable last = None
+              let edited = edits libA [ "let here = scale 2 baseValue", "let here = scale 3 baseValue" ]
+
+              let! results =
+                  run true { scenario with Steps = [ "an edit of here", [ "A.fs", edited ] ] } (fun state ->
+                      task {
+                          let differences = ResizeArray()
+                          let mutable tokens = 0
+
+                          // Every token of a declaration but the edited one, the last of A.fs. A file's `module` line is in no
+                          // declaration: its signatures are cached by the file's check, which every edit of the file makes anew.
+                          for file in state.Implementations do
+                              let! check = state.Reference file
+                              let text = state.TextOf file
+
+                              for token in tokensOf text do
+                                  if not (token.LineText.StartsWith "let here" || token.LineText.StartsWith "module") then
+                                      let expected = Hover.tooltipOf check text token.Line token.Character
+                                      let! actual = Hover.at state.OwnersOf state.Graph file token.Line token.Character CancellationToken.None |> wait
+                                      tokens <- tokens + 1
+
+                                      if actual <> expected then
+                                          differences.Add $"%s{state.Step}: %s{Path.GetFileName file} %d{token.Line + 1},%d{token.Character}"
+
+                          let rendered = state.Implementations |> List.sumBy Hover.signaturesRendered
+
+                          match last with
+                          | Some previous -> Expect.equal rendered previous "the kept declarations' signatures were not rendered again"
+                          | None -> Expect.isGreaterThan rendered 0L "the first hovers render"
+
+                          last <- Some rendered
+                          return [ List.ofSeq differences, tokens ]
+                      })
+
+              expectNoDifferences results
+          }
+
+          yield
+           testTask "a hover whose docs' file changes while it reads answers for the new texts" {
+              let withString =
+                  edits libA [ "    /// Adds an int", "    /// Adds strings
+    member _.Add(a: string, b: string) = a + b
+    /// Adds an int" ]
+
+              let mutable answered = None
+
+              let! results =
+                  run true { scenario with Steps = [ "an overload added above", [ "A.fs", withString ] ] } (fun state ->
+                      task {
+                          let a = state.Files |> List.find (fun f -> f.EndsWith "A.fs")
+                          let b = state.Files |> List.find (fun f -> f.EndsWith "B.fs")
+                          let text = state.TextOf b
+                          let needle = "Calc().Add(1, 2)"
+                          let index = text.IndexOf(needle, StringComparison.Ordinal) + "Calc().".Length + 1
+                          let before = text.Substring(0, index)
+                          let line = before.Split('\n').Length - 1
+                          let character = index - (before.LastIndexOf '\n' + 1)
+
+                          match answered with
+                          | None ->
+                              // The overload lands after B's signature is read, before its docs are: the docs then read
+                              // are of a parse whose overloads are in other places
+                              let once = ref 0
+
+                              Hover.afterSignature <-
+                                  fun path ->
+                                      if path = b && Interlocked.Exchange(&once.contents, 1) = 0 then
+                                          state.Graph.SetText(a, withString) |> ignore
+                                          task { let! _ = state.Graph.Diagnostics a in () } :> Task
+                                      else
+                                          Task.CompletedTask
+
+                              let! hover = Hover.at state.OwnersOf state.Graph b line character CancellationToken.None |> wait
+                              Hover.afterSignature <- fun _ -> Task.CompletedTask
+                              answered <- Some hover
+                              return []
+                          | Some hover ->
+                              let! check = state.Reference b
+                              let expected = Hover.tooltipOf check text line character
+                              let different = if hover = expected then [] else [ $"ours %A{hover}, FCS %A{expected}" ]
+                              return [ different, 1 ]
                       })
 
               expectNoDifferences results
