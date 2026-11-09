@@ -103,35 +103,18 @@ module References =
                 Nothing
             | None -> InFile [ for d in check.GetUsesOfSymbolInFile(u.Symbol, cancellationToken = ct) -> struct (d.Range, d.IsFromDefinition) ]
 
-    /// The symbol under the cursor. Only the check is asked inside the read; a read that finds another text than the name
-    /// was looked up in looks it up again.
+    /// The symbol under the cursor: a request node on the file (ProjectGraph.ReadFile), with only the check asked under
+    /// the lock.
     let private asked (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<Asked> =
-        task {
-            let mutable looked = None
-            let mutable found = ValueNone
-
-            while found.IsNone do
-                let current = looked
-
-                let! answer =
-                    graph.ReadFile(
-                        path,
-                        (fun view ->
-                            match current with
-                            | Some(text, lookup) when obj.ReferenceEquals(text, view.Text) -> Choice1Of2(ask view.Result.CheckResults line lookup ct)
-                            | _ -> Choice2Of2 view.Text),
-                        ct
-                    )
-
-                match answer with
-                | Choice1Of2 a -> found <- ValueSome a
-                | Choice2Of2 text ->
-                    match Hover.lookupOf text line character with
-                    | Some lookup -> looked <- Some(text, lookup)
-                    | None -> found <- ValueSome Nothing
-
-            return found.Value
-        }
+        graph.ReadFile(
+            path,
+            (fun view -> Hover.lookupOf view.Text line character),
+            (fun view lookup ->
+                match lookup with
+                | Some lookup -> ask view.Result.CheckResults line lookup ct
+                | None -> Nothing),
+            ct
+        )
 
     let private setterSuffix = "|setter"
 
@@ -264,6 +247,4 @@ module References =
                 | Keyed(key, landed, spelled) -> return! everywhere scope graph key landed spelled ct
             with
             | :? OperationCanceledException when not ct.IsCancellationRequested -> return Answer.Moved
-            // A newer parse replaced the file's #line directives while its results were built: an edit got there first
-            | :? SupersededLineDirectivesException when not ct.IsCancellationRequested -> return Answer.Moved
         }
