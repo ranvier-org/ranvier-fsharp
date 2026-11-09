@@ -12,15 +12,15 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1041,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 1041,
+            "line": 13,
             "character": 0
           }
         },
-        "text": "\n  let n1Tail = 1\n",
+        "text": "",
         "repeat": 1,
         "mode": "apply"
       }
@@ -30,11 +30,29 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 1039,
             "character": 0
           },
           "end": {
-            "line": 13,
+            "line": 1039,
+            "character": 0
+          }
+        },
+        "text": "    | _ when false -> None\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 12,
+            "character": 0
+          },
+          "end": {
+            "line": 12,
             "character": 0
           }
         },
@@ -48,11 +66,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1042,
+            "line": 1040,
             "character": 0
           },
           "end": {
-            "line": 1044,
+            "line": 1041,
             "character": 0
           }
         },
@@ -66,11 +84,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 14,
+            "line": 13,
             "character": 0
           }
         },
@@ -84,15 +102,15 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           },
           "end": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           }
         },
-        "text": "\n  let n1Tail = 1\n",
+        "text": "    | _ when false -> None\n",
         "repeat": 1,
         "mode": "apply"
       }
@@ -102,11 +120,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 13,
+            "line": 12,
             "character": 0
           }
         },
@@ -120,11 +138,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1042,
+            "line": 1040,
             "character": 0
           },
           "end": {
-            "line": 1044,
+            "line": 1041,
             "character": 0
           }
         },
@@ -138,11 +156,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 14,
+            "line": 13,
             "character": 0
           }
         },
@@ -156,15 +174,15 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           },
           "end": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           }
         },
-        "text": "\n  let n1Tail = 1\n",
+        "text": "    | _ when false -> None\n",
         "repeat": 1,
         "mode": "apply"
       }
@@ -174,11 +192,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 13,
+            "line": 12,
             "character": 0
           }
         },
@@ -192,11 +210,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1042,
+            "line": 1040,
             "character": 0
           },
           "end": {
-            "line": 1044,
+            "line": 1041,
             "character": 0
           }
         },
@@ -210,11 +228,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 14,
+            "line": 13,
             "character": 0
           }
         },
@@ -228,15 +246,15 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           },
           "end": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           }
         },
-        "text": "\n  let n1Tail = 1\n",
+        "text": "    | _ when false -> None\n",
         "repeat": 1,
         "mode": "apply"
       }
@@ -246,11 +264,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 13,
+            "line": 12,
             "character": 0
           }
         },
@@ -264,11 +282,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1042,
+            "line": 1040,
             "character": 0
           },
           "end": {
-            "line": 1044,
+            "line": 1041,
             "character": 0
           }
         },
@@ -282,11 +300,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 14,
+            "line": 13,
             "character": 0
           }
         },
@@ -300,15 +318,15 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           },
           "end": {
-            "line": 1041,
+            "line": 1039,
             "character": 0
           }
         },
-        "text": "\n  let n1Tail = 1\n",
+        "text": "    | _ when false -> None\n",
         "repeat": 1,
         "mode": "apply"
       }
@@ -318,11 +336,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 13,
+            "line": 12,
             "character": 0
           },
           "end": {
-            "line": 13,
+            "line": 12,
             "character": 0
           }
         },
@@ -336,29 +354,11 @@
         "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
         "range": {
           "start": {
-            "line": 1042,
+            "line": 1040,
             "character": 0
           },
           "end": {
-            "line": 1044,
-            "character": 0
-          }
-        },
-        "text": "",
-        "repeat": 1,
-        "mode": "apply"
-      }
-    },
-    {
-      "edit": {
-        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
-        "range": {
-          "start": {
-            "line": 13,
-            "character": 0
-          },
-          "end": {
-            "line": 14,
+            "line": 1041,
             "character": 0
           }
         },
