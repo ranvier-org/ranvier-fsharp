@@ -172,6 +172,10 @@ let private editOrders : (string * string option * string list * string list) li
     "the last row has locals: append, then insert above", None, [ head + lastHasLocals; head + lastHasLocals + tail; head + above + lastHasLocals + tail ], []
     "the last row has a gap after it: append, then insert above", None, [ head + rows + "\n\n"; head + rows + "\n\n" + tail + "\n\n"; head + above + rows + "\n\n" + tail + "\n\n" ], []
     "a comment line above after an append", None, [ head + rows; head + rows + tail; head + "// a line\n" + rows + tail ], []
+    // N1: the scope a kept row captured ends where the module ended when it was checked
+    "edit the end of the last row, then insert above", None, [ head + rows; head + rows.Replace("= first\n", "= first + 0\n"); head + above + rows.Replace("= first\n", "= first + 0\n") ], []
+    "edit the end of the last row, then a comment line above", None, [ head + rows; head + rows.Replace("= first\n", "= first + 0\n"); head + "// a line\n" + rows.Replace("= first\n", "= first + 0\n") ], []
+    "append, then insert above twice", None, [ head + rows; head + rows + tail; head + "// a line\n" + rows + tail; head + "// a line\n// two\n" + rows + tail ], []
     "append, then remove the appended row, then insert above", None, [ head + rows; head + rows + tail; head + rows; head + above + rows ], []
     "inside a module: append, then insert above", None,
     [ "module Deps.D\n\nmodule M =\n    let a = 1\n\n    let b = a\n\nlet z = 1\n"
@@ -199,6 +203,50 @@ let private editPairs : (string * string option * string list * string list) lis
 
 let private all = scenarios @ scenarios2 @ editOrders @ editPairs
 
+/// The declarations checked, and the rows shifted, by the last of `texts`, each settled in turn
+let private lastEditRuns (texts: string list) =
+    task {
+        let dir = Directory.CreateTempSubdirectory "rfs-n1-"
+
+        try
+            let path = Path.Combine(dir.FullName, "D.fs")
+            File.WriteAllText(path, texts.Head)
+            let! deps = ProjectSpec.load depsProject
+
+            let spec =
+                { ProjectSpec.sequential deps with
+                    ProjectFile = Path.Combine(dir.FullName, "P.fsproj")
+                    SourceFiles = [ path ] }
+
+            use host = GraphHost.Start "n1"
+            let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+            graph.Promote path
+            let! _ = graph.WhenPromoted(path, CancellationToken.None) |> wait
+            let ran = System.Collections.Concurrent.ConcurrentQueue<string>()
+            use _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
+            let mutable shifted = 0L
+
+            for t in texts do
+                ran.Clear()
+                shifted <- graph.ShiftedRows
+                graph.SetText(path, t) |> ignore
+                let! _ = graph.AllDiagnostics() |> wait
+                let! _ = graph.WhenPromoted(path, CancellationToken.None) |> wait
+                ()
+
+            let result = List.ofSeq ran |> List.distinct |> List.sort, graph.ShiftedRows - shifted
+            graph.Dispose()
+            return result
+        finally
+            try
+                dir.Delete true
+            with :? IOException | :? UnauthorizedAccessException ->
+                ()
+    }
+
+let private n1Head = "module Deps.D\n\nlet f (x: int) = x + 1\n\n"
+let private n1Rows = "let first = f 1\n\nlet second = \"two\"\n\nlet third = first\n"
+
 [<Tests>]
 let tests =
     testList
@@ -210,4 +258,19 @@ let tests =
           testList
               "unedited"
               [ for name, signature, texts, _ in all ->
-                    testTask name { do! expectNone name signature [ List.last texts ] } ] ]
+                    testTask name { do! expectNone name signature [ List.last texts ] } ]
+          // N1: rows kept since an edit at the end of the file are shifted by a line inserted above them, not checked again
+          testList
+              "rows shifted after an edit at the end"
+              [ testTask "edit the last row's end, then insert a row near the top" {
+                    let edited = n1Rows.Replace("= first\n", "= first + 0\n")
+                    let! ran, shifted = lastEditRuns [ n1Head + n1Rows; n1Head + edited; "module Deps.D\n\nlet inserted = \"s\"\n\n" + n1Head.Substring 15 + edited ]
+                    Expect.equal ran [ "inserted" ] "only the inserted row is checked"
+                    Expect.equal shifted 4L "f, first, second and third are shifted"
+                }
+                testTask "append a row, then insert a comment line near the top" {
+                    let tail = "\nlet g2 = third + 1\n"
+                    let! ran, shifted = lastEditRuns [ n1Head + n1Rows; n1Head + n1Rows + tail; n1Head + "// a line\n" + n1Rows + tail ]
+                    Expect.equal ran [] "nothing is checked"
+                    Expect.equal shifted 4L "first, second, third and g2 are shifted"
+                } ] ]

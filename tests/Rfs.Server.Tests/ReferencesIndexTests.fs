@@ -351,8 +351,10 @@ let tests =
                           indexedResultOf g b |> ignore
                           let! (indexed: WeakReference list) = g.DeclarationObjects b |> within
                           let! (control: WeakReference list) = g.DeclarationObjects c |> within
-                          Expect.equal indexed.Length 3 "B's declaration state"
-                          Expect.equal control.Length 3 "C's declaration state"
+                          // A declaration check, its environment, the FileStart and the declaration's result (f1dd199 added the
+                          // result to DeclarationObjects, as FileModeTests counts it)
+                          Expect.equal indexed.Length 4 "B's declaration state"
+                          Expect.equal control.Length 4 "C's declaration state"
 
                           for f in [ b; c ] do
                               g.Demote f
@@ -360,8 +362,8 @@ let tests =
 
                           let! _ = g.AllDiagnostics() |> within
                           do! dropTrace host
-                          Expect.equal (collected control) [ true; true; true ] "the control: C's declaration state is collected"
-                          Expect.equal (collected indexed) [ true; true; true ] "B's too, its index read before"
+                          Expect.equal (collected control) [ true; true; true; true ] "the control: C's declaration state is collected"
+                          Expect.equal (collected indexed) [ true; true; true; true ] "B's too, its index read before"
                       })
           }
 
