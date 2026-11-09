@@ -1304,38 +1304,44 @@ module internal RowView =
         | Some(Role.Leader _) -> ofLeader (fst f.Checks[k]).Key
         | _ -> k, k
 
-    /// The published check results when the check of the row that answers a query at the position saw the current names:
-    /// the row it is in, or at a row's start a row before it, whose captured environment reaches it. At the end of the
-    /// file that is the last row. Where no row captured one, the environment at the file's end answers, which the last
-    /// row's result decides when that was checked whole. Otherwise a view with that row checked again in the current
-    /// environment and not adopted. A segment is checked from its leader to its last row: a member on its own would change
+    /// The published check results when what a query at the position can read is current: the rows whose captured
+    /// environments it chooses between (the row it is in, or at a row's start a row before it, and at the end of the file
+    /// the last row), and what leaving a module captured, which reads every row before it. Where no row captured one, the
+    /// environment at the file's end answers, which the last row's result decides when that was checked whole. Otherwise
+    /// a view, whose leaving a module is current, with those rows checked again in the current environment and not
+    /// adopted. The choice depends on how many record fields each environment knows, so both rows are made current
+    /// even when only one is stale. A segment is checked from its leader to its last row: a member on its own would change
     /// the published results in place (an augmentation adds to the type, a later row solves a variable), and a query in
     /// it reads what its later rows add and solve, as a full check's does.
     let at (project: ProjectShared) (f: Finished) (roles: Map<DeclarationKey, Role>) (line: int) (column: int) (ct: CancellationToken) =
         let current = f.Checks |> Array.map (fun (_, c) -> c.Result)
+        let struct (rows, exit, nothing) = DeclarationChecker.AnsweringDeclarations(f.Start.Start, current, f.Parsed.Parse, line, column)
+        let rows = if nothing then [| f.Checks.Length - 1 |] else rows
+        let stale = rows |> Array.filter (fun k -> k >= 0 && not (checkedInCurrent f.Checks k))
+        let exitStale = exit >= 0 && Seq.exists (fun k -> not (checkedInCurrent f.Checks k)) (seq { 0 .. exit - 1 })
 
-        let answering =
-            match DeclarationChecker.AnsweringDeclaration(f.Start.Start, current, line, column) with
-            | ValueSome k -> k
-            | ValueNone -> f.Checks.Length - 1
-
-        if answering < 0 || checkedInCurrent f.Checks answering then
+        if stale.Length = 0 && not exitStale then
             f.FileResult.CheckResults
         else
             // Built first: building them applies the signature file's names and docs, which the view reads too
             f.FileResult.CheckResults |> ignore
-            let first, last = spanOf f roles answering
+            let adHoc = stale |> Seq.collect (fun k -> let first, last = spanOf f roles k in seq { first .. last }) |> Set.ofSeq
             let results = Array.copy current
-            let mutable node = envBefore project f first ct
 
-            for i in first..last do
-                let _, c = f.Checks[i]
-                results[i] <- DeclarationChecker.CheckDeclarationAdHoc(f.Start.Start, node.Env, c.Decl, ct)
-                project.CountAdHoc()
+            if not adHoc.IsEmpty then
+                let mutable node = envBefore project f adHoc.MinimumElement ct
 
-                if i < last then
-                    project.CountEnvExtend()
-                    node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, results[i]))
+                for i in adHoc.MinimumElement .. adHoc.MaximumElement do
+                    let _, c = f.Checks[i]
+
+                    if adHoc.Contains i then
+                        results[i] <- DeclarationChecker.CheckDeclarationAdHoc(f.Start.Start, node.Env, c.Decl, ct)
+                        project.CountAdHoc()
+
+                    if i < adHoc.MaximumElement then
+                        ct.ThrowIfCancellationRequested()
+                        project.CountEnvExtend()
+                        node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, results[i]))
 
             DeclarationChecker.ViewResults(f.Start.Start, results, f.Parsed.Parse)
 

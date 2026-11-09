@@ -10,6 +10,7 @@
     <Compile Include="PublishFixTests.fs" />
     <Compile Include="HoverTests.fs" />
     <Compile Include="CompletionTests.fs" />
+    <Compile Include="CompletionGridTests.fs" />
     <Compile Include="CrossProjectTests.fs" />
     <Compile Include="DefinitionTests.fs" />
     <Compile Include="Program.fs" />

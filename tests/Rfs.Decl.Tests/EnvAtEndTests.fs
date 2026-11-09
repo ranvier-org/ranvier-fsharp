@@ -140,6 +140,35 @@ let tests =
               Expect.notEqual (tip ()) solved "a check undoes the finish: why an ad hoc check is not one"
           }
 
+          testAsync "captured environments are in a full check's order, around a nested module" {
+              let text = "module Deps.A\n\nlet p = 1\n\nmodule Inner =\n    let a = 1\n\n    module Deep =\n        let b = 2\n\nlet last = 4\n"
+              let! spec = ProjectSpec.load depsProject |> Async.AwaitTask
+              let spec = ProjectSpec.sequential spec
+              let! ctx = DeclarationChecker.CreateProject(ProjectSpec.toFcsOptions spec)
+              let parse = DeclarationChecker.Parse(ctx, a, text)
+              let start, env0 = DeclarationChecker.BeginFile(ctx, [], parse)
+              let finished = DeclarationChecker.FinishFile(start, checkAll start env0 (DeclarationChecker.Split parse), parse)
+              let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+              let reader (f: string) = (let t = (if f = a then text else File.ReadAllText f) in hash t, lazy t)
+              let! _, full, _ = checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, reader, a)
+
+              let flags = Reflection.BindingFlags.NonPublic ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.Instance
+
+              let captured (check: FSharpCheckFileResults) =
+                  let field = typeof<FSharpCheckFileResults>.GetFields(flags) |> Array.find (fun f -> f.Name.Contains "details")
+                  let details = field.GetValue check
+                  let details = details.GetType().GetProperty("Value").GetValue details
+                  let scope = details.GetType().GetProperty("Item1").GetValue details
+                  let resolutions = scope.GetType().GetProperty("ScopeResolutions", flags).GetValue scope
+                  let envs = resolutions.GetType().GetProperty("CapturedEnvs", flags).GetValue resolutions :?> Collections.IEnumerable
+
+                  [ for e in Seq.cast<obj> envs do
+                        let m = e.GetType().GetProperty("Item1").GetValue e :?> FSharp.Compiler.Text.range
+                        yield m.StartLine, m.StartColumn, m.EndLine, m.EndColumn ]
+
+              Expect.equal (captured finished.CheckResults) (captured full) "the same ranges in the same order"
+          }
+
           testAsync "reading the check results holding the file's check lock raises, and later reads work" {
               let! ctx = load ()
               let parse = DeclarationChecker.Parse(ctx, a, before)

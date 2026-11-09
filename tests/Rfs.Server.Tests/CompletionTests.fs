@@ -214,7 +214,7 @@ let tests =
               let! (names: Set<string>) = completionNames s d at
               Expect.contains names "newName" "the current name"
               Expect.isFalse (names.Contains "oldName") "not the name it replaced"
-              Expect.equal (graph.AdHocChecks - adHoc) 1L "the kept row was checked for the query"
+              Expect.equal (graph.AdHocChecks - adHoc) 2L "the kept row and the one before it, the two environments the query chooses between"
               Expect.equal graph.AdoptedChecks adopted "and not adopted"
               Expect.equal graph.CheckedCount ran "no check of the graph ran"
               let! reference = expected s (diskTexts () |> Map.add d text) d at
@@ -231,7 +231,7 @@ let tests =
               let line = fst (after (s.Lsp.Text d) "    inner" 0)
               let! _ = completionNames s d (line, 4)
               let! _ = completionNames s d (line, 4)
-              Expect.equal graph.AdHocChecks 2L "each request checks it again: nothing kept it"
+              Expect.equal graph.AdHocChecks 4L "each request checks the two again: nothing kept them"
               Expect.equal graph.AdoptedChecks adopted "neither was adopted"
               Expect.equal (publishesOf s d).Length publishes "nothing was published"
 
@@ -240,7 +240,7 @@ let tests =
               Expect.isGreaterThan graph.AdoptedChecks adopted "the edit's check was adopted"
               let! (names: Set<string>) = completionNames s d (line, 4)
               Expect.contains names "newName" "the row checked in the current environment"
-              Expect.equal graph.AdHocChecks 2L "and answered from the published results"
+              Expect.equal graph.AdHocChecks 5L "and only the row before it was checked for the query"
               do! expectEqualOracle s [ d ] d 2
           }
 
@@ -372,6 +372,47 @@ let tests =
                   Expect.contains names "GetHashCode" $"%s{what}: obj's members, as the default leaves it"
           }
 
+          // The stated limit in Completion's remarks: a row checked again for the query is not conformed to the signature
+          testTask "an item of a row checked again shows its own doc or none, never another's" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let efsi, efs = file "E.fsi", file "E.fs"
+              do! s.Lsp.DidOpen(efsi, "module Deps.E\n\nval z: int\n\n/// Adds one\nval f: x: int -> int\n\n/// Doc of g\nval g: int\n\nval h: int\n")
+              do! s.Lsp.DidOpen(efs, "module Deps.E\n\nlet z = 1\n\nlet f y = y + 1\n\nlet g = 1\n\nlet h =\n    let inner = f 1\n    inner\n")
+              do! eventually "the open publish" (fun () -> hasVersion s efs 0)
+              do! promoted s efs
+              let graph = (s.Server.Workspace.ProjectOf efs).Value
+              do! s.Lsp.DidChange(efs, 1, replace s efs "let z = 1" "let z = 2")
+              do! eventually "the edit's publish" (fun () -> hasVersion s efs 1)
+              do! promoted s efs
+              let text = s.Lsp.Text efs
+
+              for line, character in [ fst (after text "let g" 0), 0; fst (after text "let h" 0), 0; fst (after text "    inner" 0), 4 ] do
+                  let! (items: JsonObject[] option) = completionItems s efs (line, character)
+
+                  for label, own, other in [ "f", "Adds one", "Doc of g"; "g", "Doc of g", "Adds one" ] do
+                      match items.Value |> Array.tryFind (fun i -> i["label"].GetValue<string>() = label) with
+                      | None -> ()
+                      | Some item ->
+                          let! (back: JsonObject) = resolved s item
+                          let doc = back["documentation"].["value"].GetValue<string>()
+                          Expect.isFalse (doc.Contains other) $"%s{label} at (%d{line},%d{character}) shows no other item's doc: %s{doc}"
+                          ignore own
+
+              Expect.isGreaterThan graph.AdHocChecks 0L "rows were checked again"
+          }
+
+          // Nothing captured at the top of the file, so the end environment answers: the last row's, when that was checked whole
+          testTask "where nothing was captured, a stale last row checked whole is checked again" {
+              let! s = openD "// top\nmodule Deps.D\n\nlet oldName = 1\n\nmodule rec Inner =\n    let i = 1\n"
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf d).Value
+              do! rename s 1 "let oldName" "let newName"
+              let! (names: Set<string>) = expectFcs s (0, 0) "above the module line"
+              Expect.contains names "newName" "the current name"
+              Expect.equal graph.AdHocChecks 1L "the last row"
+          }
+
           testTask "resolve in a stale row of a signed file with no read before it shows the signature's doc" {
               let! s = startSession () |> within
               use _ = disposing s
@@ -422,7 +463,7 @@ let tests =
               Expect.equal reads.Value 2 "cancelled by the edit, and read again"
               Expect.equal (snd answer) edited "the answer is for the edit's text"
               Expect.contains (fst answer) "newName" "the current name"
-              Expect.equal graph.AdHocChecks adHoc "the first read's check never ran, and the edited row is fresh"
+              Expect.equal (graph.AdHocChecks - adHoc) 1L "the first read's checks never ran; the second's is of the row before the edited one"
           }
 
           testTask "completion in a file with an augmentation equals FCS, in and after a stale segment" {
@@ -453,8 +494,9 @@ let tests =
               do! rename s 1 "let earlier" "let earlier2"
               let before = graph.AdHocChecks
               do! assertEqualFcs ()
-              // `useT` on its own, then the segment from the type the augmentation extends: alone it would add to the published type
-              Expect.equal (graph.AdHocChecks - before) 3L "both rows are kept and stale"
+              // At `T().`, `useT` and the segment before it, from the type the augmentation extends: alone it would add to the
+              // published type. Then that segment again
+              Expect.equal (graph.AdHocChecks - before) 5L "the rows are kept and stale"
 
               // The ad hoc checks of the segment left the type as it was: one member B, and diagnostics as the oracle's
               let! (again: Set<string>) = completionNames s d (after (s.Lsp.Text d) "T()." 0)

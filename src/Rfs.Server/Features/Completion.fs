@@ -19,6 +19,9 @@ open Rfs.Checker
 /// Not ported: items from namespaces not opened (external autocomplete), keywords and hash directives, and the retry
 /// when the request comes in before its edit (<c>Publisher.Barrier</c> answers that). Resolve looks the item up again:
 /// its description reads the typed tree, which only a read may, so an item outlives no edit of its row.
+/// A stated limit in a file with a signature: a row checked again for a query (FileView.CheckResultsAt) is not conformed
+/// to the signature, by design, so an item from that row may show no documentation. It never shows another's. The list
+/// of items is not affected.
 /// </remarks>
 module Completion =
     let private kindOf (glyph: FSharpGlyph) : CompletionItemKind option =
@@ -120,7 +123,8 @@ module Completion =
             elif character = 0 then 0
             else character - 1
 
-    let private atQuery (view: FileView) (line: int) (character: int) =
+    /// The items at the 0-based line and character of the read's text, through FileView.CheckResultsAt.
+    let itemsAt (view: FileView) (line: int) (character: int) =
         itemsOf (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
 
     /// What an item carries for its resolve.
@@ -143,7 +147,7 @@ module Completion =
             let! items =
                 graph.ReadFile(
                     path,
-                    (fun view -> atQuery view line character),
+                    (fun view -> itemsAt view line character),
                     ct
                 )
 
@@ -169,7 +173,7 @@ module Completion =
                 graph.ReadFile(
                     path,
                     (fun view ->
-                        atQuery view line character
+                        itemsAt view line character
                         |> Array.tryFind (fun d -> d.NameInList = item.Label)
                         |> Option.map _.Description),
                     ct
