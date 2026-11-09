@@ -32,7 +32,8 @@ type WhyAnswer =
 /// <c>Traced = false</c> and an empty chain.
 /// </remarks>
 module Why =
-    /// The key of the smallest declaration of the file's current parse that contains the 0-based line and character
+    /// The key of the smallest declaration of the file's current parse that contains the 0-based line and character: a
+    /// request node on the file (ProjectGraph.ReadFile), run again on a new text
     let private declarationAt (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<DeclarationKey option> =
         graph.ReadFile(
             path,
