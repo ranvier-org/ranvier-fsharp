@@ -196,7 +196,6 @@ let private batteryPositions =
       d, "x: Rec", 0, 4
       d, "y: Un", 0, 4
       d, "A.baseValue", 0, 0
-      d, "Deps.A.baseValue", 0, 1
       d, "A.baseValue", 0, 4
       d, "inner + 1", 0, 1
       a, "Rec =", 0, 1

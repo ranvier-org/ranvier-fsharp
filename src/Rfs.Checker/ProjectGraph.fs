@@ -624,11 +624,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// <summary>
     /// Where the definition that `key` (DeclarationChecker.SymbolKey) names is now, for a symbol in the file `asking` whose
-    /// own signature location is `symbolLocation`. As FCS answers: a file after a signature sees that signature; in
+    /// own signature location is in the file `landed`. As FCS answers: a file after a signature sees that signature; in
     /// the implementation file, and for what it doesn't expose or when it didn't conform for errors, the definition's
-    /// signature location in the file's current result says which. A range in the signature file is read from the latest
-    /// check of it. None when the project holds neither file, or they don't define the key, or a file defines it twice,
-    /// which does not compile, unless the symbol names one of them itself (a property's getter and setter answer the getter's).
+    /// signature location in the file's current result says which. A range in a signature file only ever comes from the
+    /// latest check of it. None when the project holds neither file, or they don't define the key, or a file defines it
+    /// twice, as no current thing says which is meant: never the symbol's own location.
     /// </summary>
     /// <remarks>
     /// A location read off a symbol can be stale: a kept row holds an older check's objects, which conformance and shifts
@@ -636,10 +636,10 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// is what corrects them. It finishes with each file before it waits for the next, so it holds no lock while it waits.
     /// Its answer is for the texts it finds, which may be newer than the symbol's.
     /// </remarks>
-    member this.CurrentLocation(asking: string, symbolLocation: FSharp.Compiler.Text.range, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+    member this.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
         let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
 
-        let inSignature (file: string) =
+        let inSignature (file: string) (conformed: bool) =
             let i = indexOf file
 
             task {
@@ -648,31 +648,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 let! s =
                     host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version)), linked.Token)
 
-                return! Task.Run(fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key))
+                return! Task.Run((fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key, conformed, ct)), ct)
             }
 
         let inImplementation (file: string) =
-            this.ReadFile(
-                file,
-                (fun view ->
-                    let found =
-                        view.Result.CheckResults.GetAllUsesOfAllSymbolsInFile ct
-                        |> Seq.filter (fun u -> u.IsFromDefinition && DeclarationChecker.SymbolKey u.Symbol = Some key)
-                        |> Seq.map _.Symbol
-                        |> Seq.toList
-                        |> List.sortBy (function
-                            | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as v when v.IsPropertyGetterMethod -> 0
-                            | _ -> 1)
-
-                    match found |> List.choose _.SignatureLocation |> List.distinct with
-                    | [ only ] -> Some only
-                    | first :: _ when key.Contains "|property|" -> Some first
-                    | several -> several |> List.tryFind (fun r -> r = symbolLocation)),
-                ct
-            )
+            this.ReadFile(file, (fun view -> DeclarationChecker.DefinitionLocation(view.Result.CheckResults, key, ct)), ct)
 
         let isSignature (file: string) = file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
-        let landed = symbolLocation.FileName
         let signature = Path.ChangeExtension(landed, ".fsi")
         let implementation = if isSignature landed then Path.ChangeExtension(landed, ".fs") else landed
 
@@ -681,20 +663,27 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         task {
             if isSignature landed && holds signature && not (sameFile asking implementation) then
-                let! fromSignature = inSignature signature
+                let! fromSignature = inSignature signature false
 
                 match fromSignature with
                 | Some _ -> return fromSignature
-                | None when holds implementation -> return! inImplementation implementation
+                | None when holds implementation ->
+                    // What the signature doesn't define. A range it does hold here is unread and old, and of what the
+                    // signature just didn't answer for: nothing is better.
+                    let! fromImplementation = inImplementation implementation
+
+                    match fromImplementation with
+                    | Some r when isSignature r.FileName -> return None
+                    | _ -> return fromImplementation
                 | None -> return None
             elif holds implementation then
                 let! fromImplementation = inImplementation implementation
 
                 match fromImplementation with
-                | Some r when isSignature r.FileName && holds signature -> return! inSignature signature
+                | Some r when isSignature r.FileName -> return! (if holds signature then inSignature signature true else Task.FromResult None)
                 | _ -> return fromImplementation
             elif holds signature then
-                return! inSignature signature
+                return! inSignature signature false
             else
                 return None
         }

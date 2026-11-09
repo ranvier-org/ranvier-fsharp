@@ -258,7 +258,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentDefinition(p: DefinitionParams) =
             reading "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
-                    let! found = Definition.at workspace graph path (int p.Position.Line) (int p.Position.Character) ct
+                    let! found = Definition.at workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
 
                     return
                         found

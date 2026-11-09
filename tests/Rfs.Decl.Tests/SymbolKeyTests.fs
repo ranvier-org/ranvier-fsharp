@@ -137,10 +137,10 @@ let tests =
               let spec = sigConform.Value
 
               let source =
-                  "module SigConform.A\n\ntype A = int\n\ntype T() =\n    member _.M(t: A) = t\n    member _.M(t: string) = t\n    member _.G(x: 'first) = x\n\nlet f (x: int) y = x + y\n\nlet g (x: 'a) = x\n\nlet useM = T().M(t = 1)\n\nlet useF = f 1 2\n\nlet useG = g 3\n"
+                  "module SigConform.A\n\ntype A = int\n\ntype T() =\n    member _.M(t: A) = t\n    member _.M(t: string) = t\n    member _.G(x: 'first) = x\n    override _.ToString() = \"\"\n    abstract V: int -> int\n    default _.V x = x\n\nlet f (x: int) y = x + y\n\nlet g (x: 'a) = x\n\nlet useM = T().M(t = 1)\n\nlet useF = f 1 2\n\nlet useG = g 3\n"
 
               let signature =
-                  "module SigConform.A\n\ntype A = int\n\ntype T =\n    new: unit -> T\n    member G: x: 'other -> 'other\n    member M: t: string -> string\n    member M: t: int -> int\n\nval f: x: int -> (int -> int)\n\nval g: x: 'b -> 'b\n\nval useM: int\n\nval useF: int\n\nval useG: int\n"
+                  "module SigConform.A\n\ntype A = int\n\ntype T =\n    new: unit -> T\n    member G: x: 'other -> 'other\n    member M: t: string -> string\n    member M: t: int -> int\n    override ToString: unit -> string\n    abstract V: int -> int\n    default V: x: int -> int\n\nval f: x: int -> (int -> int)\n\nval g: x: 'b -> 'b\n\nval useM: int\n\nval useF: int\n\nval useG: int\n"
 
               let ctx = contextOf spec
               let texts = sources spec (Map [ "A.fs", source; "A.fsi", signature ])
@@ -148,9 +148,20 @@ let tests =
               let checkedSignature = DeclarationChecker.CheckSignatureFile(ctx, [], DeclarationChecker.Parse(ctx, sigFile, texts[sigFile]))
               let a = fileNamed (declByDecl ctx spec texts) "A.fs"
 
-              for name in [ "M"; "G"; "f"; "g"; "T" ] do
+              let slot, implementation =
+                  usesOf a.FileResult.CheckResults "V"
+                  |> List.filter _.IsFromDefinition
+                  |> List.partition (fun u -> (u.Symbol :?> FSharpMemberOrFunctionOrValue).IsDispatchSlot)
+
+              let lineOf (u: FSharpSymbolUse) =
+                  (DeclarationChecker.SignatureLocation(ctx, checkedSignature, keyOf u, false, CancellationToken.None)).Value.StartLine
+
+              Expect.equal (lineOf slot.Head) 11 "abstract V to its own line"
+              Expect.equal (lineOf implementation.Head) 12 "default V to its own line"
+
+              for name in [ "M"; "G"; "f"; "g"; "T"; "ToString"; "V" ] do
                   for key in definitionKeys a name do
-                      match DeclarationChecker.SignatureLocation(ctx, checkedSignature, key) with
+                      match DeclarationChecker.SignatureLocation(ctx, checkedSignature, key, false, CancellationToken.None) with
                       | Some r -> Expect.equal r.FileName sigFile $"%s{name}: found in the signature by %s{key}"
                       | None -> failtest $"%s{name}: the signature has nothing for %s{key}"
 
@@ -158,10 +169,10 @@ let tests =
                   [ for u in usesOf a.FileResult.CheckResults "M" |> List.filter _.IsFromDefinition -> u.Symbol.SignatureLocation.Value.StartLine ]
 
               let found =
-                  [ for key in definitionKeys a "M" -> (DeclarationChecker.SignatureLocation(ctx, checkedSignature, key)).Value.StartLine ]
+                  [ for key in definitionKeys a "M" -> (DeclarationChecker.SignatureLocation(ctx, checkedSignature, key, false, CancellationToken.None)).Value.StartLine ]
 
               Expect.equal found declared "each overload to its own line, though the signature lists them in another order"
-              Expect.isNone (DeclarationChecker.SignatureLocation(ctx, checkedSignature, "SigConform|value|SigConform.A|absent")) "nothing by a stale key"
+              Expect.isNone (DeclarationChecker.SignatureLocation(ctx, checkedSignature, "SigConform|value|SigConform.A|absent", false, CancellationToken.None)) "nothing by a stale key"
           }
 
           test "a property's getter, setter and uses have one key" {
@@ -169,8 +180,27 @@ let tests =
                   "module Deps.E\n\ntype P() =\n    member _.V with get () = 1 and set (x: int) = ()\n\nlet read = P().V\nlet write = P().V <- 2\n"
                   + rest
 
-              let all = usesOf (inE text).FileResult.CheckResults "V" |> List.map keyOf |> List.distinct
+              // The token of the setter says so, and looks up the same definitions
+              let all = usesOf (inE text).FileResult.CheckResults "V" |> List.map (fun u -> (keyOf u).Replace("|setter", "")) |> List.distinct
               Expect.equal all.Length 1 $"one key: %A{all}"
+          }
+
+          test "overloads that differ by class type parameter or anonymous record field differ" {
+              let text =
+                  "module Deps.E\n\ntype T<'a, 'b>() =\n    member _.M(x: 'a) = 1\n    member _.M(x: 'b) = 2\n    member _.N(x: {| A: int |}) = 1\n    member _.N(x: {| B: int |}) = 2\n\n"
+                  + rest
+
+              let e = inE text
+              Expect.equal (definitionKeys e "M" |> List.distinct).Length 2 "'a and 'b"
+              Expect.equal (definitionKeys e "N" |> List.distinct).Length 2 "field names"
+          }
+
+          test "a union's IsCase has its case's key" {
+              let text =
+                  "module Deps.D\n\nopen Deps.A\n\nlet start = 1\nlet isCircle = (Circle 1).IsCircle\nlet r = 0\nlet fill () = ()\nlet size () = 0\nlet after = 42\n"
+
+              let files = checkAll deps.Value (Map [ "D.fs", text ])
+              Expect.equal (keys (fileNamed files "D.fs") "IsCircle") (definitionKeys (fileNamed files "A.fs") "Circle") "IsCircle goes to the case"
           }
 
           test "an active pattern's case has its value's key" {

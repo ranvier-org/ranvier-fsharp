@@ -604,6 +604,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
         let files = s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fs") |> Array.ofList
+        let signatures = s.Spec.SourceFiles |> List.filter (fun f -> f.EndsWith ".fsi") |> Array.ofList
         let pool = names s.Texts.Values
         let originals = Collections.Generic.Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let counter = ref 0
@@ -692,9 +693,11 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 wanted.Add f |> ignore
 
         for step in 1..steps do
-            let file = if followed.Count > 0 then Seq.head followed.Keys else pick random files
+            // Now and then a blank line goes in a signature file, whose print then stays what later files hold
+            let inSignature = followed.Count = 0 && signatures.Length > 0 && random.Next 10 = 0
+            let file = if followed.Count > 0 then Seq.head followed.Keys elif inSignature then pick random signatures else pick random files
             // Now and then the edit is to promote or demote a file instead of its text
-            let toggle = random.Next 8 = 0
+            let toggle = not inSignature && random.Next 8 = 0
             // Half the time the oracle is asked before the wanted files' builds have settled
             let waitForBuilds = random.Next 2 = 0
 
@@ -711,7 +714,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 match followUp with
                 | Some edit when not toggle -> edit
                 | _ ->
-                    if toggle then
+                    if inSignature then
+                        mutate random [| blankLine |] s.Texts[file]
+                    elif toggle then
                         s.Texts[file], (if wanted.Contains file then "demote" else "promote")
                     // A reverted file on Schemes would leave other files' uses of what it declared unresolved
                     elif project <> schemesProject && random.Next 6 = 0 then
@@ -799,8 +804,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
             if what.StartsWith "blank line " then
                 blankLineEdits <- blankLineEdits + 1
 
-                // A shifted row must point where a full check does (Task 7 review I1), which no diagnostic shows
-                let! locations = locationDiff s file
+                // A shifted row must point where a full check does (Task 7 review I1), which no diagnostic shows. Every
+                // file: a later file's symbols hold what the edited file's signature said.
+                let! locations = locationDiffs s (List.ofArray files)
 
                 if not locations.IsEmpty then
                     fail ("symbol locations differ from a full check:\n" + String.concat Environment.NewLine locations)

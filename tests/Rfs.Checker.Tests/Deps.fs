@@ -268,69 +268,105 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
 /// results: read off a kept symbol it stays wrong (an older check's objects, which conformance does not reach, and for a
 /// symbol another file declares its signature, reused while its fingerprint is the same). The declared and implementation
 /// locations are read off the symbol: only a kept row's own items are shifted, so for a symbol another file declares they
-/// are not compared, and Task 17, which reads locations too, goes through ProjectGraph.CurrentLocation.
-let private locationsOf (signatureOf: FSharp.Compiler.Symbols.FSharpSymbol -> FSharp.Compiler.Text.range option) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+/// are not compared, and Task 17, which reads locations too, goes through ProjectGraph.CurrentLocation. A symbol with no
+/// key answers only inside the asking file, so elsewhere only that is compared. In a file that doesn't compile, a key two
+/// definitions share (`ties`) answers nothing, so only the use is compared.
+let private locationsOf (ties: Set<string>) (signatureOf: FSharp.Compiler.CodeAnalysis.FSharpSymbolUse -> FSharp.Compiler.Text.range option) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
     |> Seq.map (fun u ->
-        let elsewhere =
-            match u.Symbol.DeclarationLocation with
-            | Some m -> not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
-            | None -> false
+        let inOtherFile (m: FSharp.Compiler.Text.range) =
+            not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
+
+        let elsewhere = u.Symbol.DeclarationLocation |> Option.exists inOtherFile
+        let key = FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol
 
         match u.Symbol with
         | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> $"%A{u.Range} %s{u.Symbol.FullName}: a namespace"
-        | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere, signature %A{signatureOf u.Symbol}"
+        | :? FSharp.Compiler.Symbols.FSharpParameter -> $"%A{u.Range} %s{u.Symbol.FullName}: a parameter"
+        | _ when key.IsNone && u.Symbol.SignatureLocation |> Option.exists inOtherFile -> $"%A{u.Range} %s{u.Symbol.FullName}: no key, and elsewhere"
+        | _ when key.IsSome && ties.Contains key.Value -> $"%A{u.Range} %s{u.Symbol.FullName}: a tie"
+        | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere, signature %A{signatureOf u}"
         | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
         | _ ->
-            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{signatureOf u.Symbol}, implementation %A{u.Symbol.ImplementationLocation}")
+            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{signatureOf u}, implementation %A{u.Symbol.ImplementationLocation}")
     |> Set.ofSeq
 
-/// What the graph's query answers for each symbol of the results that a source file of the project defines. A symbol of
-/// an external assembly, and a local, say for themselves.
+/// The keys that two definitions of a file with errors share
+let private tiesIn (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+    if results.Diagnostics |> Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error) then
+        results.GetAllUsesOfAllSymbolsInFile()
+        |> Seq.filter _.IsFromDefinition
+        |> Seq.choose (fun u -> FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol |> Option.map (fun k -> k, u.Symbol.SignatureLocation))
+        |> Seq.distinct
+        |> Seq.countBy fst
+        |> Seq.filter (fun (_, n) -> n > 1)
+        |> Seq.map fst
+        |> Set.ofSeq
+    else
+        Set.empty
+
+/// What the graph's query answers for each use of the results whose symbol a source file of the project defines. An
+/// external assembly's symbol says for itself, and so does a definition outside a signature, which is the row's own.
 let private currentSignatures (s: Session) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     task {
-        let answers = Dictionary<string * FSharp.Compiler.Text.range, FSharp.Compiler.Text.range option>()
+        let answers = Dictionary<string * string, FSharp.Compiler.Text.range option>()
+
+        let ownDefinition (u: FSharp.Compiler.CodeAnalysis.FSharpSymbolUse) (landed: FSharp.Compiler.Text.range) =
+            u.IsFromDefinition && not (landed.FileName.EndsWith ".fsi")
 
         for u in results.GetAllUsesOfAllSymbolsInFile() do
             match u.Symbol, FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
             | :? FSharp.Compiler.Symbols.FSharpEntity as e, _, _ when e.IsNamespace -> ()
             | _, Some key, Some landed when
-                not (answers.ContainsKey(key, landed))
+                not (ownDefinition u landed)
+                && not (answers.ContainsKey(key, landed.FileName))
                 && s.Spec.SourceFiles |> List.exists (fun f -> String.Equals(f, landed.FileName, StringComparison.OrdinalIgnoreCase))
                 ->
-                let! answer = s.Graph.CurrentLocation(file, landed, key, System.Threading.CancellationToken.None) |> settle
-                answers[(key, landed)] <- answer
+                let! answer = s.Graph.CurrentLocation(file, landed.FileName, key, System.Threading.CancellationToken.None) |> settle
+                answers[(key, landed.FileName)] <- answer
             | _ -> ()
 
         return
-            fun (symbol: FSharp.Compiler.Symbols.FSharpSymbol) ->
-                match FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey symbol, symbol.SignatureLocation with
-                | Some key, Some landed when answers.ContainsKey(key, landed) -> answers[(key, landed)]
+            fun (u: FSharp.Compiler.CodeAnalysis.FSharpSymbolUse) ->
+                match FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
+                | Some key, Some landed when not (ownDefinition u landed) && answers.ContainsKey(key, landed.FileName) -> answers[(key, landed.FileName)]
                 | _, own -> own
     }
 
-/// The lines by which the symbol locations of the graph's published results for `file` differ from the interactive
-/// checker's for the current texts (Task 7 review I1: a shifted row must not point at another declaration's old items).
-let locationDiff (s: Session) (file: string) : Task<string list> =
+/// The lines by which the symbol locations of the graph's published results differ from the interactive checker's for
+/// the current texts, in each of the files (Task 7 review I1: a shifted row must not point at another declaration's old
+/// items).
+let locationDiffs (s: Session) (files: string list) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
-        let results = graph[file].CheckResults
-        let! signatureOf = currentSignatures s file results
-        let actual = locationsOf signatureOf file results
         let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
+        let differences = ResizeArray<string>()
 
-        let! _, reference, _ =
-            checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
-            |> Async.StartAsTask
+        for file in files do
+            let results = graph[file].CheckResults
+            let! signatureOf = currentSignatures s file results
 
-        let expected = locationsOf _.SignatureLocation file reference
+            let! _, reference, _ =
+                checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
+                |> Async.StartAsTask
 
-        return
-            [ for l in Set.difference expected actual -> "expected only: " + l
-              for l in Set.difference actual expected -> "actual only: " + l ]
+            let ties = tiesIn reference
+            let actual = locationsOf ties signatureOf file results
+            let expected = locationsOf ties _.Symbol.SignatureLocation file reference
+            let name = IO.Path.GetFileName file
+
+            for l in Set.difference expected actual do
+                differences.Add $"%s{name}: expected only: %s{l}"
+
+            for l in Set.difference actual expected do
+                differences.Add $"%s{name}: actual only: %s{l}"
+
+        return List.ofSeq differences
     }
+
+let locationDiff (s: Session) (file: string) : Task<string list> = locationDiffs s [ file ]
 
 let expectLocations (s: Session) (file: string) (what: string) =
     task {
