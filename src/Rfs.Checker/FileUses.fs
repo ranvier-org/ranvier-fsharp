@@ -63,9 +63,7 @@ type UsesRead =
       /// The published result: the same object has the same uses
       Result: obj
       /// The graph's version of the text the result is for
-      Version: int64
-      /// As FileView.Upstream
-      Upstream: obj[] }
+      Version: int64 }
 
 /// Symbol keys as references count them, and the index of a file's uses by them.
 module SymbolUses =

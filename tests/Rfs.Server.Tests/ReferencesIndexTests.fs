@@ -46,8 +46,7 @@ let private withProjectOn (promote: bool) (files: (string * string) list) (body:
                   ReferencingProjects = fun _ -> []
                   Projects = fun () -> [ g ]
                   FilesOf = fun _ -> paths
-                  IsLoading = fun () -> false
-                  BeforeRead = fun _ -> Task.CompletedTask }
+                  IsLoading = fun () -> false }
 
             do! body host g path scope
             g.Dispose()
@@ -155,57 +154,51 @@ let tests =
                       })
           }
 
-          testTask "an edit that brings a use into a skipped file between passes is in the answer" {
+          // The read asks for the files at each turn it tries, on the graph thread: an edit posted from there lands
+          // between that turn and the next, while the request waits
+          testTask "an edit that brings a use into a skipped file during the request is in the answer" {
               do!
                   withProject false threeFiles (fun g path scope ->
                       task {
                           let c = path "C.fs"
-                          let mutable readsOfC = 0
+                          let mutable asks = 0
 
                           let scope =
                               { scope with
-                                  BeforeRead =
-                                      fun file ->
-                                          if file = c then
-                                              readsOfC <- readsOfC + 1
-
-                                              if readsOfC = 2 then
-                                                  g.SetText(c, cUsing) |> ignore
-                                                  g.AllDiagnostics() |> within :> Task
-                                              else
-                                                  Task.CompletedTask
-                                          else
-                                              Task.CompletedTask }
+                                  FilesOf =
+                                      fun g' ->
+                                          asks <- asks + 1
+                                          if asks = 3 then g.SetText(c, cUsing) |> ignore
+                                          scope.FilesOf g' }
 
                           let! (answer: References.Answer) = References.find scope g (path "A.fs") (fst sharedAt) (snd sharedAt) CancellationToken.None
+                          Expect.isGreaterThanOrEqual asks 3 "the edit was made during the request"
                           Expect.equal (lines c answer) [ 3 ] "C's new use"
-                          Expect.equal readsOfC 3 "skipped, read, read again"
                       })
           }
 
-          testTask "a use that came and went in a skipped file between passes doesn't settle it" {
+          testTask "a use that came and went in a skipped file during the request isn't answered" {
               do!
                   withProject false threeFiles (fun g path scope ->
                       task {
                           let c = path "C.fs"
-                          let mutable readsOfC = 0
+                          let mutable asks = 0
 
                           let scope =
                               { scope with
-                                  BeforeRead =
-                                      fun file ->
-                                          if file = c then
-                                              readsOfC <- readsOfC + 1
+                                  FilesOf =
+                                      fun g' ->
+                                          asks <- asks + 1
 
-                                              if readsOfC = 2 then
-                                                  g.SetText(c, cUsing) |> ignore
-                                                  g.SetText(c, cText) |> ignore
+                                          if asks = 3 then
+                                              g.SetText(c, cUsing) |> ignore
+                                              g.SetText(c, cText) |> ignore
 
-                                          Task.CompletedTask }
+                                          scope.FilesOf g' }
 
                           let! (answer: References.Answer) = References.find scope g (path "A.fs") (fst sharedAt) (snd sharedAt) CancellationToken.None
+                          Expect.isGreaterThanOrEqual asks 3 "the edits were made during the request"
                           Expect.equal (lines c answer) [] "its last text has none"
-                          Expect.equal readsOfC 3 "two edits between its reads: one more pass"
                       })
           }
 
@@ -252,6 +245,52 @@ let tests =
                           let! (answer: References.Answer) = References.find scope g a (fst typeAt) (snd typeAt) CancellationToken.None
                           Expect.equal (lines a answer) [ 3 ] "answers"
                           Expect.equal g.UsesBuilt 3L "B's wasn't built again; only C's was left"
+                      })
+          }
+
+          testTask "a file leaving the project during a wait ends the wait, and answers from the files now" {
+              do!
+                  withProject true [ "A.fs", aText; "B.fs", bText + "\nlet b2 = (None: Proj.A.T option)\n"; "C.fs", cText ] (fun g path scope ->
+                      task {
+                          let a, b, c = path "A.fs", path "B.fs", path "C.fs"
+                          let gate = new ManualResetEventSlim(false)
+                          let entered = new ManualResetEventSlim(false)
+
+                          // Holds B's lock, so its build waits there
+                          let held =
+                              g.ReadFile(
+                                  b,
+                                  (fun _ ->
+                                      entered.Set()
+                                      gate.Wait(TimeSpan.FromSeconds 60.) |> ignore),
+                                  CancellationToken.None
+                              )
+
+                          let! _ = Task.Run(fun () -> entered.Wait(TimeSpan.FromSeconds 60.)) |> within
+                          let mutable files = [ a; b; c ]
+                          let scope = { scope with FilesOf = fun _ -> files }
+                          let pending = References.find scope g a (fst typeAt) (snd typeAt) CancellationToken.None
+                          do! whenTrue "A's index is built" 60. (fun () -> g.UsesBuilt = 1L)
+                          do! Task.Delay 200
+                          Expect.isFalse pending.IsCompleted "waits for B"
+                          files <- [ a; c ]
+                          // Anything that reaches the graph thread runs the waiting read again
+                          let! _ = g.Mode a
+
+                          let! outcome =
+                              task {
+                                  try
+                                      let! (answer: References.Answer) = pending.WaitAsync(TimeSpan.FromSeconds 20.)
+                                      return Some answer
+                                  with :? TimeoutException ->
+                                      return None
+                              }
+
+                          gate.Set()
+                          let! _ = held |> within
+                          Expect.isSome outcome "the wait ended"
+                          Expect.equal (lines a outcome.Value) [ 3 ] "the type, from the files the project has now"
+                          Expect.equal (lines b outcome.Value) [] "nothing of the file that left"
                       })
           }
 

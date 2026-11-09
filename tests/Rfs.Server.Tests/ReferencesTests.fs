@@ -141,8 +141,7 @@ let private scopeOf (s: Session) : References.Scope =
       ReferencingProjects = s.Server.Workspace.ReferencingProjects
       Projects = fun () -> s.Server.Workspace.Projects
       FilesOf = s.Server.Workspace.FilesOf
-      IsLoading = fun () -> s.Server.Workspace.IsLoading
-      BeforeRead = fun _ -> Task.CompletedTask }
+      IsLoading = fun () -> s.Server.Workspace.IsLoading }
 
 /// A host for a graph that is made to go away
 module ReferencesTestsHost =
@@ -397,55 +396,43 @@ let tests =
               Expect.isEmpty broken "only states that existed"
           }
 
-          testTask "edits that move no use still answer, at each pass" {
-              let a, b = overlapping ()
-              let! (s: Session) = start depsDir depsProject []
+          testTask "typing during a request answers the settled final text, not a mix and not empty" {
+              let! (s: Session) = start depsDir depsProject [ file "A.fs"; file "B.fs"; d ]
               use _ = disposing s
               let aFile, bFile = file "A.fs", file "B.fs"
-              let graph = (s.Server.Workspace.ProjectOf aFile).Value
-              graph.SetText(aFile, a 0) |> ignore
-              let text (i: int) = b 0 + $"let far = %d{i}\n"
-              graph.SetText(bFile, text 0) |> ignore
-              let! _ = graph.AllDiagnostics() |> within
-              let mutable edits = 0
+              let graph = (s.Server.Workspace.ProjectOf d).Value
+              do! promoted s d
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let gate = new ManualResetEventSlim(false)
+              let entered = new ManualResetEventSlim(false)
 
-              // Runs once a pass: every pass finds another result of B, of another version, with the same uses
-              let scope =
-                  { scopeOf s with
-                      FilesOf =
-                          fun _ ->
-                              edits <- edits + 1
-                              graph.SetText(bFile, text edits) |> ignore
-                              [ aFile; bFile ] }
+              // D's lock is held, so its index can't be built: the request can't answer until it is let go
+              let held =
+                  graph.ReadFile(
+                      d,
+                      (fun _ ->
+                          entered.Set()
+                          gate.Wait(TimeSpan.FromSeconds 60.) |> ignore),
+                      CancellationToken.None
+                  )
 
-              let! (answer: References.Answer) = References.find scope graph bFile 1 18 CancellationToken.None
+              let! _ = Task.Run(fun () -> entered.Wait(TimeSpan.FromSeconds 60.)) |> within
+              let pending = references s aFile at true
 
-              match answer with
-              | References.Answer.Found uses -> Expect.equal uses.Length 2 "the definition and the use"
-              | References.Answer.Moved -> failtest "nothing it answers moved"
-          }
+              // Each edit moves B's uses down, and every other one adds another use
+              for n in 1..12 do
+                  let extra = if n % 2 = 0 then $"let again%d{n} = baseValue\n\n" else "\n"
+                  do! s.Lsp.DidChange(bFile, n, replace s bFile "type Counter() =" (extra + "type Counter() ="))
+                  do! Task.Delay 30
 
-          testTask "edits that move a use every pass answer Moved" {
-              let a, b = overlapping ()
-              let! (s: Session) = start depsDir depsProject []
-              use _ = disposing s
-              let aFile, bFile = file "A.fs", file "B.fs"
-              let graph = (s.Server.Workspace.ProjectOf aFile).Value
-              graph.SetText(aFile, a 0) |> ignore
-              graph.SetText(bFile, b 0) |> ignore
-              let! _ = graph.AllDiagnostics() |> within
-              let mutable edits = 0
-
-              let scope =
-                  { scopeOf s with
-                      FilesOf =
-                          fun _ ->
-                              edits <- edits + 1
-                              graph.SetText(aFile, a edits) |> ignore
-                              [ aFile; bFile ] }
-
-              let! (answer: References.Answer) = References.find scope graph bFile 1 18 CancellationToken.None
-              Expect.isTrue answer.IsMoved $"no two passes agree: %A{answer}, after %d{edits} edits"
+              do! Task.Delay 300
+              Expect.isFalse pending.IsCompleted "it waits for D"
+              gate.Set()
+              let! _ = held |> within
+              let! (answer: Answer) = pending |> within
+              let! expected = fcsUses s depsProject aFile at true
+              Expect.equal (expected |> Set.filter (fun (f, _, _, _, _) -> f = bFile.ToLowerInvariant()) |> Set.count) 7 "B's use and six new ones"
+              Expect.equal (answer |> Set.filter (fun (f: string, _, _, _, _) -> not (f.EndsWith ".fsi"))) expected "FCS's uses of the final texts"
           }
 
           testTask "cancelling ends the request during the scan, with a read held" {
@@ -525,39 +512,38 @@ let tests =
               Expect.isTrue gone.IsMoved "a project went away"
           }
 
-          testTask "a load that ends during the request, or another set of projects by its end, answers Moved" {
+          testTask "a load that starts during the turn, or another set of projects by its end, answers Moved" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
               use _ = disposing s
               let aFile = file "A.fs"
               let graph = (s.Server.Workspace.ProjectOf aFile).Value
               let at = position (s.Lsp.Text aFile) "baseValue" 0 1
-              let mutable loading = true
-
-              // The load ends once the scan is under way: only a read before the snapshot sees it
-              let ended =
-                  { scopeOf s with
-                      IsLoading = fun () -> loading
-                      BeforeRead =
-                          fun _ ->
-                              loading <- false
-                              Task.CompletedTask }
-
-              let! (loadEnded: References.Answer) = References.find ended graph aFile (fst at) (snd at) CancellationToken.None
-              Expect.isTrue loadEnded.IsMoved $"the snapshot was taken during a load: %A{loadEnded}"
-              let other = ProjectSpec.sequential (ProjectSpec.load depsProject).Result
-              let! (app: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(ReferencesTestsHost.host.Value, { other with ProjectFile = Path.Combine(Path.GetDirectoryName depsProject, "Back.fsproj") })
               let mutable asks = 0
+
+              // Not loading when the turn starts, loading when it ends: the workspace changes off the graph thread
+              let started =
+                  { scopeOf s with
+                      IsLoading =
+                          fun () ->
+                              asks <- asks + 1
+                              asks > 1 }
+
+              let! (loadStarted: References.Answer) = References.find started graph aFile (fst at) (snd at) CancellationToken.None
+              Expect.isTrue loadStarted.IsMoved $"the turn's end saw a load: %A{loadStarted}"
+              let other = ProjectSpec.sequential (ProjectSpec.load depsProject).Result
+              let! (app: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(graph.Host, { other with ProjectFile = Path.Combine(Path.GetDirectoryName depsProject, "Back.fsproj") })
+              let mutable referencing = 0
 
               let cameBack =
                   { scopeOf s with
                       ReferencingProjects =
                           fun _ ->
-                              asks <- asks + 1
-                              if asks <= 1 then [] else [ app ] }
+                              referencing <- referencing + 1
+                              if referencing <= 1 then [] else [ app ] }
 
               let! (projectBack: References.Answer) = References.find cameBack graph aFile (fst at) (snd at) CancellationToken.None
               app.Dispose()
-              Expect.isTrue projectBack.IsMoved $"a project came back during the passes: %A{projectBack}"
+              Expect.isTrue projectBack.IsMoved $"a project came back during the turn: %A{projectBack}"
           }
 
           for promote in [ true; false ] do
@@ -593,40 +579,32 @@ let tests =
                               g.Promote f
 
                       do! settle ()
-                      let mutable readsOfB = 0
-                      let mutable readsOfC = 0
+                      let mutable asks = 0
 
-                      // Read A B [edit] C A [edit] B C: A's uses are the same at the texts it is read at, B's at its, and C's at
-                      // its, and at each of the three states one of the files, not read at it, says otherwise
-                      let edit (text: string) : Task =
-                          task {
-                              g.SetText(a, text) |> ignore
-                              do! settle ()
-                          }
-
+                      // The read asks for the files at each turn it tries, on the graph thread, and reads them in order
+                      // until one is pending: A's index is built at the first turn, B's at a later one, then C's. The
+                      // first edit lands once A's is read and the second at the turn after, as the passes once read
+                      // A B [edit] C A [edit] B C: at each of the three states one file says otherwise than at the
+                      // others. Neither edit waits to settle: the read must wait for that itself.
                       let scope: References.Scope =
                           { OwnersOf = fun f -> if List.contains f [ a; b; c ] then [ g ] else []
                             ReferencingProjects = fun _ -> []
                             Projects = fun () -> [ g ]
-                            FilesOf = fun _ -> [ a; b; c ]
-                            IsLoading = fun () -> false
-                            BeforeRead =
-                              fun file ->
-                                  if file = c then
-                                      readsOfC <- readsOfC + 1
-                                      if readsOfC = 1 then edit (aText "t" "other" "0") else Task.CompletedTask
-                                  elif file = b then
-                                      readsOfB <- readsOfB + 1
-                                      if readsOfB = 2 then edit (aText "other" "other" "t") else Task.CompletedTask
-                                  else
-                                      Task.CompletedTask }
+                            FilesOf =
+                              fun _ ->
+                                  asks <- asks + 1
+                                  if asks = 3 then g.SetText(a, aText "t" "other" "0") |> ignore
+                                  if asks = 5 then g.SetText(a, aText "other" "other" "t") |> ignore
+                                  [ a; b; c ]
+                            IsLoading = fun () -> false }
 
                       let! (answer: References.Answer) = References.find scope g a 2 4 CancellationToken.None
                       g.Dispose()
                       (host :> IDisposable).Dispose()
+                      Expect.isGreaterThanOrEqual asks 5 "both edits were made during the request"
 
                       match answer with
-                      | References.Answer.Moved -> ()
+                      | References.Answer.Moved -> failtest "nothing went away: the read waits for the last state"
                       | References.Answer.Found uses ->
                           let lines (name: string) = uses |> List.filter (fun (struct (r, _)) -> r.FileName = name) |> List.map (fun (struct (r, _)) -> r.StartLine) |> List.sort
                           Expect.equal (lines a) [ 3; 11 ] "A's definition, and the use the last text has"
@@ -684,6 +662,35 @@ let tests =
               (s.Server :> IDisposable).Dispose()
               let! (afterShutdown: Answer) = references s aFile at true
               Expect.isEmpty afterShutdown "after shutdown"
+          }
+
+          testTask "a fault in a file's index fails the request with an internal error, and is logged" {
+              let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
+              use _ = disposing s
+              let aFile = file "A.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              graph.OnFlight(fun kind path _ -> if kind = "uses" && path.EndsWith "D.fs" then failwith "an injected index fault")
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let log = new StringWriter()
+              let stderr = Console.Error
+              Console.SetError(TextWriter.Synchronized log)
+
+              let! outcome =
+                  task {
+                      try
+                          try
+                              let! (answer: Answer) = references s aFile at true
+                              return $"answered %d{answer.Count}"
+                          with ex ->
+                              return ex.Message
+                      finally
+                          Console.SetError stderr
+                  }
+
+              // LspResult.internalError, as every request handler fails: Ionide.LanguageServerProtocol gives it -32602
+              Expect.stringContains outcome "\"code\":-32602" "the handlers' internal error, not ContentModified"
+              Expect.stringContains outcome "an injected index fault" "with the fault's message"
+              Expect.stringContains (log.ToString()) "an injected index fault" "logged"
           }
 
           testTask "a member more generic than its signature answers nothing" {
@@ -788,8 +795,7 @@ let tests =
                         ReferencingProjects = fun _ -> []
                         Projects = fun () -> [ graph ]
                         FilesOf = fun _ -> s.SourceFiles
-                        IsLoading = fun () -> false
-                        BeforeRead = fun _ -> Task.CompletedTask }
+                        IsLoading = fun () -> false }
 
                   let answers (graph: Rfs.Checker.ProjectGraph) (s: ProjectSpec) (p: string) (l: int) (c: int) =
                       task {

@@ -103,10 +103,8 @@ type FileView =
       Text: string
       /// The graph's version of the text (the one `SetText` returned)
       Version: int64
-      /// What the result read besides the text: the project's context (a new one when a referenced project's assembly
-      /// changes) and the signatures it was set up from. FileSig.Next keeps a signature's object while nothing a later file
-      /// reads of it changed, here or further up, so the same objects mean the same inputs.
-      Upstream: obj[]
+      /// The signatures the result was set up from
+      Before: FileSignature list
       At: int -> int -> FSharpCheckFileResults }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
@@ -114,6 +112,34 @@ type FileView =
     /// has changed since, this checks it again in the current environment and gives a view of that, adopting nothing
     /// (ProjectGraph.AdHocChecks). A file checked whole always has its CheckResults.
     member v.CheckResultsAt(line: int, column: int) : FSharpCheckFileResults = v.At line column
+
+/// One file of a read made in one graph turn (ProjectGraph.ReadInOneTurn).
+[<RequireQualifiedAccess; NoComparison; NoEquality>]
+type TurnFile =
+    /// An implementation file's index of its published result, which is for text version `version`
+    | Indexed of path: string * version: int64 * uses: FileUses
+    /// A signature file's index of its latest check
+    | Signature of path: string * uses: FileUses
+    /// Not read: its latest text, at `version`, doesn't contain the name asked for (TurnScope.Name)
+    | Skipped of path: string * version: int64
+
+/// What a read in one graph turn reads, as the caller finds it at that turn. Asked again at every turn the read tries.
+[<NoComparison; NoEquality>]
+type TurnScope =
+    { /// A load or reload is under way: the projects may lack those it hides, so the read gives TurnRead.Gone
+      Loading: bool
+      /// The projects, each with the files to read of it, in the project's order
+      Projects: (ProjectGraph * string list)[]
+      /// When given, an implementation file whose latest text doesn't contain it is Skipped rather than read
+      Name: string option }
+
+/// What a read in one graph turn gives.
+and [<RequireQualifiedAccess; NoComparison; NoEquality>] TurnRead =
+    /// Each project's files, in TurnScope's order, every one settled on its latest text in the same turn: one state
+    | Read of (ProjectGraph * TurnFile[])[]
+    /// The scope was loading, a project in it was disposed, or the scope changed during the turn: no later turn of the
+    /// graph makes this scope readable
+    | Gone
 
 /// <summary>
 /// A project checked on a Ranvier graph, re-checking only what an edit can change.
@@ -152,8 +178,7 @@ type FileView =
 /// that reference it, which would otherwise wait for it for ever.
 /// </para>
 /// </remarks>
-[<Sealed>]
-type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, initialFiles: IFileNode[], initialOwner: Owner, references: ProjectGraph list, firstSeen: ReferencesSeen, initialWanted: HashSet<int>) =
+and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, initialFiles: IFileNode[], initialOwner: Owner, references: ProjectGraph list, firstSeen: ReferencesSeen, initialWanted: HashSet<int>) =
     let requested = Array.zeroCreate<int64> initialFiles.Length
     // Cancelled by an edit of the file: what an ad hoc check of it would answer is out of date
     let edits = Array.init initialFiles.Length (fun _ -> new CancellationTokenSource())
@@ -598,7 +623,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                               Parse = r.Parsed.Parse
                               Text = r.Parsed.Text
                               Version = r.Parsed.Version
-                              Upstream = [| yield box project.Context; for s in r.Key.Before -> box s |]
+                              Before = r.Key.Before
                               At =
                                 fun line column ->
                                     match r.Declarations with
@@ -718,37 +743,119 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                             |> ValueOption.map (fun struct (uses, r) ->
                                 { Uses = uses
                                   Result = box r.Result
-                                  Version = version
-                                  Upstream = [| yield box project.Context; for s in r.Key.Before -> box s |] }))),
+                                  Version = version }))),
                     linked.Token
                 )
         }
 
-    /// A signature file's uses by key, as ReadUses, with its latest check: the same object has the same uses.
-    member _.ReadSignatureUses(file: string, ct: CancellationToken) : Task<struct (FileSignature * FileUses)> =
-        let i = indexOf file
+    member internal _.Host: GraphHost = host
 
-        task {
-            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-            return! host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).Uses version)), linked.Token)
-        }
+    /// Whether Dispose has begun. Read on the graph thread inside a turn, after which none of its nodes changes.
+    member internal _.IsDisposed: bool = Volatile.Read &disposed <> 0
 
-    /// The text a file holds now, with every write posted before this call applied, and its version. Waits for no check.
-    /// Cancelled once the graph is disposed. A text this gives may be newer than the result ReadFile would give.
-    member _.LatestText(file: string, ct: CancellationToken) : Task<struct (string * int64)> =
-        let i = indexOf file
+    /// <summary>
+    /// Graph thread, inside one turn: each of `paths` (files of this project) as TurnFile, or ValueNone while one is
+    /// pending. Stops at the first pending file, so a first read starts one file's index build at a time, as a scan did.
+    /// </summary>
+    /// <remarks>
+    /// A file is read with readSettled's guards: every write posted to it and the files before it applied, and the
+    /// projects it references settled; and its node's own (version equals the one requested, Current). A Skipped file
+    /// needs only its own latest text applied: it has no use of a name its text doesn't have, whatever its result.
+    /// </remarks>
+    member internal _.FilesInTurn(paths: string list, name: string option) : TurnFile[] voption =
+        let read = ResizeArray<TurnFile>()
+        let mutable pending = false
+        let mutable rest = paths
 
-        task {
-            let! t =
-                host.Read(fun () ->
-                    if Volatile.Read &disposed <> 0 then
-                        raise (OperationCanceledException())
+        while not pending && not rest.IsEmpty do
+            let path = rest.Head
+            rest <- rest.Tail
+            let i = indexOf path
 
-                    files[i].Text.Text.Peek)
+            let skipped =
+                match name with
+                | Some n when not (isSignatureFile files[i]) ->
+                    let t = files[i].Text.Text.Value
 
-            ct.ThrowIfCancellationRequested()
-            return struct (t.Text, t.Version)
-        }
+                    if t.Version <> Volatile.Read &requested[i] then
+                        pending <- true
+                        false
+                    else
+                        not (t.Text.Contains(n, StringComparison.Ordinal))
+                | _ -> false
+
+            if skipped then
+                read.Add(TurnFile.Skipped(path, files[i].Text.Version))
+            elif not pending then
+                let file =
+                    if isSignatureFile files[i] then
+                        readSettled i (fun f version -> (f :?> ISignatureFile).Uses version |> ValueOption.map (fun struct (_, u) -> TurnFile.Signature(path, u)))
+                    else
+                        readSettled i (fun f version -> (f :?> IReadableFile).Uses version |> ValueOption.map (fun struct (u, _) -> TurnFile.Indexed(path, version, u)))
+
+                match file with
+                | ValueSome f -> read.Add f
+                | ValueNone -> pending <- true
+
+        if pending then ValueNone else ValueSome(read.ToArray())
+
+    /// <summary>
+    /// Reads everything `scope` names in one graph turn, waiting for a turn in which all of it is settled: each project's
+    /// files as TurnFile, with the project set and loading state `scope` gives in that same turn. All graphs on a host
+    /// share its one thread, so one turn is one state across projects; every graph `scope` names must be on this one's host.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A file pending or a guard failing (FilesInTurn) leaves the read waiting for a later turn, with no time limit: only
+    /// `ct` ends it. A faulted node, or a check that failed, faults the task with its exception, and so does a failure of
+    /// work on the graph thread (GraphHost.WhenSettled). A file with F# errors has a result like any other.
+    /// </para>
+    /// <para>
+    /// `scope` runs on the graph thread at each turn tried, before and after the files are read. The workspace changes
+    /// off that thread, so both must agree (the same graphs, files and name, and not loading) for the turn to count; a
+    /// loading scope, or a disposed graph in it, gives Gone at once, as what it waits for may never come: a disposed graph's
+    /// nodes never change, and a reload's end changes no node. A disposal wakes the waiter, as it posts to the graph thread.
+    /// </para>
+    /// </remarks>
+    member _.ReadInOneTurn(scope: unit -> TurnScope, ct: CancellationToken) : Task<TurnRead> =
+        let same (a: TurnScope) (b: TurnScope) =
+            a.Name = b.Name
+            && a.Projects.Length = b.Projects.Length
+            && Array.forall2
+                (fun (g: ProjectGraph, files: string list) (h: ProjectGraph, others: string list) -> obj.ReferenceEquals(g, h) && files = others)
+                a.Projects
+                b.Projects
+
+        let step () =
+            let before = scope ()
+
+            if before.Loading || before.Projects |> Array.exists (fun (g, _) -> g.IsDisposed) then
+                ValueSome TurnRead.Gone
+            else
+                for g, _ in before.Projects do
+                    if not (obj.ReferenceEquals(g.Host, host)) then
+                        invalidOp $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
+
+                let read = Array.zeroCreate before.Projects.Length
+                let mutable pending = false
+                let mutable p = 0
+
+                while not pending && p < read.Length do
+                    let g, files = before.Projects[p]
+
+                    match g.FilesInTurn(files, before.Name) with
+                    | ValueSome r -> read[p] <- (g, r)
+                    | ValueNone -> pending <- true
+
+                    p <- p + 1
+
+                let after = scope ()
+
+                if after.Loading || not (same before after) then ValueSome TurnRead.Gone
+                elif pending then ValueNone
+                else ValueSome(TurnRead.Read read)
+
+        host.WhenSettled(step, ct)
 
     /// How many indexes of a file's uses were built.
     member _.UsesBuilt: int64 = project.UsesBuilt

@@ -273,8 +273,7 @@ let private compareState (mutate: Mutation) (state: State) : Task<Outcome list> 
               ReferencingProjects = fun _ -> []
               Projects = fun () -> [ state.Graph ]
               FilesOf = fun _ -> state.Files
-              IsLoading = fun () -> false
-              BeforeRead = fun _ -> Task.CompletedTask }
+              IsLoading = fun () -> false }
 
         return! compareTokens mutate state.Scenario state.Step scope checks state.Files state.TextOf [ for f in state.Implementations -> state.Graph, f ]
     }
@@ -312,8 +311,7 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
                           ReferencingProjects = fun g -> if obj.ReferenceEquals(g, state.Graph) then [ app ] else []
                           Projects = fun () -> [ state.Graph; app ]
                           FilesOf = fun g -> if obj.ReferenceEquals(g, state.Graph) then state.Files else [ appFile ]
-                          IsLoading = fun () -> false
-                          BeforeRead = fun _ -> Task.CompletedTask }
+                          IsLoading = fun () -> false }
 
                     let asking = [ for f in state.Implementations -> state.Graph, f ] @ [ app, appFile ]
                     return! compareTokens (fun _ ours -> ours) lib.Name state.Step scope checks files state.TextOf asking

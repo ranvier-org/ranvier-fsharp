@@ -386,6 +386,7 @@ module internal WholeFile =
                     let index () =
                         Task.Run<FileUses>(
                             (fun () ->
+                                project.FlightHook "uses" path ct
                                 let u = SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct
                                 project.CountUsesBuilt()
                                 u),

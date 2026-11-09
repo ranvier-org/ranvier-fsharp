@@ -123,7 +123,7 @@ let private probeNewestLeft (s: Session) =
             s.Graph.ReadFile(
                 file,
                 (fun (v: FileView) ->
-                    let before = [ for u in v.Upstream[1..] -> u :?> FileSignature ]
+                    let before = v.Before
                     DeclarationChecker.CheckFile(ctx, before, v.Parse) |> ignore
                     before.Length),
                 CancellationToken.None
@@ -219,7 +219,7 @@ let tests =
                   s.Graph.ReadFile(
                       file,
                       (fun (v: FileView) ->
-                          let before = [ for u in v.Upstream[1..] -> u :?> FileSignature ]
+                          let before = v.Before
                           DeclarationChecker.CheckFile(ctx, before, v.Parse) |> ignore
                           before.Length),
                       CancellationToken.None

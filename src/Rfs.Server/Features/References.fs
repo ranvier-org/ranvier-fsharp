@@ -28,28 +28,20 @@ open Rfs.Checker
 /// that file's result has neither its definition nor its other uses.
 /// </para>
 /// <para>
-/// Consistency: each file is read alone, holding nothing while another is waited for. The files are read until a whole
-/// pass finds, for every file, the same result object as the pass before it, or the same uses from the same inputs: the
-/// same context and signatures (FileView.Upstream), at the same text version or the next one. A file's uses are a function
-/// of those and its text. So between its two reads each file's inputs went through at most one edit of its own text, both
-/// of its texts having these uses: at the moment between the passes each file stood at one of them, and the answer is
-/// that moment's. A signature file holds still when its check is the same object. An edit that moves no use and changes no
-/// signature a file reads doesn't hold the answer up. More than one edit of a file between its reads does, as nothing was
-/// read of the texts between; so does a changed signature a file reads, even when its uses come out the same, as they
-/// could differ in a state between that no read saw. That rule rests on FileSig.Next keeping a signature's object only
-/// while nothing a later file reads of it changed; it is shown on one three-file schedule and in the re-review's model.
-/// Where edits keep this from happening in a few passes, or a project goes away, or the workspace is loading at either end
-/// of the request, or the projects to read are others by its end (a reload hides the project and those that reference it
-/// from the snapshot), the answer is Moved, never a mix or a partial list.
+/// Consistency: every file's index, the project set, the loading state and the name filter's texts are read in one
+/// graph turn (ProjectGraph.ReadInOneTurn), with every file settled on its latest text: one state, across projects. A turn
+/// with any of them pending isn't answered from; the request waits for a later one, with no time limit, until a turn with
+/// everything settled or the client's cancel. So typing holds an answer up until it pauses. While the workspace is loading,
+/// or once a project to read is disposed (a reload hides the project and those that reference it), the answer is Moved,
+/// never a mix or a partial list: what it would wait for may never come.
 /// The handler gives LSP's ContentModified, and Ionide's bundled client then shows no results and doesn't ask again: to
 /// the user it looks like no references.
 /// </para>
 /// <para>
 /// Each file's uses are a lookup in its node's index (FileUses), built once per result and shared by every request. For a
 /// symbol a loaded project defines and that is always written by name (SymbolUses.spelledName), a file whose latest text
-/// doesn't have the name isn't read at all: it has no uses from any inputs, so what a pass keeps of it is its version, and
-/// it holds still only if it is skipped again within one edit. A file read at one end of a gap and skipped at the other
-/// doesn't hold still. Every other symbol reads every file. Signature files are always read: their checks are made anyway.
+/// in that turn doesn't have the name isn't read at all: it has no uses from any inputs. Every other symbol reads every
+/// file. Signature files are always read: their checks are made anyway.
 /// </para>
 /// <para>
 /// Where FCS answers otherwise, counted in the ReferencesGrid's limit list: a key two definitions share answers nothing;
@@ -69,9 +61,7 @@ module References =
           Projects: unit -> ProjectGraph list
           FilesOf: ProjectGraph -> string list
           /// A load or reload is under way: the projects listed may lack those it hides
-          IsLoading: unit -> bool
-          /// Runs before each implementation file's read. For tests
-          BeforeRead: string -> Task }
+          IsLoading: unit -> bool }
 
     /// A use, and whether it is a definition
     type Use = (struct (range * bool))
@@ -79,7 +69,7 @@ module References =
     [<RequireQualifiedAccess; NoComparison>]
     type Answer =
         | Found of Use list
-        /// No moment was seen at which what the files say held still, or a project went away or is loading
+        /// A project went away, or the workspace is loading
         | Moved
 
     [<NoComparison; NoEquality>]
@@ -143,21 +133,6 @@ module References =
             return found.Value
         }
 
-    [<NoComparison; NoEquality>]
-    type private Scanned =
-        { /// The result it was read from: the same object has the same uses. Null when the file was skipped: its latest
-          /// text doesn't have the name, so it has no use of the symbol from any inputs
-          Result: obj
-          /// The text version it was read at
-          Version: int64
-          /// What the result read besides the text
-          Upstream: obj[]
-          /// With whether its key is the setter's
-          Hits: (struct (range * bool * bool))[]
-          /// Where each definition here says it is, with whether its key is the setter's. The location can be stale: it
-          /// tells definitions apart and names a signature
-          Definitions: (struct (range * bool))[] }
-
     let private setterSuffix = "|setter"
 
     let private withoutSetter (key: string) =
@@ -166,7 +141,9 @@ module References =
     /// Whether a definition with a key is the only one of that key.
     let internal definesItsKey (symbol: FSharpSymbol) = SymbolUses.definesItsKey symbol
 
-    /// What a file's uses say of a key and of its setter's: the same symbol's two tokens
+    /// What a file's uses say of a key and of its setter's, the same symbol's two tokens: each hit with whether its key is
+    /// the setter's, and where each definition here says it is, with the same. The location can be stale: it tells
+    /// definitions apart and names a signature.
     let private hitsOf (key: string) (uses: FileUses) =
         let plain = withoutSetter key
         let own = uses.Of plain
@@ -176,31 +153,6 @@ module References =
             (own.Hits |> Array.map (fun (struct (r, d)) -> struct (r, d, false)))
             (setter.Hits |> Array.map (fun (struct (r, d)) -> struct (r, d, true))),
         Array.append (own.Definitions |> Array.map (fun r -> struct (r, false))) (setter.Definitions |> Array.map (fun r -> struct (r, true)))
-
-    let private scan (key: string) (read: UsesRead) : Scanned =
-        let hits, definitions = hitsOf key read.Uses
-
-        { Result = read.Result
-          Version = read.Version
-          Upstream = read.Upstream
-          Hits = hits
-          Definitions = definitions }
-
-    let private skipped (version: int64) : Scanned =
-        { Result = null
-          Version = version
-          Upstream = [||]
-          Hits = [||]
-          Definitions = [||] }
-
-    [<NoComparison; NoEquality>]
-    type private ScannedSignature =
-        { /// The check it was read from: the same object has the same uses
-          Signature: obj
-          Hits: (struct (range * bool * bool))[] }
-
-    /// How many times every file is read before the answer is Moved. Two when nothing moves.
-    let private maximumPasses = 5
 
     /// Whether more than one definition has this key, which only a file that doesn't compile, or private types of one
     /// name in two files, can have: a property's accessors are one definition, and every fragment declares its namespace.
@@ -222,142 +174,53 @@ module References =
                 |> Seq.distinct
                 |> Seq.length) > 1
 
-    /// Whether the same uses from the same inputs, at the same or the next text version: see the remarks
-    let private holdsStill (before: Scanned) (now: Scanned) =
-        let sameUse (struct (a: range, b: bool, c: bool)) (struct (x: range, y: bool, z: bool)) = Range.equals a x && b = y && c = z
-        let sameDefinition (struct (a: range, b: bool)) (struct (x: range, y: bool)) = Range.equals a x && b = y
-
-        // A skipped file has no result to compare. Its two texts have no use of the symbol, and neither did it between them
-        // if it went through at most one edit; a file read at one end and skipped at the other goes round again.
-        if isNull before.Result || isNull now.Result then
-            isNull before.Result && isNull now.Result && now.Version - before.Version <= 1L
-        else
-
-        obj.ReferenceEquals(before.Result, now.Result)
-        || (now.Version - before.Version <= 1L
-            && before.Upstream.Length = now.Upstream.Length
-            && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) before.Upstream now.Upstream
-            && before.Hits.Length = now.Hits.Length
-            && before.Definitions.Length = now.Definitions.Length
-            && Array.forall2 sameUse before.Hits now.Hits
-            && Array.forall2 sameDefinition before.Definitions now.Definitions)
-
     let private everywhere (scope: Scope) (graph: ProjectGraph) (key: string) (landed: string option) (spelled: string option) (ct: CancellationToken) : Task<Answer> =
         task {
-            let wasLoading = scope.IsLoading()
-
             let definersNow () =
                 match landed with
                 | Some file -> scope.OwnersOf file
                 | None -> []
 
-            let projectsNow () =
-                match definersNow () with
-                // No loaded project defines it: every project can use it
-                | [] -> scope.Projects()
-                | definers -> definers @ (definers |> List.collect scope.ReferencingProjects)
-                |> fun found -> graph :: found
-                |> List.distinct
-                |> Array.ofList
+            // Asked again at each turn the read tries, on the graph thread: the answer is the projects' at that turn
+            let turnScope () : TurnScope =
+                if scope.IsLoading() then
+                    { Loading = true; Projects = [||]; Name = None }
+                else
+                    let definers = definersNow ()
 
-            let definers = definersNow ()
-            let projects = projectsNow ()
-            // FSharp.Core's are reached from no text as well (SymbolUses.spelledName)
-            let name = if definers.IsEmpty then None else spelled
-            let gone = HashSet<int>()
-            let mutable last = Dictionary<struct (int * string), Scanned>()
-            let mutable lastSignatures = Dictionary<struct (int * string), ScannedSignature>()
-            let mutable settled = false
-            let mutable passes = 0
+                    let projects =
+                        match definers with
+                        // No loaded project defines it: every project can use it
+                        | [] -> scope.Projects()
+                        | definers -> definers @ (definers |> List.collect scope.ReferencingProjects)
+                        |> fun found -> graph :: found
+                        |> List.distinct
 
-            while not wasLoading && not settled && passes < maximumPasses do
-                passes <- passes + 1
-                let previous = last
-                let current = Dictionary<struct (int * string), Scanned>()
-                let filesOf = projects |> Array.map scope.FilesOf
+                    { Loading = false
+                      Projects = [| for p in projects -> p, scope.FilesOf p |]
+                      // FSharp.Core's are reached from no text as well (SymbolUses.spelledName)
+                      Name = if definers.IsEmpty then None else spelled }
 
-                for p in 0 .. projects.Length - 1 do
-                    for file in filesOf[p] do
-                        if not (isSignature file) && not (gone.Contains p) then
-                            ct.ThrowIfCancellationRequested()
+            match! graph.ReadInOneTurn(turnScope, ct) with
+            | TurnRead.Gone -> return Answer.Moved
+            | TurnRead.Read projects ->
+                let files = projects |> Seq.collect snd |> List.ofSeq
+                let definers = definersNow ()
 
-                            try
-                                do! scope.BeforeRead file
+                let kept =
+                    [ for f in files do
+                          match f with
+                          | TurnFile.Indexed(_, _, uses) -> yield hitsOf key uses
+                          | _ -> () ]
 
-                                let! skip =
-                                    match name with
-                                    | None -> Task.FromResult ValueNone
-                                    | Some n ->
-                                        task {
-                                            // Its latest text, not a result's: this is what it says now, unchecked
-                                            let! struct (text, version) = projects[p].LatestText(file, ct)
-                                            return if text.Contains(n, StringComparison.Ordinal) then ValueNone else ValueSome version
-                                        }
+                let signatureHits =
+                    [ for f in files do
+                          match f with
+                          | TurnFile.Signature(_, uses) -> yield! fst (hitsOf key uses)
+                          | _ -> () ]
 
-                                let! scanned =
-                                    match skip with
-                                    | ValueSome version -> Task.FromResult(skipped version)
-                                    | ValueNone ->
-                                        task {
-                                            let! read = projects[p].ReadUses(file, ct)
-
-                                            match previous.TryGetValue(struct (p, file)) with
-                                            | true, s when obj.ReferenceEquals(s.Result, read.Result) -> return s
-                                            | _ -> return scan key read
-                                        }
-
-                                current[struct (p, file)] <- scanned
-                            with :? OperationCanceledException when not ct.IsCancellationRequested ->
-                                gone.Add p |> ignore
-
-                let currentSignatures = Dictionary<struct (int * string), ScannedSignature>()
-
-                for p in 0 .. projects.Length - 1 do
-                    for file in filesOf[p] do
-                        if isSignature file && not (gone.Contains p) then
-                            ct.ThrowIfCancellationRequested()
-
-                            try
-                                let! struct (signature, uses) = projects[p].ReadSignatureUses(file, ct)
-
-                                let scanned =
-                                    match lastSignatures.TryGetValue(struct (p, file)) with
-                                    | true, s when obj.ReferenceEquals(s.Signature, signature) -> s
-                                    | _ -> { Signature = box signature; Hits = fst (hitsOf key uses) }
-
-                                currentSignatures[struct (p, file)] <- scanned
-                            with :? OperationCanceledException when not ct.IsCancellationRequested ->
-                                gone.Add p |> ignore
-
-                settled <-
-                    passes > 1
-                    && currentSignatures.Count = lastSignatures.Count
-                    && currentSignatures
-                       |> Seq.forall (fun (KeyValue(k, s)) ->
-                           match lastSignatures.TryGetValue k with
-                           | true, before -> obj.ReferenceEquals(before.Signature, s.Signature)
-                           | _ -> false)
-                    && current.Count = previous.Count
-                    && current
-                       |> Seq.forall (fun (KeyValue(k, s)) ->
-                           match previous.TryGetValue k with
-                           | true, before -> holdsStill before s
-                           | _ -> false)
-
-                last <- current
-                lastSignatures <- currentSignatures
-
-            let sameProjects () =
-                let now = projectsNow ()
-                now.Length = projects.Length && Array.forall2 (fun (a: ProjectGraph) (b: ProjectGraph) -> obj.ReferenceEquals(a, b)) now projects
-
-            if not settled || gone.Count > 0 || scope.IsLoading() || not (sameProjects ()) then
-                return Answer.Moved
-            else
-                let kept = List.ofSeq last.Values
-                let definitions = kept |> List.collect (fun s -> List.ofArray s.Definitions)
+                let definitions = kept |> List.collect (snd >> List.ofArray)
                 let isMember = (match key.Split('|')[1] with "member" | "property" -> true | _ -> false)
-                let signatureHits = lastSignatures.Values |> Seq.collect _.Hits |> List.ofSeq
 
                 // A member more generic than its signature has a key each side of it. From a use after the signature its
                 // definer shows no definition; from the implementation, a signature it says it is in has no such key.
@@ -369,7 +232,7 @@ module References =
                             definitions |> List.exists (fun (struct (r, _)) -> isSignature r.FileName)
                             && not (signatureHits |> List.exists (fun (struct (_, definition, _)) -> definition)))
 
-                if moreGeneric || isTied key (kept |> List.map _.Definitions) then
+                if moreGeneric || isTied key (kept |> List.map snd) then
                     return Answer.Found []
                 else
                     // A setter's own token is its own symbol, unless it is all the property has: then it is the property
@@ -377,8 +240,8 @@ module References =
                     let onlySetter = definitions |> List.forall (fun (struct (_, setter)) -> setter)
 
                     let hits =
-                        [ for s in kept do
-                              for struct (r, definition, setter) in s.Hits do
+                        [ for hits, _ in kept do
+                              for struct (r, definition, setter) in hits do
                                   if onlySetter || setter = wantsSetter then
                                       yield struct (r, definition) ]
 
