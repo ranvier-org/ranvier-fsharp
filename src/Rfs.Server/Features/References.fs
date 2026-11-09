@@ -19,8 +19,8 @@ open Rfs.Checker
 /// <remarks>
 /// <para>
 /// Ranges: a file's published result is current, kept rows included: shifting a row moves its uses, and App's own uses are
-/// App's. What a use's symbol says of its location is not read for an answer. A signature file has no result: its
-/// declaration comes from ProjectGraph.CurrentLocation.
+/// App's. What a use's symbol says of its location is not read for an answer. A signature file's uses are its latest
+/// check's (ProjectGraph.ReadSignature), so a blank line in it moves them.
 /// </para>
 /// <para>
 /// A symbol with no key (a local, a parameter) answers its uses in the asking file's result, in one read, so a parameter's
@@ -29,10 +29,9 @@ open Rfs.Checker
 /// </para>
 /// <para>
 /// Consistency: each file is read alone, holding nothing while another is waited for. The files are read until a whole
-/// pass finds, for every file, the same uses as the pass before it, at the same text version or the next one, and every
-/// signature's declaration where it was. So between the first of those reads and the last each file went through at most
+/// pass finds, for every file, the same uses as the pass before it, at the same text version or the next one. So between the first of those reads and the last each file went through at most
 /// one edit, both of its texts having these uses: at the moment between the passes each file stood at one of them, and
-/// the answer is that moment's. An edit that moves no use doesn't hold the answer up; more than one edit of a file between
+/// the answer is that moment's. A signature file holds still when its check is the same object. An edit that moves no use doesn't hold the answer up; more than one edit of a file between
 /// its reads does, as nothing was read of the texts between them. A change that only shows in another file's uses while
 /// two files are each edited once between their reads, and is gone again by both of their second reads, isn't seen.
 /// Where edits keep this from happening in a few passes, or a project goes away, or the workspace is loading (a reload
@@ -42,7 +41,7 @@ open Rfs.Checker
 /// </para>
 /// <para>
 /// Where FCS answers otherwise, counted in the ReferencesGrid's limit list: a key two definitions share answers nothing;
-/// a use in a signature file other than its declaration isn't found, as CheckSignatureFile has no sink; a member more
+/// a parameter's name in a signature isn't found, as it has no key; a member more
 /// generic than its signature has a key each side of it, and answers nothing; a parameter's named uses in other files
 /// aren't found; a slot's property with both accessors and what implements it are told apart otherwise than FCS does; a
 /// call of an overloaded constructor doesn't add that overload's `new`. A file linked into two projects finds the asking
@@ -219,6 +218,45 @@ module References =
             |> Array.choose (fun (u, setter) ->
                 u.Symbol.SignatureLocation |> Option.orElse u.Symbol.DeclarationLocation |> Option.map (fun r -> struct (r, setter))) }
 
+    [<NoComparison; NoEquality>]
+    type private ScannedSignature =
+        { /// The check it was read from: the same object has the same uses
+          Signature: obj
+          Hits: (struct (range * bool * bool))[] }
+
+    let private scanSignature (key: string) (signature: FileSignature) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : ScannedSignature =
+        let plain = withoutSetter key
+
+        // As in an implementation file (keysIn): a pattern's case names no value in the signature that lists the pattern
+        let patterns =
+            uses
+            |> Array.choose (fun (struct (r, definition, symbol)) ->
+                match symbol with
+                | :? FSharpMemberOrFunctionOrValue as v when definition && v.IsActivePattern ->
+                    DeclarationChecker.SymbolKey symbol |> Option.map (fun k -> r, v.LogicalName.Split('|'), k)
+                | _ -> None)
+
+        { Signature = signature
+          Hits =
+            uses
+            |> Array.choose (fun (struct (r, definition, symbol)) ->
+                ct.ThrowIfCancellationRequested()
+
+                let own =
+                    match symbol with
+                    | :? FSharpMemberOrFunctionOrValue as v when definition && v.IsConstructor -> DeclarationChecker.SymbolKey symbol
+                    | :? FSharpActivePatternCase as c when (keyOf symbol).IsNone ->
+                        patterns
+                        |> Array.filter (fun (at, names, _) -> Array.contains c.Name names && Position.posGeq r.Start at.Start)
+                        |> Array.tryLast
+                        |> Option.map (fun (_, _, k) -> k + "|" + c.Name)
+                    | _ -> keyOf symbol
+
+                match own with
+                | Some k when k = plain -> Some(struct (r, definition, false))
+                | Some k when k = plain + setterSuffix -> Some(struct (r, definition, true))
+                | _ -> None) }
+
     /// How many times every file is read before the answer is Moved. Two when nothing moves.
     let private maximumPasses = 5
 
@@ -275,8 +313,7 @@ module References =
 
             let gone = HashSet<int>()
             let mutable last = Dictionary<struct (int * string), Scanned>()
-            let mutable lastSignatures = Set.empty<string>
-            let mutable signatureUses = []
+            let mutable lastSignatures = Dictionary<struct (int * string), ScannedSignature>()
             let mutable settled = false
             let mutable passes = 0
 
@@ -284,9 +321,10 @@ module References =
                 passes <- passes + 1
                 let previous = last
                 let current = Dictionary<struct (int * string), Scanned>()
+                let filesOf = projects |> Array.map scope.FilesOf
 
                 for p in 0 .. projects.Length - 1 do
-                    for file in scope.FilesOf projects[p] do
+                    for file in filesOf[p] do
                         if not (isSignature file) && not (gone.Contains p) then
                             ct.ThrowIfCancellationRequested()
 
@@ -305,42 +343,36 @@ module References =
                             with :? OperationCanceledException when not ct.IsCancellationRequested ->
                                 gone.Add p |> ignore
 
-                // A signature's declaration, read from its latest check: nothing else holds its current range
-                let wanted =
-                    [ for KeyValue(struct (p, file), s) in current do
-                          for struct (d, _) in s.Definitions do
-                              if isSignature d.FileName then
-                                  yield p, file, d.FileName ]
-                    |> List.distinctBy (fun (p, _, signature) -> p, signature)
+                let currentSignatures = Dictionary<struct (int * string), ScannedSignature>()
 
-                let landedSignature =
-                    match landed with
-                    | Some file when isSignature file && not (wanted |> List.exists (fun (_, _, s) -> sameFile s file)) ->
-                        [ for p in 0 .. projects.Length - 1 do
-                              if scope.FilesOf projects[p] |> List.exists (sameFile file) then
-                                  yield p, file, file ]
-                    | _ -> []
+                for p in 0 .. projects.Length - 1 do
+                    for file in filesOf[p] do
+                        if isSignature file && not (gone.Contains p) then
+                            ct.ThrowIfCancellationRequested()
 
-                let signatures = ResizeArray<Use>()
+                            try
+                                let! scanned =
+                                    projects[p].ReadSignature(
+                                        file,
+                                        (fun signature uses ->
+                                            match lastSignatures.TryGetValue(struct (p, file)) with
+                                            | true, s when obj.ReferenceEquals(s.Signature, signature) -> s
+                                            | _ -> scanSignature key signature uses.Value ct),
+                                        ct
+                                    )
 
-                for p, asking, signature in wanted @ landedSignature do
-                    if not (gone.Contains p) then
-                        ct.ThrowIfCancellationRequested()
-
-                        try
-                            let! location = projects[p].CurrentLocation(asking, signature, key, ct)
-
-                            match location with
-                            | Some r when isSignature r.FileName -> signatures.Add(struct (r, true))
-                            | _ -> ()
-                        with :? OperationCanceledException when not ct.IsCancellationRequested ->
-                            gone.Add p |> ignore
-
-                let now = signatures |> Seq.map (fun (struct (r, _)) -> r.ToString()) |> Set.ofSeq
+                                currentSignatures[struct (p, file)] <- scanned
+                            with :? OperationCanceledException when not ct.IsCancellationRequested ->
+                                gone.Add p |> ignore
 
                 settled <-
                     passes > 1
-                    && now = lastSignatures
+                    && currentSignatures.Count = lastSignatures.Count
+                    && currentSignatures
+                       |> Seq.forall (fun (KeyValue(k, s)) ->
+                           match lastSignatures.TryGetValue k with
+                           | true, before -> obj.ReferenceEquals(before.Signature, s.Signature)
+                           | _ -> false)
                     && current.Count = previous.Count
                     && current
                        |> Seq.forall (fun (KeyValue(k, s)) ->
@@ -349,8 +381,7 @@ module References =
                            | _ -> false)
 
                 last <- current
-                lastSignatures <- now
-                signatureUses <- List.ofSeq signatures
+                lastSignatures <- currentSignatures
 
             if not settled || gone.Count > 0 || scope.IsLoading() then
                 return Answer.Moved
@@ -358,27 +389,17 @@ module References =
                 let kept = List.ofSeq last.Values
                 let definitions = kept |> List.collect (fun s -> List.ofArray s.Definitions)
                 let isMember = (match key.Split('|')[1] with "member" | "property" -> true | _ -> false)
-                let inSignatures = definitions |> List.choose (fun (struct (r, _)) -> if isSignature r.FileName then Some r.FileName else None) |> List.distinct
+                let signatureHits = lastSignatures.Values |> Seq.collect _.Hits |> List.ofSeq
 
                 // A member more generic than its signature has a key each side of it. From a use after the signature its
-                // definer shows no definition; from the implementation, the signature has no such key.
-                let! moreGeneric =
-                    task {
-                        if not isMember then
-                            return false
-                        elif definitions.IsEmpty then
-                            return not definers.IsEmpty
+                // definer shows no definition; from the implementation, a signature it says it is in has no such key.
+                let moreGeneric =
+                    isMember
+                    && (if definitions.IsEmpty then
+                            not definers.IsEmpty
                         else
-                            let mutable found = false
-
-                            for signature in inSignatures do
-                                for p in 0 .. projects.Length - 1 do
-                                    if not found && scope.FilesOf projects[p] |> List.exists (sameFile signature) then
-                                        let! exact = projects[p].CurrentLocation(signature, signature, key, ct)
-                                        found <- not (exact |> Option.exists (fun r -> isSignature r.FileName))
-
-                            return found
-                    }
+                            definitions |> List.exists (fun (struct (r, _)) -> isSignature r.FileName)
+                            && not (signatureHits |> List.exists (fun (struct (_, definition, _)) -> definition)))
 
                 if moreGeneric || isTied key (kept |> List.map _.Definitions) then
                     return Answer.Found []
@@ -393,7 +414,12 @@ module References =
                                   if onlySetter || setter = wantsSetter then
                                       yield struct (r, definition) ]
 
-                    return Answer.Found(List.distinct (hits @ signatureUses))
+                    let inSignatures =
+                        [ for struct (r, definition, setter) in signatureHits do
+                              if onlySetter || setter = wantsSetter then
+                                  yield struct (r, definition) ]
+
+                    return Answer.Found(List.distinct (hits @ inSignatures))
         }
 
     /// Every use of the symbol at the position.

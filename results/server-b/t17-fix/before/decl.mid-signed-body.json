@@ -1,0 +1,192 @@
+{
+  "server": "decl",
+  "scenario": "mid-signed-body",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-09T13:26:25.9450079Z",
+  "coldMs": 4113.8677,
+  "steps": [
+    {
+      "index": 0,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #1 fwd",
+      "latencyMs": 75.7476,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #2 inv",
+      "latencyMs": 96.2262,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #3 fwd",
+      "latencyMs": 43.809,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #4 inv",
+      "latencyMs": 28.7358,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #5 fwd",
+      "latencyMs": 33.528,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #6 inv",
+      "latencyMs": 26.7286,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #7 fwd",
+      "latencyMs": 28.1547,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #8 inv",
+      "latencyMs": 32.4239,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #9 fwd",
+      "latencyMs": 31.5665,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #10 inv",
+      "latencyMs": 33.4335,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #11 fwd",
+      "latencyMs": 29.667,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #12 inv",
+      "latencyMs": 33.7791,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #13 fwd",
+      "latencyMs": 36.7893,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #14 inv",
+      "latencyMs": 27.0449,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #15 fwd",
+      "latencyMs": 35.312,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #16 inv",
+      "latencyMs": 23.7633,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #17 fwd",
+      "latencyMs": 28.5054,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #18 inv",
+      "latencyMs": 33.4387,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #19 fwd",
+      "latencyMs": 34.6014,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/FsAutoComplete.Core/TypedAstPatterns.fs 301:68-301:69 #20 inv",
+      "latencyMs": 29.375,
+      "publishes": 0,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 380.72265625,
+  "allocatedMb": 2482.143241882324,
+  "gen2": 9
+}

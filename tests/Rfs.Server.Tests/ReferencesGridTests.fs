@@ -49,12 +49,10 @@ let private kindOf (key: string) = key.Split('|')[1]
 /// - "generic overload": a member more generic than its signature has a key each side of it, and the answer is nothing;
 /// - "generic overload's sibling": an overload exact in the signature, beside one more generic than it: FCS counts the
 ///   two as one, and ours has the exact one's only;
-/// - "use in a signature": a signature file is checked with no sink, so all that is known of it is what it defines. A
-///   pattern's case there is one of these, as the signature defines the pattern and not the case, and a `new` there, and
-///   what a signature that we found the declaration in counts as defining past it, as an augmentation's header;
+/// - "pattern's case": a case asked in its pattern's own definition: ours has the case's name in the signature, which
+///   FCS has only from a use of the case;
 /// - "constructor's new": at a call of an overloaded constructor, FCS adds that overload's `new`;
-/// - "namespace": a namespace in a signature file's header, or a type of another assembly extended in a signature file,
-///   each a definition with nothing to look up. Across projects also: see `crossProject`;
+/// - "namespace": see `crossProject`;
 /// - "signed parameter": the parameter's name in the signature, for a parameter with no key;
 /// - "named argument": a parameter asked at its definition lacks its named uses in other files; a named argument lacks
 ///   the other files' uses, and asked in another file than its method's answers nothing;
@@ -75,17 +73,11 @@ let private limitOf
     let missing = expected |> List.filter (fun u -> not (ourAll.Contains u.Range))
     let surplus = ourAll - (expected |> List.map _.Range |> Set.ofList)
     let name = asked.Symbol.DisplayName
-    let declared = ourAll |> Set.exists (fun at -> at.Contains ".fsi ")
     let ourDefinitions = ours |> List.filter snd |> List.map fst |> Set.ofList
     let flagsAgree = expected |> List.forall (fun u -> not (ourAll.Contains u.Range) || u.IsDefinition = ourDefinitions.Contains u.Range)
     let isConstructor = (match asked.Symbol with :? FSharpMemberOrFunctionOrValue as v -> v.IsConstructor | _ -> false)
     let isNamespace = (match asked.Symbol with :? FSharpEntity as e -> e.IsNamespace | _ -> false)
     let isPattern = asked.Symbol :? FSharpActivePatternCase
-
-    let isExternal =
-        match asked.Symbol with
-        | :? FSharpEntity as e -> e.IsNamespace || not (e.DeclarationLocation.FileName.Contains "rfs-token-grid-")
-        | _ -> false
 
     let isSlotProperty = key |> Option.exists (fun k -> kindOf k = "property" && k.Contains "|slot|")
 
@@ -108,6 +100,8 @@ let private limitOf
                 Some "interface property"
             else
                 None
+    elif isPattern && missing.IsEmpty && surplus |> Set.forall (fun at -> at.Contains ".fsi ") then
+        Some "pattern's case"
     elif not surplus.IsEmpty || missing.IsEmpty then
         None
     elif tied && ourAll.IsEmpty && key |> Option.exists (fun k -> not (List.contains (kindOf k) [ "property"; "namespace"; "anonymous" ])) then
@@ -124,12 +118,8 @@ let private limitOf
          && missing |> List.exists (fun u -> not u.InSignature && not u.Keys.IsEmpty && not (u.Keys.Contains key.Value))
          && missing |> List.forall (fun u -> u.InSignature || (not u.Keys.IsEmpty && not (u.Keys.Contains key.Value))) then
         Some "generic overload's sibling"
-    elif key.IsSome && missing |> List.forall (fun u -> u.InSignature && (not u.IsDefinition || u.Text = "new" || declared || isPattern)) then
-        Some "use in a signature"
-    elif isConstructor && key.IsSome && missing |> List.forall (fun u -> (u.IsDefinition && u.Text = "new") || (u.InSignature && declared)) then
+    elif isConstructor && key.IsSome && missing |> List.forall (fun u -> u.IsDefinition && u.Text = "new") then
         Some "constructor's new"
-    elif key.IsSome && isExternal && missing |> List.forall (fun u -> u.InSignature && u.IsDefinition) then
-        Some "namespace"
     elif crossProject && isNamespace && not ourAll.IsEmpty then
         Some "namespace"
     elif key.IsNone && not isPattern && missing |> List.forall _.InSignature then

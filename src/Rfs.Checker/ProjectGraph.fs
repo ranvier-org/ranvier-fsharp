@@ -689,6 +689,20 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 return None
         }
 
+    /// Runs `read` off the graph thread on a signature file's latest check, once settled, with what that check resolved.
+    /// The same FileSignature object has the same uses. Takes no lock: a signature's check changes nothing after it.
+    member _.ReadSignature(file: string, read: FileSignature -> Lazy<(struct (FSharp.Compiler.Text.range * bool * FSharp.Compiler.Symbols.FSharpSymbol))[]> -> 'T, ct: CancellationToken) : Task<'T> =
+        let i = indexOf file
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+
+            let! s =
+                host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version)), linked.Token)
+
+            return! Task.Run((fun () -> read s (lazy DeclarationChecker.SignatureUses(project.Context, s))), linked.Token)
+        }
+
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
     member _.Mode(file: string) : Task<Rfs.Checker.FileMode> =

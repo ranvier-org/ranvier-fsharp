@@ -238,6 +238,29 @@ let tests =
               do! expectBoth "Lib's new lines: App's assembly did not change"
           }
 
+          testTask "a type's uses in a signature file come at their current ranges" {
+              let! (s: Session) = start depsDir depsProject []
+              let g = (s.Server.Workspace.ProjectOf d).Value
+              use _ = disposing s
+              g.SetText(file "E.fs", "module Deps.E\n\ntype T = { V: int }\n\nlet v = { V = 1 }\n") |> ignore
+              let signature (blank: string) = "module Deps.E\n" + blank + "\ntype T = { V: int }\n\nval v: T\n"
+              g.SetText(file "E.fsi", signature "") |> ignore
+              let! _ = g.AllDiagnostics() |> within
+
+              let inSignature (line: int) (answer: References.Answer) =
+                  match answer with
+                  | References.Answer.Found uses ->
+                      uses |> List.exists (fun (struct (r, definition)) -> r.FileName.EndsWith "E.fsi" && r.StartLine = line && not definition)
+                  | References.Answer.Moved -> false
+
+              let! (first: References.Answer) = References.find (scopeOf s) g (file "E.fs") 2 5 CancellationToken.None
+              Expect.isTrue (inSignature 5 first) $"`val v: T` is a use of T: %A{first}"
+              g.SetText(file "E.fsi", signature "\n\n") |> ignore
+              let! _ = g.AllDiagnostics() |> within
+              let! (moved: References.Answer) = References.find (scopeOf s) g (file "E.fs") 2 5 CancellationToken.None
+              Expect.isTrue (inSignature 7 moved) $"two lines down: %A{moved}"
+          }
+
           testTask "a signature file's declaration comes at its current range" {
               let! (s: Session) = start multiDir appProject [ useFs; signedFsi; signedFs ]
               use _ = disposing s
