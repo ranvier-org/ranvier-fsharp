@@ -10,6 +10,7 @@
     <Compile Include="Documents.fs" />
     <Compile Include="Publisher.fs" />
     <Compile Include="Features/Hover.fs" />
+    <Compile Include="Features/Completion.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

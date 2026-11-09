@@ -319,9 +319,9 @@ let tests =
               let elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - started
 
               let phases =
-                  [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "render"; "fingerprints"; "signature"; "sinks" ]
+                  [ "wait"; "refilter"; "leftovers"; "envAtEnd"; "assemble"; "replay"; "tail"; "typedUses"; "render"; "fingerprints"; "signature"; "sinks" ]
 
-              Expect.equal (List.ofSeq finished.PhaseTicks.Keys) phases "the eleven parts of the finish, in source order"
+              Expect.equal (List.ofSeq finished.PhaseTicks.Keys) phases "the twelve parts of the finish, in source order"
 
               for KeyValue(phase, ticks) in finished.PhaseTicks do
                   Expect.isGreaterThanOrEqual ticks 0L $"%s{phase} is not negative"

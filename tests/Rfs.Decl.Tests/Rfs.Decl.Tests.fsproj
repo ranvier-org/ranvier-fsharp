@@ -15,6 +15,7 @@
     <Compile Include="FinishCacheTests.fs" />
     <Compile Include="ShiftTests.fs" />
     <Compile Include="CrossProjectTests.fs" />
+    <Compile Include="EnvAtEndTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

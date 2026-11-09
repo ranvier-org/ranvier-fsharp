@@ -22,12 +22,6 @@ let private eventually (what: string) (check: unit -> bool) : Task =
             do! Task.Delay 10
     }
 
-/// The object the fork holds while it checks the file, as the graph finds it
-let private checkLock (s: Session) (file: string) : obj =
-    let flags = Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
-    let checks = typeof<FSharp.Compiler.Declarations.ProjectContext>.GetProperty("Checks", flags).GetValue s.Graph.Context
-    checks.GetType().GetMethod("FileLock", flags).Invoke(checks, [| box file |])
-
 let private swallowCancellation (t: Task) =
     task {
         try
@@ -178,14 +172,15 @@ let tests =
               Expect.throwsT<ArgumentException> (fun () -> s.Graph.ReadFile(fileOf "E.fsi", id, CancellationToken.None) |> ignore) "signature"
           }
 
-          testTask "a read refuses to run holding the file's check lock" {
+          testTask "the check results refuse to build holding the file's check lock" {
               let! s = startWith Declarations
               use _ = (s :> IAsyncDisposable)
+              let! (view: FileView) = s.Graph.ReadFile(a, id, CancellationToken.None) |> settle
 
-              lock (checkLock s a) (fun () ->
-                  Expect.throwsT<InvalidOperationException>
-                      (fun () -> s.Graph.ReadFile(a, id, CancellationToken.None) |> ignore)
-                      "m2 guard")
+              s.Graph.Context.HoldingCheckLock(
+                  a,
+                  fun () -> Expect.throwsT<InvalidOperationException> (fun () -> view.Result.CheckResults |> ignore) "m2 guard"
+              )
           }
 
           testTask "cancelling the token ends the wait" {

@@ -41,6 +41,37 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     let plain (content: string) : LspResult<PlainNotification> = Ok { Content = content }
 
+    /// A request that reads a source file: `none` when no project holds it, or the project goes away (a reload hides it
+    /// while it loads again) or the server shuts down meanwhile. A request the client cancelled never gets to the handler:
+    /// the library cancels the async itself. The edits before the request may still be queued; its answer is for the text
+    /// they leave.
+    let reading (what: string) (none: 'T) (path: unit -> string) (run: ProjectGraph -> string -> CancellationToken -> Task<'T>) : Async<LspResult<'T>> =
+        async {
+            let! ct = Async.CancellationToken
+
+            try
+                do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                let path = path ()
+
+                match (if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then [] else workspace.OwnersOf path) with
+                | [] -> return Ok none
+                | graph :: _ ->
+                    let! answer = run graph path ct |> Async.AwaitTask
+                    return Ok answer
+            with ex ->
+                let rec root (e: exn) =
+                    match e with
+                    | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
+                    | e -> e
+
+                match root ex with
+                | :? OperationCanceledException
+                | :? ObjectDisposedException -> return Ok none
+                | e ->
+                    eprintfn "[ranvierautocomplete] %s failed: %O" what e
+                    return LspResult.internalError e.Message
+        }
+
     /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
     let automaticLoad (root: string) =
         task {
@@ -108,7 +139,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                 { TextDocumentSyncOptions.Default with
                                     OpenClose = Some true
                                     Change = Some TextDocumentSyncKind.Incremental }
-                        HoverProvider = Some(U2.C1 true) }
+                        HoverProvider = Some(U2.C1 true)
+                        CompletionProvider =
+                            Some
+                                { TriggerCharacters = Some [| "."; "'" |]
+                                  AllCommitCharacters = None
+                                  ResolveProvider = Some true
+                                  CompletionItem = None
+                                  WorkDoneProgress = None } }
 
                 return
                     Ok
@@ -189,13 +227,32 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.CallHierarchyOutgoingCalls(_) = notImplemented
         member _.CodeActionResolve(_) = notImplemented
         member _.CodeLensResolve(_) = notImplemented
-        member _.CompletionItemResolve(_) = notImplemented
+        member _.CompletionItemResolve(item: CompletionItem) =
+            match Completion.positionOf item with
+            | None -> async.Return(Ok item)
+            | Some(path, line, character) ->
+                reading "completionItem/resolve" item (fun () -> path) (fun graph path ct ->
+                    Completion.resolve graph item path line character ct)
+
         member _.DocumentLinkResolve(_) = notImplemented
         member _.InlayHintResolve(_) = notImplemented
         member _.TextDocumentCodeAction(_) = notImplemented
         member _.TextDocumentCodeLens(_) = notImplemented
         member _.TextDocumentColorPresentation(_) = notImplemented
-        member _.TextDocumentCompletion(_) = notImplemented
+        member _.TextDocumentCompletion(p: CompletionParams) =
+            reading "completion" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                task {
+                    let! items = Completion.at graph path (int p.Position.Line) (int p.Position.Character) ct
+
+                    return
+                        Some(
+                            U2.C2
+                                { IsIncomplete = false
+                                  Items = items
+                                  ItemDefaults = None }
+                        )
+                })
+
         member _.TextDocumentDeclaration(_) = notImplemented
         member _.TextDocumentDefinition(_) = notImplemented
         member _.TextDocumentDiagnostic(_) = notImplemented
@@ -206,43 +263,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentFoldingRange(_) = notImplemented
         member _.TextDocumentFormatting(_) = notImplemented
         member _.TextDocumentHover(p: HoverParams) =
-            async {
-                let! ct = Async.CancellationToken
+            reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                task {
+                    let! text = Hover.at graph path (int p.Position.Line) (int p.Position.Character) ct
 
-                try
-                    // The edits before this request may still be queued; its answer is for the text they leave
-                    do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
-                    let path = Paths.ofUri p.TextDocument.Uri
-
-                    match (if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then [] else workspace.OwnersOf path) with
-                    | [] -> return Ok None
-                    | graph :: _ ->
-                        let! text =
-                            Hover.at graph path (int p.Position.Line) (int p.Position.Character) ct
-                            |> Async.AwaitTask
-
-                        return
-                            Ok(
-                                text
-                                |> Option.map (fun t ->
-                                    { Contents = U3.C1 { Kind = MarkupKind.Markdown; Value = t }
-                                      Range = None })
-                            )
-                with ex ->
-                    let rec root (e: exn) =
-                        match e with
-                        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
-                        | e -> e
-
-                    match root ex with
-                    // The project went away (a reload hides it while it loads again), or the server is shutting down.
-                    // A request the client cancelled never gets here: the library cancels the async itself.
-                    | :? OperationCanceledException
-                    | :? ObjectDisposedException -> return Ok None
-                    | e ->
-                        eprintfn "[ranvierautocomplete] hover failed: %O" e
-                        return LspResult.internalError e.Message
-            }
+                    return
+                        text
+                        |> Option.map (fun t ->
+                            { Contents = U3.C1 { Kind = MarkupKind.Markdown; Value = t }
+                              Range = None })
+                })
 
         member _.TextDocumentImplementation(_) = notImplemented
         member _.TextDocumentInlayHint(_) = notImplemented
@@ -361,7 +391,9 @@ module Server =
               "textDocument/didSave"
               "workspace/didChangeConfiguration"
               "workspace/didChangeWatchedFiles"
-              "textDocument/hover" ]
+              "textDocument/hover"
+              "textDocument/completion"
+              "completionItem/resolve" ]
 
     let private handlings () =
         defaultRequestHandlings ()

@@ -29,13 +29,6 @@ module private ReadSupport =
                 return raise (OperationCanceledException ct)
         }
 
-    /// The object the fork holds while it checks the file (ProjectChecks.FileLock, internal to the fork).
-    let fileLockOf (ctx: ProjectContext) : string -> obj =
-        let flags = Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
-        let checks = typeof<ProjectContext>.GetProperty("Checks", flags).GetValue ctx
-        let m = checks.GetType().GetMethod("FileLock", flags)
-        fun name -> m.Invoke(checks, [| box name |])
-
 open ReadSupport
 
 /// A project's assembly as it stands.
@@ -127,7 +120,14 @@ type FileView =
       Parse: FSharpParseFileResults
       Text: string
       /// The graph's version of the text (the one `SetText` returned)
-      Version: int64 }
+      Version: int64
+      At: int -> int -> FSharpCheckFileResults }
+
+    /// Check results for a query at the 1-based line and 0-based column, inside the `read` it was given to. In a file
+    /// checked by declaration, a kept declaration holds the names as they were when it was checked: when an earlier result
+    /// has changed since, this checks it again in the current environment and gives a view of that, adopting nothing
+    /// (ProjectGraph.AdHocChecks). A file checked whole always has its CheckResults.
+    member v.CheckResultsAt(line: int, column: int) : FSharpCheckFileResults = v.At line column
 
 /// <summary>
 /// A project checked on a Ranvier graph, re-checking only what an edit can change.
@@ -561,22 +561,12 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no
     /// check, shift or finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
     /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
-    /// signature file, which has no FileResult, and with InvalidOperationException when called holding the file's
-    /// check lock.
+    /// signature file, which has no FileResult.
     member _.ReadFile(file: string, read: FileView -> 'T, ct: CancellationToken) : Task<'T> =
         let i = indexOf file
 
         if isSignatureFile files[i] then
             invalidArg (nameof file) $"%s{file} is a signature file"
-
-        let fileLock = fileLockOf project.Context files[i].Path
-
-        // m2: reading CheckResults takes the FileStart's lock and then the file's check lock; never the other way round
-        let guard () =
-            if Monitor.IsEntered fileLock then
-                invalidOp $"%s{file}: read while holding the file's check lock"
-
-        guard ()
 
         let readable () = readSettled i (fun f version -> (f :?> IReadableFile).Readable version)
 
@@ -590,12 +580,16 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
                 let run (r: Readable) =
                     Task.Run(fun () ->
-
                         read
                             { Result = r.Result
                               Parse = r.Parsed.Parse
                               Text = r.Parsed.Text
-                              Version = r.Parsed.Version })
+                              Version = r.Parsed.Version
+                              At =
+                                fun line column ->
+                                    match r.Declarations with
+                                    | ValueSome(f, roles) -> RowView.at project f roles line column linked.Token
+                                    | ValueNone -> r.Result.CheckResults })
 
                 match r.Lock with
                 | ValueNone ->
@@ -609,7 +603,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
                     match again with
                     | ValueSome a when obj.ReferenceEquals(a.Identity, r.Identity) ->
-                        let! v = run r
+                        let! v = run a
                         answer <- ValueSome v
                     | _ -> ()
 
@@ -710,6 +704,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// How many CheckDeclaration results were published (adopted): each once, when a finish of the current text that
     /// holds it is published.
     member _.AdoptedChecks: int64 = project.AdoptedCount
+
+    /// How many declarations were checked for a query at a position and not adopted (FileView.CheckResultsAt).
+    member _.AdHocChecks: int64 = project.AdHocCount
 
     /// How many published results were shifted to the line their unchanged declaration moved to (W1) instead of
     /// checked again: each once, when a finish of the current text that holds it is published.

@@ -47,6 +47,8 @@ type internal Readable =
       /// The lock of the FileStart a declaration-level result was finished on: a reader holds it shared, so no finish
       /// runs on that FileStart meanwhile
       Lock: AsyncReaderWriterLock voption
+      /// The finish a declaration-level result is, with each declaration's role
+      Declarations: (Finished * Map<DeclarationKey, Role>) voption
       /// The same object while the same result is published
       Identity: obj }
 
@@ -488,12 +490,13 @@ module internal WholeFile =
           interface IReadableFile with
               member _.Readable version =
                   match current version with
-                  | ValueSome(ByDeclaration(_, f)) ->
+                  | ValueSome(ByDeclaration(g, f)) ->
                       finishedAt version f
                       |> ValueOption.map (fun f ->
                           { Parsed = f.Parsed
                             Result = f.FileResult
                             Lock = ValueSome f.Start.Lock
+                            Declarations = ValueSome(f, g.Roles())
                             Identity = box f })
                   | ValueSome(Kept k) ->
                       keptAt version k
@@ -501,6 +504,7 @@ module internal WholeFile =
                           { Parsed = k.Key.Parsed
                             Result = r
                             Lock = ValueSome k.Lock
+                            Declarations = ValueNone
                             Identity = box k })
                   | ValueSome Whole ->
                       settledAt project file whole version
@@ -508,6 +512,7 @@ module internal WholeFile =
                           { Parsed = key.Parsed
                             Result = r
                             Lock = ValueNone
+                            Declarations = ValueNone
                             Identity = box r })
                   | ValueNone -> ValueNone }
 

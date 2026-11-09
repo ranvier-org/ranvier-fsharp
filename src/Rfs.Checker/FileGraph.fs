@@ -898,7 +898,8 @@ type internal DeclFile
         current: Memo<Finished>,
         unresolved: Signal<DeclSetup voption>,
         publish: Finished -> unit,
-        segmentRows: unit -> int
+        segmentRows: unit -> int,
+        roles: unit -> Map<DeclarationKey, Role>
     ) =
     /// The file's parse in the dependency snapshot, split into declarations
     member _.Split = split
@@ -912,6 +913,8 @@ type internal DeclFile
     /// Reports each result of `finished` not reported before (AdoptedChecks). Untracked; graph thread.
     member _.Publish(finished: Finished) = publish finished
     member _.SegmentRows() = segmentRows ()
+    /// Each declaration's role as they stand. A tracked read; graph thread.
+    member _.Roles() = roles ()
 
     static member ResultsOf(finished: Finished) : IReadOnlyDictionary<DeclarationKey, DeclarationResult> =
         let d = Dictionary<DeclarationKey, DeclarationResult>(HashIdentity.Structural)
@@ -1238,5 +1241,100 @@ module internal FileNodes =
                 if not (live.Contains k) then
                     published.Remove k |> ignore
 
-        DeclFile(parsed, setup, current, unresolved, publish, fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length)
+        DeclFile(
+            parsed,
+            setup,
+            current,
+            unresolved,
+            publish,
+            (fun () -> shared.Roles.Value |> Seq.filter (fun kv -> kv.Value <> Role.Single) |> Seq.length),
+            (fun () -> shared.Roles.Value)
+        )
+
+/// Check results for a position in a file checked by declaration: a kept declaration was checked against the results
+/// before it as they were, so the names its sink captured can be older than those results. Off the graph thread, holding
+/// the FileStart's lock exclusively: no check, finish or environment fold of the file runs meanwhile, so nothing but this
+/// reads a type while a replay hides its members, and the query that follows reads it whole.
+module internal RowView =
+    /// The last declaration starting at or before the 1-based line and 0-based column, or -1. Inside a declaration or
+    /// in the gap after it, the captured environments that apply are its own. After the last one, the finish's end
+    /// environment is current.
+    let private rowAt (checks: (Row * RowCheck)[]) (line: int) (column: int) =
+        let mutable found = -1
+
+        checks
+        |> Array.iteri (fun i (_, c) ->
+            let r = c.Decl.Range
+
+            if r.StartLine < line || (r.StartLine = line && r.StartColumn <= column) then
+                found <- i)
+
+        if found = checks.Length - 1 && found >= 0 && line > (snd checks[found]).Decl.Range.EndLine then
+            -1
+        else
+            found
+
+    /// Whether row k was checked in the environment the current results before it assemble: the same results, or shifts
+    /// of them, which hold the same values and entities. Compared along the chain, not by the node: checks that raced
+    /// (Row.EnvCache) can make two nodes of one chain.
+    let private checkedInCurrent (checks: (Row * RowCheck)[]) (k: int) =
+        let mutable node = (snd checks[k]).EnvBefore
+        let mutable i = k - 1
+        let mutable same = true
+
+        while same && i >= 0 do
+            if isNull node || isNull node.Check || not (RowCheck.SameCheck(node.Check, snd checks[i])) then
+                same <- false
+            else
+                node <- node.Previous
+                i <- i - 1
+
+        same && not (isNull node) && isNull node.Check
+
+    /// The environment before row `first`, without touching the cache the graph's checks read.
+    let private envBefore (project: ProjectShared) (f: Finished) (first: int) (ct: CancellationToken) =
+        let mutable node = f.Start.Root
+
+        for i in 0 .. first - 1 do
+            ct.ThrowIfCancellationRequested()
+            let row, c = f.Checks[i]
+            let cached = row.EnvCache
+
+            if not (isNull cached) && Nodes.same cached.Previous node && Nodes.same cached.Check c then
+                node <- cached
+            else
+                project.CountEnvExtend()
+                node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, c.Result))
+
+        node
+
+    /// The published check results when row k's check saw the current names; else a view with row k checked again in the
+    /// current environment and not adopted. A segment's member is checked from its leader: on its own it would change
+    /// the published results in place (an augmentation adds to the type, a later row solves a variable), while its
+    /// leader's check makes new types and variables for the rows after it to change.
+    let at (project: ProjectShared) (f: Finished) (roles: Map<DeclarationKey, Role>) (line: int) (column: int) (ct: CancellationToken) =
+        let k = rowAt f.Checks line column
+
+        if k < 0 || checkedInCurrent f.Checks k then
+            f.FileResult.CheckResults
+        else
+            let first =
+                match roles |> Map.tryFind (fst f.Checks[k]).Key with
+                | Some(Role.Member leader) -> f.Checks |> Array.findIndex (fun (row, _) -> row.Key = leader)
+                | _ -> k
+
+            let results = f.Checks |> Array.map (fun (_, c) -> c.Result)
+            let mutable node = envBefore project f first ct
+
+            for i in first..k do
+                let _, c = f.Checks[i]
+                let result = DeclarationChecker.CheckDeclarationAdHoc(f.Start.Start, node.Env, c.Decl, ct)
+                project.CountAdHoc()
+                results[i] <- result
+
+                if i < k then
+                    project.CountEnvExtend()
+                    node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, result))
+
+            DeclarationChecker.ViewResults(f.Start.Start, results, f.Parsed.Parse)
 
