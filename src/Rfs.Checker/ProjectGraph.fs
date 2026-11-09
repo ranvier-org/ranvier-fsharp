@@ -11,24 +11,6 @@ open FSharp.Compiler.Diagnostics
 open Ranvier
 open Rfs.Projects
 
-module private ReadSupport =
-    /// Takes the lock exclusively. A grant that arrives after `ct` ended the wait is released at once.
-    let acquireExclusive (l: AsyncReaderWriterLock) (ct: CancellationToken) : Task<IDisposable> =
-        task {
-            let grant = l.WriteAsync()
-
-            try
-                return! grant.WaitAsync ct
-            with :? OperationCanceledException ->
-                grant.ContinueWith(
-                    (fun (t: Task<IDisposable>) -> if t.IsCompletedSuccessfully then t.Result.Dispose()),
-                    TaskScheduler.Default
-                )
-                |> ignore
-
-                return raise (OperationCanceledException ct)
-        }
-
 open ReadSupport
 
 /// A project's assembly as it stands.
@@ -713,6 +695,63 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             else
                 return None
         }
+
+    /// <summary>
+    /// A file's uses by key, once the file is settled on its latest text: its node's index of the published result, built
+    /// on the first read of that result and shared by every request. Cancelling `ct` ends this wait and not the build,
+    /// which the next read finds done. Fails with ArgumentException for a signature file.
+    /// </summary>
+    member _.ReadUses(file: string, ct: CancellationToken) : Task<UsesRead> =
+        let i = indexOf file
+
+        if isSignatureFile files[i] then
+            invalidArg (nameof file) $"%s{file} is a signature file"
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+
+            return!
+                host.WhenSettled(
+                    (fun () ->
+                        readSettled i (fun f version ->
+                            (f :?> IReadableFile).Uses version
+                            |> ValueOption.map (fun struct (uses, r) ->
+                                { Uses = uses
+                                  Result = box r.Result
+                                  Version = version
+                                  Upstream = [| yield box project.Context; for s in r.Key.Before -> box s |] }))),
+                    linked.Token
+                )
+        }
+
+    /// A signature file's uses by key, as ReadUses, with its latest check: the same object has the same uses.
+    member _.ReadSignatureUses(file: string, ct: CancellationToken) : Task<struct (FileSignature * FileUses)> =
+        let i = indexOf file
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).Uses version)), linked.Token)
+        }
+
+    /// The text a file holds now, with every write posted before this call applied, and its version. Waits for no check.
+    /// Cancelled once the graph is disposed. A text this gives may be newer than the result ReadFile would give.
+    member _.LatestText(file: string, ct: CancellationToken) : Task<struct (string * int64)> =
+        let i = indexOf file
+
+        task {
+            let! t =
+                host.Read(fun () ->
+                    if Volatile.Read &disposed <> 0 then
+                        raise (OperationCanceledException())
+
+                    files[i].Text.Text.Peek)
+
+            ct.ThrowIfCancellationRequested()
+            return struct (t.Text, t.Version)
+        }
+
+    /// How many indexes of a file's uses were built.
+    member _.UsesBuilt: int64 = project.UsesBuilt
 
     /// Runs `read` off the graph thread on a signature file's latest check, once settled, with what that check resolved.
     /// The same FileSignature object has the same uses. Takes no lock: a signature's check changes nothing after it.

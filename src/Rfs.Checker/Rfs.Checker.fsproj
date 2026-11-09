@@ -4,6 +4,7 @@
     <Compile Include="NameIndex.fs" />
     <Compile Include="FileDeps.fs" />
     <Compile Include="FileGraph.fs" />
+    <Compile Include="FileUses.fs" />
     <Compile Include="FileLevel.fs" />
     <Compile Include="ProjectGraph.fs" />
   </ItemGroup>

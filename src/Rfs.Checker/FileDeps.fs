@@ -135,6 +135,7 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable finishTicks = 0L
     let mutable premiseBreaks = 0L
     let mutable fileLevelChecks = 0L
+    let mutable usesBuilt = 0L
     let mutable measuresStarted = 0L
     let mutable measuresEnded = 0L
     let mutable chainFallbacks = 0L
@@ -173,6 +174,8 @@ type internal ProjectShared(ctx: ProjectContext) =
         ran.Next((key, file))
 
     member _.CountFileLevelCheck() = Interlocked.Increment &fileLevelChecks |> ignore
+    member _.UsesBuilt = Interlocked.Read &usesBuilt
+    member _.CountUsesBuilt() = Interlocked.Increment &usesBuilt |> ignore
     member _.CountChainFallback() = Interlocked.Increment &chainFallbacks |> ignore
     member _.CountDirectiveRetry() = Interlocked.Increment &directiveRetries |> ignore
     member _.DeclarationRoots = Interlocked.Read &declarationRoots
