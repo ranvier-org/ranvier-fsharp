@@ -257,6 +257,8 @@ let fixTests =
               do! eventually "version 1 settled" (fun () -> entered.ContainsKey 1)
               do! s.Lsp.DidChange(a, 2, replace s a "baseValue = \"s\"" "baseValue = 11")
               // Version 2's list is queued behind the held one: its effect ran in the pump that settled it
+              do! eventually "the server at version 2" (fun () -> (s.Server.Documents.TryFind a |> Option.map _.LspVersion) = Some 2)
+              do! s.Server.Publisher.Barrier()
               let! _ = (s.Server.Workspace.ProjectOf a).Value.Diagnostics a |> within
               do! s.Server.Publisher.Barrier()
               holds[1].SetResult()
@@ -389,6 +391,8 @@ let rowTests =
               do! s.Lsp.DidChange(a, 1, atEnd s a "\n// a")
               do! eventually "A's list at the hook" (fun () -> entered.Value)
               do! s.Lsp.DidChange(b, 7, atEnd s b "\n// b")
+              do! eventually "the server at version 7" (fun () -> (s.Server.Documents.TryFind b |> Option.map _.LspVersion) = Some 7)
+              do! s.Server.Publisher.Barrier()
               let! _ = (s.Server.Workspace.ProjectOf b).Value.Diagnostics b |> within
               do! s.Server.Publisher.Barrier()
               do! Task.Delay 300

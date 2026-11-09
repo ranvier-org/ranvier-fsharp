@@ -55,7 +55,7 @@ type private Row =
 type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, documents: Documents) =
     let outbox = new Outbox()
     let mutable disposed = 0
-    // Graph thread
+    // Graph thread, but lastAdopted: the outbox's consumer
     let lastKeys = Dictionary<string, struct (Rfs.Lsp.Range * int * string * string) list>(StringComparer.OrdinalIgnoreCase)
     let lastAdopted = Dictionary<ProjectGraph, int64>(HashIdentity.Reference)
     // What each checked file reported, by the file the diagnostics are in: a file's diagnostics are the union over sources
@@ -115,10 +115,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 Publish(path, (if own then version else None), (fun () -> client.TextDocumentPublishDiagnostics parameters |> Async.StartAsTask :> Task))
             )
 
-    /// `rfs/declarationsChecked`: the declaration checks adopted since the previous one, over all projects. Graph thread.
-    /// The checks that promote a file are adopted too, so the notification after a promotion counts them with whatever
-    /// edit it follows. Telling them apart in the count would lose the checks of a restart, which an edit does cause.
-    let notifyChecks () : unit =
+    /// `rfs/declarationsChecked`: the declaration checks adopted since the previous one, over all projects, counted by
+    /// the outbox's consumer once the publish before it is sent, as before rows. Outbox consumer only.
+    let countChecks () : int =
         let mutable n = 0L
         let live = workspace.Projects
 
@@ -139,8 +138,15 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
             lastAdopted[g] <- now
 
-        let body = box { count = int n }
-        outbox.Enqueue(Notify(fun () -> client.Notify("rfs/declarationsChecked", body) |> Async.StartAsTask :> Task))
+        int n
+
+    /// Queues `rfs/declarationsChecked`. The checks that promote a file are adopted too, so the notification after a
+    /// promotion counts them with whatever edit it follows. Telling them apart in the count would lose the checks of a
+    /// restart, which an edit does cause. Graph thread.
+    let notifyChecks () : unit =
+        outbox.Enqueue(
+            Notify(fun () -> client.Notify("rfs/declarationsChecked", box { count = countChecks () }) |> Async.StartAsTask :> Task)
+        )
 
     /// A list for a file other than the one checked, at the document's current version. Graph thread.
     let sendForeign (target: string) (doc: OpenDocument) (union: Rfs.Lsp.Diagnostic list) : unit =
