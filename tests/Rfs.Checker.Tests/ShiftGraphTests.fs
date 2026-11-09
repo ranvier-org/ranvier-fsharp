@@ -115,6 +115,27 @@ let tests =
                       })
           }
 
+          // N4. The fork's ScopeRange is read by reflection; with the member gone, nothing is shifted and the rows are checked again.
+          testTask "with the fork's ScopeRange member missing, no row is shifted and the answers still agree" {
+              let saved = Nodes.scopeLookup
+
+              try
+                  Nodes.scopeLookup <- Nodes.scopeGetter "NoSuchScopeRange"
+                  Expect.isNone Nodes.scopeLookup "the lookup missed"
+
+                  do!
+                      withPromoted [ a ] (fun s ->
+                          task {
+                              let! r, shifted = shifting s a (blankAbove "let area" s.Texts[a])
+                              Expect.equal shifted 0L "nothing is shifted"
+                              Expect.isNonEmpty r.Ran "the rows below the blank line are checked again"
+                              do! expectOracle s r.Diagnostics "after the blank line"
+                              do! expectLocations s a "after the blank line"
+                          })
+              finally
+                  Nodes.scopeLookup <- saved
+          }
+
           testTask "a blank line under the header keeps the setup and shifts every row" {
               do!
                   withPromoted [ a ] (fun s ->

@@ -337,14 +337,34 @@ module internal Nodes =
             member _.GetHashCode d =
                 hash (d.Text, d.Range.StartLine, d.Range.StartColumn) }
 
-    // Internal in the fork, which lets no other assembly in.
-    let private scopeOf =
-        let getter =
-            typeof<ParsedDeclaration>
-                .GetProperty("ScopeRange", Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.NonPublic)
-                .GetGetMethod(true)
+    /// The fork's member `property` of a declaration, which is internal there: None, with a line on stderr, when it is
+    /// not there or is not a range.
+    let scopeGetter (property: string) : Func<ParsedDeclaration, FSharp.Compiler.Text.range> option =
+        let found =
+            try
+                match
+                    typeof<ParsedDeclaration>
+                        .GetProperty(property, Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.NonPublic)
+                with
+                | null -> None
+                | p ->
+                    match p.GetGetMethod true with
+                    | null -> None
+                    | getter when getter.ReturnType = typeof<FSharp.Compiler.Text.range> ->
+                        Some(getter.CreateDelegate<Func<ParsedDeclaration, FSharp.Compiler.Text.range>>())
+                    | _ -> None
+            with _ ->
+                None
 
-        getter.CreateDelegate<Func<ParsedDeclaration, FSharp.Compiler.Text.range>>()
+        if found.IsNone then
+            eprintfn
+                "[ranvierautocomplete] the fork's ParsedDeclaration.%s is not there: no result is shifted to a new line, each is checked again"
+                property
+
+        found
+
+    /// Looked up once. None makes `movedOnly` refuse every shift: checking a row again is always sound.
+    let mutable scopeLookup = scopeGetter "ScopeRange"
 
     /// Whether `b` is `a` at another line: the same syntax at the same column in the same module (W1). The checker
     /// shifts such a result (DeclarationChecker.Shift) instead of checking it again.
@@ -354,17 +374,20 @@ module internal Nodes =
     /// before lines came or went below it, has a scope of another shape: it is checked again, or it answers queries from
     /// where its scope used to be. That re-checks the rows between two line edits when the lower one came first.
     let movedOnly (a: ParsedDeclaration) (b: ParsedDeclaration) =
-        let delta = b.Range.StartLine - a.Range.StartLine
-        let scopeA, scopeB = scopeOf.Invoke a, scopeOf.Invoke b
+        match scopeLookup with
+        | None -> false
+        | Some scopeOf ->
+            let delta = b.Range.StartLine - a.Range.StartLine
+            let scopeA, scopeB = scopeOf.Invoke a, scopeOf.Invoke b
 
-        a.IsUnchangedFrom b
-        && delta <> 0
-        && a.Range.StartColumn = b.Range.StartColumn
-        && a.Within = b.Within
-        && scopeA.StartLine + delta = scopeB.StartLine
-        && scopeA.StartColumn = scopeB.StartColumn
-        && scopeA.EndLine + delta = scopeB.EndLine
-        && scopeA.EndColumn = scopeB.EndColumn
+            a.IsUnchangedFrom b
+            && delta <> 0
+            && a.Range.StartColumn = b.Range.StartColumn
+            && a.Within = b.Within
+            && scopeA.StartLine + delta = scopeB.StartLine
+            && scopeA.StartColumn = scopeB.StartColumn
+            && scopeA.EndLine + delta = scopeB.EndLine
+            && scopeA.EndColumn = scopeB.EndColumn
 
     /// Whether two prologues are the same header but for the blank lines after it (W1): a line inserted or removed
     /// between the header and the first declaration moves the declarations, which are shifted, and nothing the setup
