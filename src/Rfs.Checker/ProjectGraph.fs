@@ -282,8 +282,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
         settled (fun () -> readSettled i (fun f version -> f.Results version))
 
+    /// Runs `read` off the graph thread on the file's published result, once it is settled on its latest text (as for
     /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no
-    /// finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
+    /// check, shift or finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
     /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
     /// signature file, which has no FileResult, and with InvalidOperationException when called holding the file's
     /// check lock.

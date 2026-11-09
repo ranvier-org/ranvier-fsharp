@@ -176,6 +176,8 @@ let tests =
                   Expect.equal actual reference $"%s{needle} in a shifted row equals FCS"
           }
 
+          // A consistency test: it passes with the FileStart's lock shared too. The pin for the exclusive lock is
+          // `a read holds a finish off the file until it is done` in Rfs.Checker.Tests.
           testTask "hovers overlapping edits of a signed file all equal a settled tooltip" {
               let! s = startSession () |> within
               use _ = disposing s
@@ -236,6 +238,152 @@ let tests =
               Expect.isNone inBlock "nothing inside a block comment"
               let! code = hoverText s a (position text "let grouped" 0 6)
               Expect.isSome code "code still answers"
+          }
+
+          testTask "hover inside conditional compilation blocks answers as a lookup of the line does" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+
+              let added =
+                  [ "let grouped = (baseValue + 1) * 2"
+                    ""
+                    "#if DEBUG"
+                    "let inDebug = baseValue + 1"
+                    "#else"
+                    "let notDebug = baseValue + 2"
+                    "#endif"
+                    ""
+                    "#if NEVER_DEFINED"
+                    "let inactive = baseValue + 3"
+                    "#else"
+                    "let inElse = baseValue + 4"
+                    "#endif"
+                    ""
+                    "#if !NEVER_DEFINED"
+                    "let inNot = baseValue + 5"
+                    "#endif"
+                    ""
+                    "let afterBlocks = baseValue + 6" ]
+
+              do! s.Lsp.DidChange(a, 1, replace s a "let grouped = (baseValue + 1) * 2" (String.Join("\n", added)))
+              let text = s.Lsp.Text a
+              let texts = diskTexts () |> Map.add a text
+
+              let lookup (needle: string) =
+                  let line, character = position text needle 0 1
+                  let lines = text.Split '\n'
+                  let lineText = lines[line].TrimEnd '\r'
+                  line, character, lineText, needle.Length + lineText.IndexOf needle
+
+              let! spec = ProjectSpec.load s.Project
+              let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+              let sourceReader (f: string) = (let t = texts[f] in hash t, lazy t)
+
+              let! _, (check: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults), _ =
+                  checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, sourceReader, a)
+                  |> Async.StartAsTask
+
+              // What FSAC gets from lexing the line alone and asking for the name it finds there
+              let ofLine (needle: string) =
+                  let line, _, lineText, endColumn = lookup needle
+                  Hover.format (check.GetToolTip(line + 1, endColumn, lineText, [ needle ], FSharp.Compiler.Tokenization.FSharpTokenTag.Identifier))
+
+              for needle, answers in
+                  [ "inDebug", true
+                    "inElse", true
+                    "inNot", true
+                    "afterBlocks", true
+                    // Not compiled, so nothing is known about it
+                    "inactive", false ] do
+                  let line, character, _, _ = lookup needle
+                  let! (actual: string option) = hoverText s a (line, character)
+                  Expect.equal actual (ofLine needle) $"%s{needle} as a lookup of its line"
+                  Expect.equal actual.IsSome answers $"%s{needle}: %A{actual}"
+          }
+
+          testTask "a comment or string opened on an earlier line still answers nothing" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+
+              let added =
+                  [ "let grouped = (baseValue + 1) * 2"
+                    ""
+                    "(* spans lines"
+                    "   #if NEVER_DEFINED"
+                    "   baseValue in a comment"
+                    "*)"
+                    "let afterComment = baseValue + 1"
+                    ""
+                    "let multi = \"\"\""
+                    "   #if NEVER_DEFINED"
+                    "   baseValue in a string"
+                    "\"\"\""
+                    "let afterString = baseValue + 2" ]
+
+              do! s.Lsp.DidChange(a, 1, replace s a "let grouped = (baseValue + 1) * 2" (String.Join("\n", added)))
+              let text = s.Lsp.Text a
+              let! inComment = hoverText s a (position text "baseValue in a comment" 0 2)
+              Expect.isNone inComment "nothing inside a block comment from above"
+              let! inString = hoverText s a (position text "baseValue in a string" 0 2)
+              Expect.isNone inString "nothing inside a string from above"
+              let! afterComment = hoverText s a (position text "afterComment" 0 2)
+              Expect.isSome afterComment "the comment ended"
+              let! afterString = hoverText s a (position text "afterString" 0 2)
+              Expect.isSome afterString "the string ended"
+          }
+
+          test "a documentation file written after a miss is read" {
+              let dir = Directory.CreateTempSubdirectory "rfs-hover-"
+
+              try
+                  let dll = Path.Combine(dir.FullName, "Lib.dll")
+                  let doc = FSharp.Compiler.Symbols.FSharpXmlDoc.FromXmlFile(dll, "M:Lib.f")
+                  Expect.isNone (Hover.docText doc) "no file yet"
+
+                  File.WriteAllText(
+                      Path.ChangeExtension(dll, ".xml"),
+                      "<doc><members><member name=\"M:Lib.f\"><summary>Does f</summary></member></members></doc>"
+                  )
+
+                  Expect.equal (Hover.docText doc) (Some "Does f") "the file is read once it is there"
+              finally
+                  dir.Delete true
+          }
+
+          test "a documentation file that cannot be read gives no documentation, and is read once it can be" {
+              let dir = Directory.CreateTempSubdirectory "rfs-hover-"
+
+              try
+                  let dll = Path.Combine(dir.FullName, "Denied.dll")
+                  let xml = FileInfo(Path.ChangeExtension(dll, ".xml"))
+                  let doc = FSharp.Compiler.Symbols.FSharpXmlDoc.FromXmlFile(dll, "M:Denied.f")
+                  File.WriteAllText(xml.FullName, "<doc><members><member name=\"M:Denied.f\"><summary>Does f</summary></member></members></doc>")
+                  let security = xml.GetAccessControl()
+
+                  let rule =
+                      System.Security.AccessControl.FileSystemAccessRule(
+                          System.Security.Principal.WindowsIdentity.GetCurrent().User,
+                          System.Security.AccessControl.FileSystemRights.Read,
+                          System.Security.AccessControl.AccessControlType.Deny
+                      )
+
+                  security.AddAccessRule rule
+                  xml.SetAccessControl security
+
+                  try
+                      Expect.throwsT<UnauthorizedAccessException> (fun () -> File.ReadAllText xml.FullName |> ignore) "the read is denied"
+                      Expect.isNone (Hover.docText doc) "no documentation, and no exception"
+                  finally
+                      security.RemoveAccessRule rule |> ignore
+                      xml.SetAccessControl security
+
+                  Expect.equal (Hover.docText doc) (Some "Does f") "not remembered as empty"
+              finally
+                  dir.Delete true
           }
 
           testTask "a hover right after an edit answers from the edit's text" {

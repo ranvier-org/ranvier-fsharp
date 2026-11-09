@@ -117,6 +117,8 @@ let tests =
               Expect.equal text after "the read answers from the result published when it got the lock, not the one it settled on"
           }
 
+          // A consistency test: it passes with the lock shared too. `a read holds a finish off the file until it is done`
+          // is the pin for the exclusive lock.
           testTask "queries inside one read agree across an edit, in a signed file" {
               let! s = startWith Declarations
               use _ = (s :> IAsyncDisposable)

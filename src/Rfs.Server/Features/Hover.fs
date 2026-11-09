@@ -44,35 +44,44 @@ module Hover =
         let compact = Regex.Replace(text, @"\s*\n\s*", " ")
         if compact = "" then None else Some compact
 
-    /// An assembly's XML documentation file, by member name, read once
-    let private xmlFiles = ConcurrentDictionary<string, Lazy<System.Collections.Generic.Dictionary<string, string>>>()
+    /// An assembly's XML documentation file, by member name, once it has been read. One that is missing or can't be read
+    /// is not kept: a project reference's appears when it is built.
+    let private xmlFiles = ConcurrentDictionary<string, System.Collections.Generic.Dictionary<string, string>>()
 
-    let private membersOf (dllName: string) =
-        xmlFiles.GetOrAdd(
-            dllName,
-            fun _ ->
-                lazy
-                    (let members = System.Collections.Generic.Dictionary<string, string>()
-                     let xml = Path.ChangeExtension(dllName, ".xml")
+    let private membersOf (dllName: string) : System.Collections.Generic.Dictionary<string, string> option =
+        match xmlFiles.TryGetValue dllName with
+        | true, members -> Some members
+        | _ ->
+            let xml = Path.ChangeExtension(dllName, ".xml")
 
-                     try
-                         if File.Exists xml then
-                             for m in XDocument.Load(xml).Descendants "member" do
-                                 match m.Attribute "name" with
-                                 | null -> ()
-                                 | name -> members[name.Value] <- String.concat "" (m.Nodes() |> Seq.map _.ToString())
-                     with :? System.Xml.XmlException | :? IOException -> ()
+            try
+                if File.Exists xml then
+                    let members = System.Collections.Generic.Dictionary<string, string>()
 
-                     members)
-        )
+                    for m in XDocument.Load(xml).Descendants "member" do
+                        match m.Attribute "name" with
+                        | null -> ()
+                        | name -> members[name.Value] <- String.concat "" (m.Nodes() |> Seq.map _.ToString())
 
-    let private docText (doc: FSharpXmlDoc) : string option =
+                    xmlFiles[dllName] <- members
+                    Some members
+                else
+                    None
+            with
+            | :? System.Xml.XmlException
+            | :? IOException
+            | :? UnauthorizedAccessException -> None
+
+    let internal docText (doc: FSharpXmlDoc) : string option =
         match doc with
         | FSharpXmlDoc.FromXmlText x -> plain (String.Join("\n", x.GetElaboratedXmlLines()))
         | FSharpXmlDoc.FromXmlFile(dllName, xmlSig) ->
-            match (membersOf dllName).Value.TryGetValue xmlSig with
-            | true, xml -> plain xml
-            | _ -> None
+            match membersOf dllName with
+            | Some members ->
+                match members.TryGetValue xmlSig with
+                | true, xml -> plain xml
+                | _ -> None
+            | None -> None
         | _ -> None
 
     /// The tooltip as Markdown, or None when it holds nothing
@@ -101,6 +110,19 @@ module Hover =
           Kind: FSharpTokenCharKind
           Text: string }
 
+    /// What the next line starts from: only a string or block comment that is still open. The tokenizer has no defines,
+    /// so the `#if` state it would carry says nothing of what the project compiles; FSAC lexes each line on its own.
+    let private carried (next: FSharpTokenizerLexState) : FSharpTokenizerLexState =
+        match FSharpLineTokenizer.ColorStateOfLexState next with
+        | FSharpTokenizerColorState.String
+        | FSharpTokenizerColorState.VerbatimString
+        | FSharpTokenizerColorState.TripleQuoteString
+        | FSharpTokenizerColorState.Comment
+        | FSharpTokenizerColorState.StringInComment
+        | FSharpTokenizerColorState.VerbatimStringInComment
+        | FSharpTokenizerColorState.TripleQuoteStringInComment -> next
+        | _ -> FSharpTokenizerLexState.Initial
+
     /// The tokens of line `target`, lexed from the top so a block comment or string that opened above is known
     let private tokensOf (lines: string[]) (target: int) : Tok list =
         let tokenizer = FSharpSourceTokenizer([], Some "hover.fs", None)
@@ -126,7 +148,7 @@ module Hover =
                               Kind = t.CharClass
                               Text = lineStr.Substring(t.LeftColumn, right - t.LeftColumn + 1) }
                 | None, next ->
-                    state <- next
+                    state <- carried next
                     more <- false
 
             if i = target then
@@ -158,22 +180,52 @@ module Hover =
             | FSharpTokenCharKind.Operator -> Some([ t.Text ], t.Right + 1)
             | _ -> None
 
-    /// The Markdown for the symbol at the 0-based line and character of the text.
-    let tooltipOf (check: FSharpCheckFileResults) (text: string) (line: int) (character: int) : string option =
+    /// What to ask the check for at a position of the text: the line as the check wants it, the long name and its end
+    let private lookupOf (text: string) (line: int) (character: int) : (string * string list * int) option =
         let lines = text.Split '\n'
 
         if line < 0 || line >= lines.Length then
             None
         else
-            match nameAt lines line character with
-            | None -> None
-            | Some(names, endColumn) ->
-                let lineStr = lines[line].TrimEnd '\r'
-                format (check.GetToolTip(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier))
+            nameAt lines line character
+            |> Option.map (fun (names, endColumn) -> lines[line].TrimEnd '\r', names, endColumn)
 
-    let tooltipAt (view: FileView) (line: int) (character: int) : string option =
-        tooltipOf view.Result.CheckResults view.Text line character
+    let private toolTip (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : ToolTipText =
+        check.GetToolTip(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
 
-    /// Hovers at the position of `path`, once the graph has settled on the file's latest text.
+    /// The Markdown for the symbol at the 0-based line and character of the text.
+    let tooltipOf (check: FSharpCheckFileResults) (text: string) (line: int) (character: int) : string option =
+        lookupOf text line character |> Option.bind (toolTip check line >> format)
+
+    /// Hovers at the position of `path`, once the graph has settled on the file's latest text. Only the check is asked
+    /// inside the read, which holds off the file's checks: the tokenizer reads the file from the top and `format` may
+    /// load an XML file, so both run outside it. A read that finds another text than the name was looked up in looks
+    /// it up again.
     let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
-        graph.ReadFile(path, (fun view -> tooltipAt view line character), ct)
+        task {
+            let mutable looked = None
+            let mutable tip = ValueNone
+
+            while tip.IsNone do
+                let current = looked
+
+                let! found =
+                    graph.ReadFile(
+                        path,
+                        (fun view ->
+                            match current with
+                            | Some(text, lookup) when obj.ReferenceEquals(text, view.Text) ->
+                                Choice1Of2(toolTip view.Result.CheckResults line lookup)
+                            | _ -> Choice2Of2 view.Text),
+                        ct
+                    )
+
+                match found with
+                | Choice1Of2 answer -> tip <- ValueSome(Some answer)
+                | Choice2Of2 text ->
+                    match lookupOf text line character with
+                    | Some lookup -> looked <- Some(text, lookup)
+                    | None -> tip <- ValueSome None
+
+            return tip.Value |> Option.bind format
+        }
