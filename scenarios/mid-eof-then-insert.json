@@ -1,0 +1,371 @@
+{
+  "name": "mid-eof-then-insert",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "body",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/DocumentationFormatter.fs"
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1041,
+            "character": 0
+          },
+          "end": {
+            "line": 1041,
+            "character": 0
+          }
+        },
+        "text": "\n  let n1Tail = 1\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1042,
+            "character": 0
+          },
+          "end": {
+            "line": 1044,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 14,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1041,
+            "character": 0
+          },
+          "end": {
+            "line": 1041,
+            "character": 0
+          }
+        },
+        "text": "\n  let n1Tail = 1\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1042,
+            "character": 0
+          },
+          "end": {
+            "line": 1044,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 14,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1041,
+            "character": 0
+          },
+          "end": {
+            "line": 1041,
+            "character": 0
+          }
+        },
+        "text": "\n  let n1Tail = 1\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1042,
+            "character": 0
+          },
+          "end": {
+            "line": 1044,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 14,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1041,
+            "character": 0
+          },
+          "end": {
+            "line": 1041,
+            "character": 0
+          }
+        },
+        "text": "\n  let n1Tail = 1\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1042,
+            "character": 0
+          },
+          "end": {
+            "line": 1044,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 14,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1041,
+            "character": 0
+          },
+          "end": {
+            "line": 1041,
+            "character": 0
+          }
+        },
+        "text": "\n  let n1Tail = 1\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 13,
+            "character": 0
+          }
+        },
+        "text": "\n",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 1042,
+            "character": 0
+          },
+          "end": {
+            "line": 1044,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    },
+    {
+      "edit": {
+        "file": "src/FsAutoComplete.Core/DocumentationFormatter.fs",
+        "range": {
+          "start": {
+            "line": 13,
+            "character": 0
+          },
+          "end": {
+            "line": 14,
+            "character": 0
+          }
+        },
+        "text": "",
+        "repeat": 1,
+        "mode": "apply"
+      }
+    }
+  ]
+}

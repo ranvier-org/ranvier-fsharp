@@ -357,6 +357,23 @@ let tests =
                   p.Context.ShiftRefusedHook <- ignore
           }
 
+          // N1: the last row was checked when its scope ended at its own end; a row appended since does not move that scope
+          testTask "a shifted result keeps the scope its check captured, moved by the delta" {
+              let text = threeDecls area
+              let! p = load [ a, text ]
+              let parse = DeclarationChecker.Parse(p.Context, a, text)
+              let start, env0 = DeclarationChecker.BeginFile(p.Context, [], parse)
+              let decls = DeclarationChecker.Split parse
+              let results = checkAll start env0 decls
+              let last = results[2]
+              Expect.equal last.CapturedScope.End decls[2].Range.End "the last row's scope ends where it does"
+              let edited = blankAboveSecond (text + "\nlet appended = 1\n")
+              let decls2 = DeclarationChecker.Split(DeclarationChecker.Parse(p.Context, a, edited))
+              let shifted = (DeclarationChecker.Shift(last, decls2[2])).Value
+              let was, now = last.CapturedScope, shifted.CapturedScope
+              Expect.equal (now.StartLine, now.StartColumn, now.EndLine, now.EndColumn) (was.StartLine + 1, was.StartColumn, was.EndLine + 1, was.EndColumn) "moved by the delta, ending where the row now ends rather than at the appended row"
+          }
+
           // A superseded graph flight shifts the result it read again, after another flight shifted it
           testTask "a result shifted twice moves its items once" {
               let text = threeDecls area
