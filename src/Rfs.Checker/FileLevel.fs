@@ -1,6 +1,8 @@
 namespace Rfs.Checker
 
 open System
+open System.Threading
+open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
@@ -58,12 +60,16 @@ type internal Readable =
 type internal IReadableFile =
     /// The published result when it is for text version `version` and the files it was set up from are current
     abstract Readable: version: int64 -> Readable voption
+    /// The index of that published result's uses, once built. A read starts the build (see WholeFile.usesNode).
+    abstract Uses: version: int64 -> struct (FileUses * Readable) voption
 
 /// A signature file's node, read for what its text says now.
 type internal ISignatureFile =
     /// Its latest check when it is for text version `version`. Later files may be set up from an earlier check of the
     /// same print (FileSig.Next), whose ranges are older.
     abstract LatestCheck: version: int64 -> FileSignature voption
+    /// That check with the index of what it resolved, once built.
+    abstract Uses: version: int64 -> struct (FileSignature * FileUses) voption
 
 /// Files checked whole (FileLevel): an implementation file by CheckFile, a signature file by CheckSignatureFile, each
 /// set up from the signatures of the files it depends on. An implementation file can be promoted to be checked one
@@ -104,6 +110,39 @@ module internal WholeFile =
             | Ready((key, _) as r) when key.Parsed.Version = version && readsCurrent project key -> ValueSome r
             | Failed e -> raise (InvalidOperationException($"%s{file.Path} failed to check", e))
             | _ -> ValueNone
+
+    /// <summary>
+    /// A node for the index of a file's uses, from `source`'s tracked reads: lazy, as nothing runs it until a request reads
+    /// it, and holding its last value, which holds no check.
+    /// </summary>
+    /// <remarks>
+    /// FinishCurrent, on purpose. A file-level build is a whole check of the file that can't be cancelled inside the
+    /// compiler, so CancelPrevious would stack a new one on an abandoned one at each keystroke's read; the one running
+    /// finishes, its value stays in Peek, and one trailing flight reads the latest inputs, which is cheap when the result is
+    /// the same object. The token is the node's, not a request's, so a cancelled request leaves the build for the next one.
+    /// Never Drop or DropWhilePending: those settle on inputs the graph has left.
+    /// </remarks>
+    let internal usesNode (source: unit -> 'S voption) (identity: 'S -> obj) (build: 'S -> CancellationToken -> Task<FileUses voption>) : AsyncMemo<FileUses voption> =
+        createAsyncWithPolicy FlightPolicy.FinishCurrent (fun (previous: Previous<FileUses voption>) ct ->
+            match source () with
+            | ValueNone -> Task.FromResult ValueNone
+            | ValueSome s ->
+                // Complete when the body runs, under every policy but Queue
+                match previous.Settled.Result with
+                | ValueSome(ValueSome(u: FileUses)) when obj.ReferenceEquals(u.Source.Target, identity s) -> Task.FromResult(ValueSome u)
+                | _ -> build s ct)
+
+    /// The node's index if it is of `source`, also while a trailing flight is pending: the object is the same uses.
+    let internal usesOf (node: AsyncMemo<FileUses voption>) (source: obj) : FileUses voption =
+        let isOf (v: FileUses voption) =
+            match v with
+            | ValueSome u when obj.ReferenceEquals(u.Source.Target, source) -> v
+            | _ -> ValueNone
+
+        match node.TryValue with
+        | Ready v -> isOf v
+        | Failed e -> raise e
+        | _ -> isOf node.Peek
 
     let private wholeOnly (path: string) =
         InvalidOperationException $"%s{path} is checked file-level: it has no declaration results"
@@ -294,6 +333,82 @@ module internal WholeFile =
 
         let keptAt (version: int64) (k: KeptResult) =
             if k.Version = version && readsCurrent project k.Key then ValueSome k.Result else ValueNone
+
+        let readableAt (version: int64) : Readable voption =
+            match current version with
+            | ValueSome(ByDeclaration(g, f)) ->
+                finishedAt version f
+                |> ValueOption.map (fun f ->
+                    { Parsed = f.Parsed
+                      Result = f.FileResult
+                      Key = f.Start.Setup.Key
+                      Lock = ValueSome f.Start.Lock
+                      Declarations = ValueSome(f, g.Roles())
+                      Identity = box f })
+            | ValueSome(Kept k) ->
+                keptAt version k
+                |> ValueOption.map (fun r ->
+                    { Parsed = k.Key.Parsed
+                      Result = r
+                      Key = k.Key
+                      Lock = ValueSome k.Lock
+                      Declarations = ValueNone
+                      Identity = box k })
+            | ValueSome Whole ->
+                settledAt project file whole version
+                |> ValueOption.map (fun (key, r) ->
+                    { Parsed = key.Parsed
+                      Result = r
+                      Key = key
+                      Lock = ValueNone
+                      Declarations = ValueNone
+                      Identity = box r })
+            | ValueNone -> ValueNone
+
+        let uses =
+            usesNode
+                (fun () ->
+                    let version = file.Text.Value.Version
+                    readableAt version |> ValueOption.map (fun r -> struct (version, r)))
+                (fun (struct (_, r)) -> box r.Result)
+                (fun (struct (version, r)) ct ->
+                    let index () =
+                        Task.Run<FileUses>(
+                            (fun () ->
+                                let u = SymbolUses.ofCheck (box r.Result) version r.Result.CheckResults ct
+                                project.CountUsesBuilt()
+                                u),
+                            ct
+                        )
+
+                    match r.Lock with
+                    | ValueNone ->
+                        task {
+                            let! u = index ()
+                            return ValueSome u
+                        }
+                    | ValueSome l ->
+                        let graph = Graph.Current
+
+                        task {
+                            let! held = ReadSupport.acquireExclusive l ct
+                            use _ = held
+                            // A finish may have run while this waited: a superseded result's queries show the unconformed
+                            // implementation. Nothing reads what this flight gives then, as the node's inputs moved on.
+                            let! still =
+                                graph.DispatchAsync(
+                                    Func<bool>(fun () ->
+                                        match (try readableAt version with NotReadyException _ -> ValueNone) with
+                                        | ValueSome a -> obj.ReferenceEquals(a.Identity, r.Identity)
+                                        | ValueNone -> false)
+                                )
+
+                            if still then
+                                let! u = index ()
+                                return ValueSome u
+                            else
+                                return ValueNone
+                        })
 
         /// Disposes the owner of dropped declaration nodes, once their readers have moved off them. A memo keeps its
         /// sources until it runs again, and a disposed node its last value, so the memos that read the nodes run again
@@ -509,36 +624,12 @@ module internal WholeFile =
             member _.Activate() = activate ()
 
           interface IReadableFile with
-              member _.Readable version =
-                  match current version with
-                  | ValueSome(ByDeclaration(g, f)) ->
-                      finishedAt version f
-                      |> ValueOption.map (fun f ->
-                          { Parsed = f.Parsed
-                            Result = f.FileResult
-                            Key = f.Start.Setup.Key
-                            Lock = ValueSome f.Start.Lock
-                            Declarations = ValueSome(f, g.Roles())
-                            Identity = box f })
-                  | ValueSome(Kept k) ->
-                      keptAt version k
-                      |> ValueOption.map (fun r ->
-                          { Parsed = k.Key.Parsed
-                            Result = r
-                            Key = k.Key
-                            Lock = ValueSome k.Lock
-                            Declarations = ValueNone
-                            Identity = box k })
-                  | ValueSome Whole ->
-                      settledAt project file whole version
-                      |> ValueOption.map (fun (key, r) ->
-                          { Parsed = key.Parsed
-                            Result = r
-                            Key = key
-                            Lock = ValueNone
-                            Declarations = ValueNone
-                            Identity = box r })
-                  | ValueNone -> ValueNone }
+              member _.Readable version = readableAt version
+
+              member _.Uses version =
+                  readableAt version
+                  |> ValueOption.bind (fun r ->
+                      usesOf uses (box r.Result) |> ValueOption.map (fun u -> struct (u, r))) }
 
     /// A signature file, file `index` of the project. Its diagnostics are its parse's: CheckSignatureFile reports none.
     let signature
@@ -569,6 +660,24 @@ module internal WholeFile =
                 FileSig.Next(previous, s, key.Before))
 
         let isCurrent = currentOf project signature (createMemo (fun _ -> fst result.Value))
+        let latestCheck (version: int64) = settledAt project file result version |> ValueOption.map snd
+
+        let uses =
+            usesNode
+                (fun () ->
+                    let version = file.Text.Value.Version
+                    latestCheck version |> ValueOption.map (fun s -> struct (version, s)))
+                (fun (struct (_, s)) -> box s)
+                (fun (struct (version, s)) ct ->
+                    let context = project.Context
+
+                    Task.Run<FileUses voption>(
+                        (fun () ->
+                            let u = SymbolUses.ofSignature (box s) version (DeclarationChecker.SignatureUses(context, s)) ct
+                            project.CountUsesBuilt()
+                            ValueSome u),
+                        ct
+                    ))
 
         { new IFileNode with
             member _.Path = file.Path
@@ -593,4 +702,8 @@ module internal WholeFile =
                 createEffect (fun () -> result.TryValue |> ignore)
 
           interface ISignatureFile with
-              member _.LatestCheck version = settledAt project file result version |> ValueOption.map snd }
+              member _.LatestCheck version = latestCheck version
+
+              member _.Uses version =
+                  latestCheck version
+                  |> ValueOption.bind (fun s -> usesOf uses (box s) |> ValueOption.map (fun u -> struct (s, u))) }

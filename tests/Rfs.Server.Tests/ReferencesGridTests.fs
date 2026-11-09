@@ -322,7 +322,37 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
         summarize $"%s{lib.Name}, App on Lib" outcomes
     }
 
-let private allScenarios = DefinitionGridTexts.all @ ReferencesGridTexts.scenarios
+let private filterShapes = ReferencesGridTexts.noTextShapes @ ReferencesGridTexts.writtenByName
+let private allScenarios = DefinitionGridTexts.all @ ReferencesGridTexts.scenarios @ filterShapes
+
+/// The uses, in FCS's own check of every file, of a key `guard` names a symbol of, in a file whose text hasn't that name.
+/// This is what a name filter would lose. Every use counts here, not only those a token can ask for.
+let private unwritten (guard: FSharpSymbol -> string option) (state: State) : Task<string list> =
+    task {
+        let names = Dictionary<string, string>()
+        let uses = ResizeArray<string * string * FSharpSymbolUse>()
+
+        for file in state.Files do
+            let! check = state.Reference file
+            let keys = References.keysIn check CancellationToken.None
+
+            for u in check.GetAllUsesOfAllSymbolsInFile() do
+                match keys u with
+                | Some key ->
+                    uses.Add(file, plain key, u)
+
+                    match guard u.Symbol with
+                    | Some name -> names[plain key] <- name
+                    | None -> ()
+                | None -> ()
+
+        return
+            [ for file, key, u in uses do
+                  match names.TryGetValue key with
+                  | true, name when not ((state.TextOf file).Contains(name, StringComparison.Ordinal)) ->
+                      yield $"%s{state.Step}: %s{Path.GetFileName file} %d{u.Range.StartLine},%d{u.Range.StartColumn} %s{key} isn't written `%s{name}`"
+                  | _ -> () ]
+    }
 
 [<Tests>]
 let tests =
@@ -360,5 +390,28 @@ let tests =
                   Expect.equal mutated real $"%s{name}: emptying real answers adds none to `generic overload`"
           }
 
+          testTask "every use of a symbol the filter applies to has its name in its file" {
+              for s in allScenarios @ List.map fst ReferencesGridTexts.knownDifferences do
+                  let! (lost: string list) = run false s (unwritten SymbolUses.spelledName)
+                  Expect.isEmpty lost $"%s{s.Name}"
+          }
+
+          testTask "the shapes reach symbols with no text, so a filter on every symbol would lose uses" {
+              for s in ReferencesGridTexts.noTextShapes do
+                  let! (lost: string list) = run false s (unwritten (fun symbol -> Some symbol.DisplayName))
+                  printfn "unguarded, %s loses %d: %s" s.Name lost.Length (String.Join("; ", lost |> List.truncate 60))
+                  Expect.isNonEmpty lost $"%s{s.Name}"
+          }
+
+          testList
+              "known differences"
+              [ for s, count in ReferencesGridTexts.knownDifferences do
+                    for promote in [ true; false ] ->
+                        testTask $"""%s{s.Name} (%s{if promote then "by declaration" else "file level"})""" {
+                            let! (outcomes: Outcome list) = run promote s (compareState (fun _ ours -> ours))
+                            let different = outcomes |> List.filter (function Different _ -> true | _ -> false)
+                            Expect.equal different.Length count "as at 9a6a312: fixing one should change this number"
+                        } ]
+
           testList "by declaration" [ for s in allScenarios -> testTask s.Name { do! expectGrid true s } ]
-          testList "file level" [ for s in DefinitionGridTexts.batteries @ ReferencesGridTexts.scenarios -> testTask s.Name { do! expectGrid false s } ] ]
+          testList "file level" [ for s in DefinitionGridTexts.batteries @ ReferencesGridTexts.scenarios @ filterShapes -> testTask s.Name { do! expectGrid false s } ] ]

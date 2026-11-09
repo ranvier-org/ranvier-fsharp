@@ -645,7 +645,9 @@ let tests =
               let aFile = file "A.fs"
               do! promoted s d
               let at = position (s.Lsp.Text aFile) "baseValue" 0 1
-              let! (before: Answer) = references s aFile at true
+              // Of a name D doesn't have: an index of D, once built, needs no lock, and the request below must wait on D's
+              Expect.isFalse ((s.Lsp.Text d).Contains "area") "D skipped"
+              let! (before: Answer) = references s aFile (position (s.Lsp.Text aFile) "area" 0 1) true
               Expect.isNonEmpty before "answers while loaded"
               let graph = (s.Server.Workspace.ProjectOf d).Value
               let gate = new ManualResetEventSlim(false)
