@@ -18,6 +18,7 @@
     <Compile Include="DefinitionGridTests.fs" />
     <Compile Include="ReferencesGridTests.fs" />
     <Compile Include="ReferencesTests.fs" />
+    <Compile Include="WhyTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

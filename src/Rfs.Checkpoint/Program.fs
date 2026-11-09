@@ -202,6 +202,8 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
         o["scenario"] <- JsonValue.Create run.Result.Scenario
         o["coldAllocatedMb"] <- JsonValue.Create run.ColdAllocatedMb
         o["editAllocatedMb"] <- JsonValue.Create run.EditAllocatedMb
+        // A traced build (Debug) keeps an event log whose allocations are in the numbers above: not comparable with Release
+        o["traced"] <- JsonValue.Create(ranvierTraced () || Rfs.Checker.ProjectGraph.Traced)
         o["promoteMs"] <- opt run.PromoteMs
 
         o["notPromoted"] <-

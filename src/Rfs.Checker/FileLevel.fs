@@ -414,6 +414,19 @@ module internal WholeFile =
                 | ValueSome g -> g.SegmentRows()
                 | ValueNone -> 0
 
+#if RANVIER_TRACE
+            member _.CheckNode key =
+                match decl.Peek with
+                | ValueSome g -> g.CheckNodeOf key
+                | ValueNone -> ValueNone
+
+            member _.TracedNodes() =
+                ("filelevel", whole :> INode)
+                :: (match decl.Peek with
+                    | ValueSome g -> g.TracedNodes
+                    | ValueNone -> [])
+#endif
+
             member _.Promote() =
                 if not wanted.Peek then
                     batch (fun () ->
@@ -562,6 +575,10 @@ module internal WholeFile =
             member _.Results _ = raise (wholeOnly file.Path)
             member _.FileResult _ = ValueNone
             member _.SegmentRows() = 0
+#if RANVIER_TRACE
+            member _.CheckNode _ = ValueNone
+            member _.TracedNodes() = [ "filelevel", result :> INode ]
+#endif
             member _.Promote() = ()
             member _.Demote() = ()
             member _.Promoted version = if file.Version = version then ValueSome FileLevel else ValueNone

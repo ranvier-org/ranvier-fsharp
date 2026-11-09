@@ -9,6 +9,25 @@ open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
 open Ranvier
 
+/// The names a traced build gives the graph's nodes. Without RANVIER_TRACE `named` is the node's creation and nothing
+/// else: the label is a lambda that is never called, and both inline away. Ranvier labels the first node a `named` call
+/// creates, so `create` must make the node to name before any other.
+module internal Labels =
+    /// The key as the labels and the answer of `rfs/why` write it: module path, name and kind, then `(n)` for the nth of
+    /// the same module path, name and kind after the first.
+    let key (k: DeclarationKey) : string =
+        String.Join(".", k.ModulePath @ [ k.Name ])
+        + ":"
+        + string k.Kind
+        + (if k.Ordinal > 0 then $"(%d{k.Ordinal})" else "")
+
+#if RANVIER_TRACE
+    let inline named ([<InlineIfLambda>] label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T =
+        Trace.named (label ()) create
+#else
+    let inline named ([<InlineIfLambda>] _label: unit -> string) ([<InlineIfLambda>] create: unit -> 'T) : 'T = create ()
+#endif
+
 /// How a file is checked.
 type FileMode =
     /// Whole, by CheckFile (CheckSignatureFile for a signature file), set up from the files it depends on
@@ -670,10 +689,12 @@ module internal Setup =
                 else
                     Task.Run<SetupKey * 'R>(fun () -> key, runWhileDirectivesCurrent project ct (fun () -> run key)))
 
-        createMemo (fun _ ->
-            match scoped.Value.Value with
-            | Done(key, result) -> key, result
-            | _ -> chained.Value.Value)
+        // The label is on the result, not on the key memo or the async memos made before it
+        Labels.named (fun () -> $"filelevel %s{path}") (fun () ->
+            createMemo (fun _ ->
+                match scoped.Value.Value with
+                | Done(key, result) -> key, result
+                | _ -> chained.Value.Value))
 
 /// What a file checked by declaration is set up from (BeginFile): its setup from its dependencies, and its header.
 /// Kept as the same object while both are unchanged, whatever its parse, so the file is set up again only then.
