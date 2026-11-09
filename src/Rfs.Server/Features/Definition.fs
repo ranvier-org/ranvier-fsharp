@@ -82,34 +82,23 @@ module Definition =
                 | None -> Local range
         | _ -> Nowhere
 
-    /// The file's reading is over before another file's starts: no read waits for a file while it holds one.
+    /// The cursor's answer is a request node on the file (ProjectGraph.ReadFile), which runs again on a new text. The
+    /// file's reading is over before another file's starts: no read waits for a file while it holds one.
     let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
         task {
-            let mutable looked = None
-            let mutable found = ValueNone
+            // Only the check is asked under the lock
+            let! found =
+                graph.ReadFile(
+                    path,
+                    (fun view -> Hover.lookupOf view.Text line character),
+                    (fun view lookup ->
+                        match lookup with
+                        | Some lookup -> find view.Result.CheckResults line lookup
+                        | None -> Nowhere),
+                    ct
+                )
 
-            // Only the check is asked inside the read; a read that finds another text than the name was looked up in looks it up again
-            while found.IsNone do
-                let current = looked
-
-                let! answer =
-                    graph.ReadFile(
-                        path,
-                        (fun view ->
-                            match current with
-                            | Some(text, lookup) when obj.ReferenceEquals(text, view.Text) -> Choice1Of2(find view.Result.CheckResults line lookup)
-                            | _ -> Choice2Of2 view.Text),
-                        ct
-                    )
-
-                match answer with
-                | Choice1Of2 f -> found <- ValueSome f
-                | Choice2Of2 text ->
-                    match Hover.lookupOf text line character with
-                    | Some lookup -> looked <- Some(text, lookup)
-                    | None -> found <- ValueSome Nowhere
-
-            match found.Value with
+            match found with
             | Nowhere -> return None
             | Local range ->
                 // In the row that uses it, which the file's result keeps current. Anywhere else, as a signed function's
