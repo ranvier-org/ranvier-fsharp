@@ -72,7 +72,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                 match root ex with
                 | :? OperationCanceledException
-                | :? ObjectDisposedException -> return Ok none
+                | :? ObjectDisposedException
+                // The file's #line directives stayed another parse's for as long as a check waits for them
+                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
                 | e ->
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
                     return internalError e.Message

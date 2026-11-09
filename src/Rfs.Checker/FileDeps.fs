@@ -554,7 +554,7 @@ type internal Attempt<'R> =
 module internal Setup =
 
     /// How long a check waits for its file's #line directives to be its parse's again before it fails the node.
-    let private directiveWait = TimeSpan.FromSeconds 10.
+    let DirectiveWait = TimeSpan.FromSeconds 10.
 
     /// The check, tried again while the checker refuses it because its file's #line directives are not its parse's: a
     /// newer parse of another text of the file replaced them. On this context that parse is a newer text, and the
@@ -570,7 +570,7 @@ module internal Setup =
 
             try
                 run ()
-            with :? SupersededLineDirectivesException when not ct.IsCancellationRequested && clock.Elapsed < directiveWait ->
+            with :? SupersededLineDirectivesException when not ct.IsCancellationRequested && clock.Elapsed < DirectiveWait ->
                 project.CountDirectiveRetry()
                 Thread.Sleep 5
                 attempt ()

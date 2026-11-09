@@ -622,8 +622,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// or finish runs on it meanwhile, and the result is still the published one when the lock is taken; when it isn't,
     /// the request waits for the next turn. A new text of the file, or a newer result, runs the request again on it and
     /// cancels what ran on the older one, ad hoc checks inside it included (FileView.CheckResultsAt), so a request answers
-    /// for the latest text once it has settled. A newer parse that replaced the file's #line directives while `read` ran
-    /// is a new text too. Cancelling `ct`, or disposing the graph (a reload), cancels the task and nothing shared. Fails
+    /// for the latest text once it has settled. A `read` refused because the file's #line directives are another parse's
+    /// is tried again under the lock, for as long as a check would be (Setup.DirectiveWait), and then fails the request
+    /// with SupersededLineDirectivesException. Cancelling `ct`, or disposing the graph (a reload), cancels the task and nothing shared. Fails
     /// with ArgumentException for a signature file, which has no FileResult.
     /// </remarks>
     member _.ReadFile(file: string, prepare: FileView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
@@ -658,11 +659,22 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                         let v = view r flight
                         let prepared = prepare v
 
+                        // Tried again under the lock, as Setup.runWhileDirectivesCurrent does: a parse of another text on
+                        // another context (DeclarationLines) replaces the file's #line directives until it parses the held
+                        // text again, which no node shows. Past the bound the request fails with it, which answers nothing.
                         let answer () =
-                            try
-                                ValueSome(read v prepared)
-                            with :? SupersededLineDirectivesException ->
-                                ValueNone
+                            let clock = Diagnostics.Stopwatch.StartNew()
+                            let mutable result = ValueNone
+
+                            while result.IsNone do
+                                flight.ThrowIfCancellationRequested()
+
+                                try
+                                    result <- ValueSome(read v prepared)
+                                with :? SupersededLineDirectivesException when not flight.IsCancellationRequested && clock.Elapsed < Setup.DirectiveWait ->
+                                    Thread.Sleep 5
+
+                            result
 
                         let inEffect () =
                             host.Read(fun () ->
@@ -709,13 +721,15 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         let inSignature (file: string) (conformed: bool) =
             let i = indexOf file
 
+            // A request node, as ReadFile: a signature's check is never undone in place, so it needs no lock
+            let body (flight: CancellationToken) =
+                match readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version) with
+                | ValueNone -> Request.waitForNextTurn flight
+                | ValueSome s -> Task.Run((fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key, conformed, flight)), flight)
+
             task {
                 use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-
-                let! s =
-                    host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version)), linked.Token)
-
-                return! Task.Run((fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key, conformed, ct)), ct)
+                return! Request.run host body linked.Token
             }
 
         let inImplementation (file: string) =

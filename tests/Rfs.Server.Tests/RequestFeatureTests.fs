@@ -108,7 +108,9 @@ let private holdD (s: Session) (d: string) (gate: ManualResetEventSlim) =
 
     held
 
-let private edited (text: string) = text.Replace("42", "43")
+/// An edit after which a hover on `start` answers otherwise: a string, not an int
+let private edited (text: string) =
+    text.Replace("42", "43").Replace("baseValue + 1", "\"one\"")
 
 [<Tests>]
 let tests =
@@ -136,6 +138,10 @@ let tests =
 
                       if feature <> "why" then
                           Expect.isNotNull answer "an answer, for the text on disk"
+
+                      if feature = "hover" then
+                          let shown = answer["contents"].["value"].GetValue<string>()
+                          Expect.stringContains shown "val start: int" "the disk text's answer"
                   finally
                       gate.Set()
               }
@@ -218,4 +224,137 @@ let tests =
                           Expect.isNull later "and nothing after"
                   finally
                       gate.Set()
-              } ]
+              } 
+
+              testTask $"%s{feature}: a project that fails to load during the wait answers as for a file no project holds" {
+                  let dir = copyDeps ()
+                  let project = Path.Combine(dir, "Deps.fsproj")
+                  let d = Path.Combine(dir, "D.fs")
+                  let! s = startSessionWith dir [ project ] true ignore |> within
+                  use _ = disposing s
+                  let disk = File.ReadAllText d
+                  let gate = new ManualResetEventSlim(false)
+                  let held = holdD s d gate
+
+                  try
+                      s.Server.Workspace.Open(d, edited disk, 1) |> ignore
+                      do! eventually "D's check held" (fun () -> held.Value >= 1)
+                      let pending = overLsp s feature d (at feature disk)
+                      do! Task.Delay 300
+                      Expect.isFalse pending.IsCompleted "the request waits for D"
+                      File.WriteAllText(project, "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>")
+                      do! s.Server.Workspace.FilesChanged([ project, false ]).WaitAsync(TimeSpan.FromSeconds 120.)
+                      let! (answer: JsonNode) = pending
+
+                      if feature = "resolve" then
+                          Expect.equal (answer["label"].GetValue<string>()) "Value" "the item as it was"
+                      else
+                          Expect.isNull answer "nothing"
+                  finally
+                      gate.Set()
+              }
+
+          testTask "a read refused for another parse's #line directives is tried again, and answers once they are back" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              let stale = ref 1
+              let refused = ref 0
+
+              let read =
+                  graph.ReadFile(
+                      a,
+                      (fun v ->
+                          if Volatile.Read &stale.contents = 1 then
+                              Interlocked.Increment refused |> ignore
+                              raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives")
+
+                          v.Text),
+                      CancellationToken.None
+                  )
+
+              do! eventually "a refused read" (fun () -> refused.Value >= 1)
+              // Nothing the read depends on changes when the directives come back
+              Volatile.Write(&stale.contents, 0)
+              let! text = read.WaitAsync(TimeSpan.FromSeconds 20.)
+              Expect.equal text (File.ReadAllText a) "the read answers"
+              Expect.isGreaterThan refused.Value 1 "after trying again"
+          }
+
+          testTask "a read refused for #line directives for as long as a check waits fails with it, which answers nothing" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+
+              let read =
+                  graph.ReadFile(a, (fun _ -> raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives")), CancellationToken.None)
+
+              let! (failed: exn option) =
+                  task {
+                      try
+                          let! (_: unit) = read.WaitAsync(TimeSpan.FromSeconds 30.)
+                          return None
+                      with e ->
+                          return Some e
+                  }
+
+              Expect.isTrue
+                  (match failed with
+                   | Some e -> e :? FSharp.Compiler.Declarations.SupersededLineDirectivesException
+                   | None -> false)
+                  $"the request fails with it: %A{failed}"
+          }
+
+          testTask "a definition that lands in a signature file answers when another project on the host faults" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let efs = file "E.fs"
+              let efsi = file "E.fsi"
+              let graph = (s.Server.Workspace.ProjectOf efs).Value
+
+              let! (key: string) =
+                  graph.ReadFile(
+                      efs,
+                      (fun v ->
+                          let u =
+                              v.Result.CheckResults.GetAllUsesOfAllSymbolsInFile()
+                              |> Seq.find (fun u -> u.IsFromDefinition && u.Symbol.DisplayName = "compute")
+
+                          (FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
+                      CancellationToken.None
+                  )
+                  |> within
+
+              let! spec = Rfs.Projects.ProjectSpec.load depsProject
+
+              let! (other: Rfs.Checker.ProjectGraph) =
+                  Rfs.Checker.ProjectGraph.Create(graph.Host, { Rfs.Projects.ProjectSpec.sequential spec with ProjectFile = Path.Combine(depsDir, "Other.fsproj") })
+                  |> within
+
+              let gate = new ManualResetEventSlim(false)
+              let held = ref 0
+
+              graph.OnScopedCheck(fun path ->
+                  if path.EndsWith "E.fsi" then
+                      Interlocked.Increment held |> ignore
+                      gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+              try
+                  graph.SetText(efsi, File.ReadAllText efsi + "\n") |> ignore
+                  do! eventually "E.fsi's check held" (fun () -> held.Value >= 1)
+                  let pending = graph.CurrentLocation(a, efsi, key, CancellationToken.None)
+                  do! Task.Delay 300
+                  Expect.isFalse pending.IsCompleted "it waits for E.fsi"
+                  // Fails on the graph thread, which faults every wait parked on the host
+                  other.FailRestart(InvalidOperationException "the other project's restart failed")
+                  do! Task.Delay 300
+                  gate.Set()
+                  let! (found: FSharp.Compiler.Text.range option) = pending |> within
+                  Expect.isSome found "the signature's location"
+                  Expect.stringContains found.Value.FileName "E.fsi" "in E.fsi"
+              finally
+                  gate.Set()
+                  other.Dispose()
+                  graph.Host.TakePostErrors() |> ignore
+          }
+        ]
