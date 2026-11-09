@@ -141,7 +141,8 @@ let private scopeOf (s: Session) : References.Scope =
       ReferencingProjects = s.Server.Workspace.ReferencingProjects
       Projects = fun () -> s.Server.Workspace.Projects
       FilesOf = s.Server.Workspace.FilesOf
-      IsLoading = fun () -> s.Server.Workspace.IsLoading }
+      IsLoading = fun () -> s.Server.Workspace.IsLoading
+      BeforeRead = fun _ -> Task.CompletedTask }
 
 /// A host for a graph that is made to go away
 module ReferencesTestsHost =
@@ -523,6 +524,119 @@ let tests =
               let! (gone: References.Answer) = References.find scope graph aFile (fst at) (snd at) CancellationToken.None
               Expect.isTrue gone.IsMoved "a project went away"
           }
+
+          testTask "a load that ends during the request, or another set of projects by its end, answers Moved" {
+              let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
+              use _ = disposing s
+              let aFile = file "A.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let mutable loading = true
+
+              let ended =
+                  { scopeOf s with
+                      IsLoading =
+                          fun () ->
+                              let was = loading
+                              loading <- false
+                              was }
+
+              let! (loadEnded: References.Answer) = References.find ended graph aFile (fst at) (snd at) CancellationToken.None
+              Expect.isTrue loadEnded.IsMoved $"the snapshot was taken during a load: %A{loadEnded}"
+              let other = ProjectSpec.sequential (ProjectSpec.load depsProject).Result
+              let! (app: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(ReferencesTestsHost.host.Value, { other with ProjectFile = Path.Combine(Path.GetDirectoryName depsProject, "Back.fsproj") })
+              let mutable asks = 0
+
+              let cameBack =
+                  { scopeOf s with
+                      ReferencingProjects =
+                          fun _ ->
+                              asks <- asks + 1
+                              if asks <= 1 then [] else [ app ] }
+
+              let! (projectBack: References.Answer) = References.find cameBack graph aFile (fst at) (snd at) CancellationToken.None
+              app.Dispose()
+              Expect.isTrue projectBack.IsMoved $"a project came back during the passes: %A{projectBack}"
+          }
+
+          for promote in [ true; false ] do
+              testTask $"""a mix no state had isn't answered, when a dependent's uses change and change back (%s{if promote then "by declaration" else "file level"})""" {
+                  let aText (forB: string) (forC: string) (extra: string) =
+                      $"module Proj.A\n\nlet t = 1\n\nmodule ForB =\n    let %s{forB} = 5\n\nmodule ForC =\n    let %s{forC} = 5\n\nlet extra = %s{extra}\n"
+
+                  let using (name: string) = $"module Proj.%s{name}\n\nopen Proj.A\nopen Proj.A.For%s{name}\n\nlet v = t\n"
+                  let dir = Directory.CreateTempSubdirectory "rfs-mix-"
+
+                  try
+                      let path (name: string) = Path.Combine(dir.FullName, name)
+                      let a, b, c = path "A.fs", path "B.fs", path "C.fs"
+                      File.WriteAllText(a, aText "other" "t" "0")
+                      File.WriteAllText(b, using "B")
+                      File.WriteAllText(c, using "C")
+                      let! deps = ProjectSpec.load depsProject
+                      let host = Rfs.Checker.GraphHost.Start "mix"
+                      let! (g: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, { ProjectSpec.sequential deps with ProjectFile = path "P.fsproj"; SourceFiles = [ a; b; c ] })
+
+                      let settle () =
+                          task {
+                              let! _ = g.AllDiagnostics() |> within
+
+                              if promote then
+                                  for f in [ a; b; c ] do
+                                      let! _ = g.WhenPromoted(f, CancellationToken.None) |> within
+                                      ()
+                          }
+
+                      if promote then
+                          for f in [ a; b; c ] do
+                              g.Promote f
+
+                      do! settle ()
+                      let mutable readsOfB = 0
+                      let mutable readsOfC = 0
+
+                      // Read A B [edit] C A [edit] B C: A's uses are the same at the texts it is read at, B's at its, and C's at
+                      // its, and at each of the three states one of the files, not read at it, says otherwise
+                      let edit (text: string) : Task =
+                          task {
+                              g.SetText(a, text) |> ignore
+                              do! settle ()
+                          }
+
+                      let scope: References.Scope =
+                          { OwnersOf = fun f -> if List.contains f [ a; b; c ] then [ g ] else []
+                            ReferencingProjects = fun _ -> []
+                            Projects = fun () -> [ g ]
+                            FilesOf = fun _ -> [ a; b; c ]
+                            IsLoading = fun () -> false
+                            BeforeRead =
+                              fun file ->
+                                  if file = c then
+                                      readsOfC <- readsOfC + 1
+                                      if readsOfC = 1 then edit (aText "t" "other" "0") else Task.CompletedTask
+                                  elif file = b then
+                                      readsOfB <- readsOfB + 1
+                                      if readsOfB = 2 then edit (aText "other" "other" "t") else Task.CompletedTask
+                                  else
+                                      Task.CompletedTask }
+
+                      let! (answer: References.Answer) = References.find scope g a 2 4 CancellationToken.None
+                      g.Dispose()
+                      (host :> IDisposable).Dispose()
+
+                      match answer with
+                      | References.Answer.Moved -> ()
+                      | References.Answer.Found uses ->
+                          let lines (name: string) = uses |> List.filter (fun (struct (r, _)) -> r.FileName = name) |> List.map (fun (struct (r, _)) -> r.StartLine) |> List.sort
+                          Expect.equal (lines a) [ 3; 11 ] "A's definition, and the use the last text has"
+                          Expect.equal (lines b) [ 6 ] "B's use"
+                          Expect.equal (lines c) [ 6 ] "C's use"
+                  finally
+                      try
+                          dir.Delete true
+                      with :? IOException | :? UnauthorizedAccessException ->
+                          ()
+              }
 
           testTask "a reload answers ContentModified from a request waiting on it, and shutdown answers nothing" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs"; d ]

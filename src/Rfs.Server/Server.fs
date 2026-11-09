@@ -314,7 +314,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                       ReferencingProjects = workspace.ReferencingProjects
                       Projects = fun () -> workspace.Projects
                       FilesOf = workspace.FilesOf
-                      IsLoading = fun () -> workspace.IsLoading }
+                      IsLoading = fun () -> workspace.IsLoading
+                      BeforeRead = fun _ -> Task.CompletedTask }
 
                 let moved = Error(JsonRpc.Error.Create(-32801, "The files changed while references were read"))
 

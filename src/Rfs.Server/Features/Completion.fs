@@ -137,7 +137,8 @@ module Completion =
                         result.Value <- ValueSome(f ())
                     with ex ->
                         failure.Value <- ExceptionDispatchInfo.Capture ex),
-                GraphHost.StackSize
+                GraphHost.StackSize,
+                IsBackground = true
             )
 
         thread.Start()

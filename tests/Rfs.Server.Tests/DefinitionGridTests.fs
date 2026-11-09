@@ -132,6 +132,8 @@ let private stressFiles =
 /// must answer where FCS on Lib says that key's definition is; a token in App itself only has to stay in App.
 let private expectAcrossProjects (lib: Scenario) (appText: string) =
     task {
+        let mutable inLib = 0
+
         let! outcomes =
             runReferencing lib appText (fun state app appFile ->
                 task {
@@ -171,6 +173,9 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
 
                             if want.Contains(show actual) then
                                 found.Add Same
+
+                                if actual.IsSome then
+                                    inLib <- inLib + 1
                             else
                                 found.Add(Different $"%s{state.Step}: %d{token.Line + 1},%d{token.EndColumn} %A{token.Names} [%s{token.LineText.Trim()}]: ours %s{show actual}, FCS on Lib %A{Set.toList want}")
                         | _ ->
@@ -183,7 +188,9 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
                 })
 
         let different = outcomes |> List.choose (function Different d -> Some d | _ -> None)
-        printfn "grid %s, App on Lib: %d tokens, %d differ" lib.Name outcomes.Length different.Length
+        printfn "grid %s, App on Lib: %d tokens, %d differ, %d answer in Lib" lib.Name outcomes.Length different.Length inLib
+        // App resolving nothing of Lib's would pass every token
+        Expect.isGreaterThan inLib (100 * (lib.Steps.Length + 1)) "App's tokens answer in Lib, in every state"
         let shown = different |> List.truncate 25 |> String.concat "\n  "
         Expect.isTrue different.IsEmpty $"%d{different.Length} of %d{outcomes.Length} tokens differ:\n  %s{shown}"
     }

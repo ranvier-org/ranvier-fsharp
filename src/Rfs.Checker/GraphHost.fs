@@ -130,7 +130,8 @@ type GraphHost private (name: string) =
             if not (isNull (box graph)) then
                 graph.Dispose()
 
-    /// The reserved size of the graph thread's stack: about 500000 rows in a chain, at most.
+    /// The reserved size of the graph thread's stack. Several hundred thousand rows in a chain is an estimate from where
+    /// the default stack overflowed; only 4000 rows have been run.
     static member StackSize: int = 256 * 1024 * 1024
 
     /// Starts a host whose loop thread is named <c>name</c>.
@@ -141,7 +142,7 @@ type GraphHost private (name: string) =
 
     member private this.Launch() =
         use ready = new ManualResetEventSlim(false)
-        // Ranvier's notification walks recurse once per dependent, and the rows of a file chain: about 512 bytes a row, so
+        // Ranvier's notification walks recurse once per dependent, and the rows of a file chain: a few hundred bytes a row, so
         // a 4000-row file overflows the default stack and kills the process. FCS guards its own recursion by moving to a
         // new thread (StackGuard), which nothing here does. Only reserved: pages are committed as they are touched.
         thread <- Thread(loop ready, GraphHost.StackSize, IsBackground = true, Name = name)

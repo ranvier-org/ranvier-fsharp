@@ -44,6 +44,8 @@ type internal Published =
 type internal Readable =
     { Parsed: Parsed
       Result: FileResult
+      /// What the result was set up from
+      Key: SetupKey
       /// The lock of the FileStart a declaration-level result was finished on: a reader holds it shared, so no finish
       /// runs on that FileStart meanwhile
       Lock: AsyncReaderWriterLock voption
@@ -514,6 +516,7 @@ module internal WholeFile =
                       |> ValueOption.map (fun f ->
                           { Parsed = f.Parsed
                             Result = f.FileResult
+                            Key = f.Start.Setup.Key
                             Lock = ValueSome f.Start.Lock
                             Declarations = ValueSome(f, g.Roles())
                             Identity = box f })
@@ -522,6 +525,7 @@ module internal WholeFile =
                       |> ValueOption.map (fun r ->
                           { Parsed = k.Key.Parsed
                             Result = r
+                            Key = k.Key
                             Lock = ValueSome k.Lock
                             Declarations = ValueNone
                             Identity = box k })
@@ -530,6 +534,7 @@ module internal WholeFile =
                       |> ValueOption.map (fun (key, r) ->
                           { Parsed = key.Parsed
                             Result = r
+                            Key = key
                             Lock = ValueNone
                             Declarations = ValueNone
                             Identity = box r })

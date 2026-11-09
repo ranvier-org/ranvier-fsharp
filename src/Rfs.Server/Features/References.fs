@@ -29,13 +29,18 @@ open Rfs.Checker
 /// </para>
 /// <para>
 /// Consistency: each file is read alone, holding nothing while another is waited for. The files are read until a whole
-/// pass finds, for every file, the same uses as the pass before it, at the same text version or the next one. So between the first of those reads and the last each file went through at most
-/// one edit, both of its texts having these uses: at the moment between the passes each file stood at one of them, and
-/// the answer is that moment's. A signature file holds still when its check is the same object. An edit that moves no use doesn't hold the answer up; more than one edit of a file between
-/// its reads does, as nothing was read of the texts between them. A change that only shows in another file's uses while
-/// two files are each edited once between their reads, and is gone again by both of their second reads, isn't seen.
-/// Where edits keep this from happening in a few passes, or a project goes away, or the workspace is loading (a reload
-/// hides the project and those that reference it from the snapshot), the answer is Moved, never a mix or a partial list.
+/// pass finds, for every file, the same result object as the pass before it, or the same uses from the same inputs: the
+/// same context and signatures (FileView.Upstream), at the same text version or the next one. A file's uses are a function
+/// of those and its text. So between its two reads each file's inputs went through at most one edit of its own text, both
+/// of its texts having these uses: at the moment between the passes each file stood at one of them, and the answer is
+/// that moment's. A signature file holds still when its check is the same object. An edit that moves no use and changes no
+/// signature a file reads doesn't hold the answer up. More than one edit of a file between its reads does, as nothing was
+/// read of the texts between; so does a changed signature a file reads, even when its uses come out the same, as they
+/// could differ in a state between that no read saw. That rule rests on FileSig.Next keeping a signature's object only
+/// while nothing a later file reads of it changed; it is shown on one three-file schedule and in the re-review's model.
+/// Where edits keep this from happening in a few passes, or a project goes away, or the workspace is loading at either end
+/// of the request, or the projects to read are others by its end (a reload hides the project and those that reference it
+/// from the snapshot), the answer is Moved, never a mix or a partial list.
 /// The handler gives LSP's ContentModified, and Ionide's bundled client then shows no results and doesn't ask again: to
 /// the user it looks like no references.
 /// </para>
@@ -57,7 +62,9 @@ module References =
           Projects: unit -> ProjectGraph list
           FilesOf: ProjectGraph -> string list
           /// A load or reload is under way: the projects listed may lack those it hides
-          IsLoading: unit -> bool }
+          IsLoading: unit -> bool
+          /// Runs before each implementation file's read. For tests
+          BeforeRead: string -> Task }
 
     /// A use, and whether it is a definition
     type Use = (struct (range * bool))
@@ -176,6 +183,8 @@ module References =
           Result: obj
           /// The text version it was read at
           Version: int64
+          /// What the result read besides the text
+          Upstream: obj[]
           /// With whether its key is the setter's
           Hits: (struct (range * bool * bool))[]
           /// Where each definition here says it is, with whether its key is the setter's. The location can be stale: it
@@ -211,6 +220,7 @@ module References =
 
         { Result = view.Result
           Version = view.Version
+          Upstream = view.Upstream
           Hits = found |> Array.map (fun (u, setter) -> struct (u.Range, u.IsFromDefinition, setter))
           Definitions =
             found
@@ -280,13 +290,15 @@ module References =
                 |> Seq.distinct
                 |> Seq.length) > 1
 
-    /// Whether the same uses at the same or the next text version: see the remarks
+    /// Whether the same uses from the same inputs, at the same or the next text version: see the remarks
     let private holdsStill (before: Scanned) (now: Scanned) =
         let sameUse (struct (a: range, b: bool, c: bool)) (struct (x: range, y: bool, z: bool)) = Range.equals a x && b = y && c = z
         let sameDefinition (struct (a: range, b: bool)) (struct (x: range, y: bool)) = Range.equals a x && b = y
 
         obj.ReferenceEquals(before.Result, now.Result)
         || (now.Version - before.Version <= 1L
+            && before.Upstream.Length = now.Upstream.Length
+            && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) before.Upstream now.Upstream
             && before.Hits.Length = now.Hits.Length
             && before.Definitions.Length = now.Definitions.Length
             && Array.forall2 sameUse before.Hits now.Hits
@@ -297,27 +309,31 @@ module References =
 
     let private everywhere (scope: Scope) (graph: ProjectGraph) (key: string) (landed: string option) (ct: CancellationToken) : Task<Answer> =
         task {
-            let definers =
+            let wasLoading = scope.IsLoading()
+
+            let definersNow () =
                 match landed with
                 | Some file -> scope.OwnersOf file
                 | None -> []
 
-            let projects =
-                match definers with
+            let projectsNow () =
+                match definersNow () with
                 // No loaded project defines it: every project can use it
                 | [] -> scope.Projects()
-                | _ -> definers @ (definers |> List.collect scope.ReferencingProjects)
+                | definers -> definers @ (definers |> List.collect scope.ReferencingProjects)
                 |> fun found -> graph :: found
                 |> List.distinct
                 |> Array.ofList
 
+            let definers = definersNow ()
+            let projects = projectsNow ()
             let gone = HashSet<int>()
             let mutable last = Dictionary<struct (int * string), Scanned>()
             let mutable lastSignatures = Dictionary<struct (int * string), ScannedSignature>()
             let mutable settled = false
             let mutable passes = 0
 
-            while not settled && passes < maximumPasses do
+            while not wasLoading && not settled && passes < maximumPasses do
                 passes <- passes + 1
                 let previous = last
                 let current = Dictionary<struct (int * string), Scanned>()
@@ -329,6 +345,8 @@ module References =
                             ct.ThrowIfCancellationRequested()
 
                             try
+                                do! scope.BeforeRead file
+
                                 let! scanned =
                                     projects[p].ReadFile(
                                         file,
@@ -383,7 +401,11 @@ module References =
                 last <- current
                 lastSignatures <- currentSignatures
 
-            if not settled || gone.Count > 0 || scope.IsLoading() then
+            let sameProjects () =
+                let now = projectsNow ()
+                now.Length = projects.Length && Array.forall2 (fun (a: ProjectGraph) (b: ProjectGraph) -> obj.ReferenceEquals(a, b)) now projects
+
+            if not settled || gone.Count > 0 || scope.IsLoading() || not (sameProjects ()) then
                 return Answer.Moved
             else
                 let kept = List.ofSeq last.Values
@@ -430,6 +452,8 @@ module References =
                 | Nothing -> return Answer.Found []
                 | InFile uses -> return Answer.Found uses
                 | Keyed(key, landed) -> return! everywhere scope graph key landed ct
-            with :? OperationCanceledException when not ct.IsCancellationRequested ->
-                return Answer.Moved
+            with
+            | :? OperationCanceledException when not ct.IsCancellationRequested -> return Answer.Moved
+            // A newer parse replaced the file's #line directives while its results were built: an edit got there first
+            | :? SupersededLineDirectivesException when not ct.IsCancellationRequested -> return Answer.Moved
         }

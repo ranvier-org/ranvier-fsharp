@@ -52,22 +52,20 @@ let private kindOf (key: string) = key.Split('|')[1]
 /// - "pattern's case": a case asked in its pattern's own definition: ours has the case's name in the signature, which
 ///   FCS has only from a use of the case;
 /// - "constructor's new": at a call of an overloaded constructor, FCS adds that overload's `new`;
-/// - "namespace": see `crossProject`;
 /// - "signed parameter": the parameter's name in the signature, for a parameter with no key;
 /// - "named argument": a parameter asked at its definition lacks its named uses in other files; a named argument lacks
 ///   the other files' uses, and asked in another file than its method's answers nothing;
 /// - "interface property": at a slot with both accessors, whose token is its setter, FCS adds the names that implement it;
 ///   at such a name, ours adds the uses of the property.
-/// `crossProject`: FCS checks both projects as one, whose namespace is one: asked in App, a namespace of the same name is
-/// another assembly's for ours, and it has App's uses, the token itself at least, so an empty answer isn't excused.
 let private limitOf
-    (crossProject: bool)
     (asked: FSharpSymbolUse)
     (key: string option)
     (tied: bool)
     (ours: (string * bool) list)
     (expected: FcsUse list)
     (keysAt: Dictionary<string, Set<string>>)
+    (definedBothSides: HashSet<string>)
+    (ourText: string -> string)
     =
     let ourAll = ours |> List.map fst |> Set.ofList
     let missing = expected |> List.filter (fun u -> not (ourAll.Contains u.Range))
@@ -76,7 +74,6 @@ let private limitOf
     let ourDefinitions = ours |> List.filter snd |> List.map fst |> Set.ofList
     let flagsAgree = expected |> List.forall (fun u -> not (ourAll.Contains u.Range) || u.IsDefinition = ourDefinitions.Contains u.Range)
     let isConstructor = (match asked.Symbol with :? FSharpMemberOrFunctionOrValue as v -> v.IsConstructor | _ -> false)
-    let isNamespace = (match asked.Symbol with :? FSharpEntity as e -> e.IsNamespace | _ -> false)
     let isPattern = asked.Symbol :? FSharpActivePatternCase
 
     let isSlotProperty = key |> Option.exists (fun k -> kindOf k = "property" && k.Contains "|slot|")
@@ -100,16 +97,19 @@ let private limitOf
                 Some "interface property"
             else
                 None
-    elif isPattern && missing.IsEmpty && surplus |> Set.forall (fun at -> at.Contains ".fsi ") then
+    elif isPattern && missing.IsEmpty && surplus |> Set.forall (fun at -> at.Contains ".fsi " && ourText at = name) then
         Some "pattern's case"
     elif not surplus.IsEmpty || missing.IsEmpty then
         None
     elif tied && ourAll.IsEmpty && key |> Option.exists (fun k -> not (List.contains (kindOf k) [ "property"; "namespace"; "anonymous" ])) then
         Some "tie"
+    // What the server tells by: the key isn't defined on both sides of the signature. A setter's suffix isn't another key
     elif key.IsSome
          && ourAll.IsEmpty
+         && not isConstructor
          && (asked.Symbol :? FSharpMemberOrFunctionOrValue)
-         && missing |> List.exists (fun u -> not u.Keys.IsEmpty && not (u.Keys.Contains key.Value)) then
+         && not (definedBothSides.Contains(plain key.Value))
+         && missing |> List.exists (fun u -> not u.Keys.IsEmpty && not (u.Keys |> Set.map plain |> Set.contains (plain key.Value))) then
         Some "generic overload"
     elif key.IsSome
          && not ourAll.IsEmpty
@@ -120,8 +120,6 @@ let private limitOf
         Some "generic overload's sibling"
     elif isConstructor && key.IsSome && missing |> List.forall (fun u -> u.IsDefinition && u.Text = "new") then
         Some "constructor's new"
-    elif crossProject && isNamespace && not ourAll.IsEmpty then
-        Some "namespace"
     elif key.IsNone && not isPattern && missing |> List.forall _.InSignature then
         Some "signed parameter"
     elif key.IsNone && (asked.Symbol :? FSharpParameter) then
@@ -156,7 +154,6 @@ type private Mutation = HashSet<string> -> (string * bool) list -> (string * boo
 
 /// Every token of the asking files, against the union of FCS's uses over `files`
 let private compareTokens
-    (crossProject: bool)
     (mutate: Mutation)
     (scenario: string)
     (step: string)
@@ -172,6 +169,8 @@ let private compareTokens
         let keysAt = Dictionary<string, Set<string>>()
         let constructors = HashSet<string>()
         let arguments = HashSet<string>()
+        let definedInSignature = HashSet<string>()
+        let definedInImplementation = HashSet<string>()
 
         for f in files do
             let check = checks[f]
@@ -179,6 +178,9 @@ let private compareTokens
 
             for u in check.GetAllUsesOfAllSymbolsInFile() do
                 let at = showRange f u.Range
+
+                if u.IsFromDefinition then
+                    keys u |> Option.iter (fun k -> (if f.EndsWith ".fsi" then definedInSignature else definedInImplementation).Add(plain k) |> ignore)
 
                 match u.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as v when v.IsConstructor -> constructors.Add at |> ignore
@@ -197,6 +199,9 @@ let private compareTokens
             else
                 "?"
 
+        let definedBothSides = HashSet<string>(definedInSignature)
+        definedBothSides.IntersectWith definedInImplementation
+
         for graph, file in asking do
             let keys = References.keysIn checks[file] CancellationToken.None
 
@@ -204,10 +209,18 @@ let private compareTokens
                 let! actual = References.find scope graph file token.Line token.Character CancellationToken.None
                 let where = $"%s{scenario} / %s{step}: %s{Path.GetFileName file} %d{token.Line + 1},%d{token.EndColumn} %A{token.Names} [%s{token.LineText.Trim()}]"
 
+                let ourTexts = Dictionary<string, string>()
+
                 let answered =
                     match actual with
                     | References.Answer.Moved -> None
-                    | References.Answer.Found uses -> Some(uses |> List.map (fun (struct (r, d)) -> showRange r.FileName r, d) |> mutate constructors)
+                    | References.Answer.Found uses ->
+                        for struct (r, _) in uses do
+                            match files |> List.tryFind (fun f -> Path.GetFileName f = Path.GetFileName r.FileName) with
+                            | Some f -> ourTexts[showRange r.FileName r] <- textAt f r
+                            | None -> ()
+
+                        Some(uses |> List.map (fun (struct (r, d)) -> showRange r.FileName r, d) |> mutate constructors)
 
                 match checks[file].GetSymbolUseAtLocation(token.Line + 1, token.EndColumn, token.LineText, token.Names), answered with
                 | _, None -> outcomes.Add(Different $"%s{where}: Moved with nothing moving")
@@ -239,7 +252,7 @@ let private compareTokens
                     if ourAll = fcsAll && ourUses = fcsUses then
                         outcomes.Add Same
                     else
-                        match limitOf crossProject asked key tied ours expected keysAt with
+                        match limitOf asked key tied ours expected keysAt definedBothSides (fun at -> match ourTexts.TryGetValue at with | true, t -> t | _ -> "") with
                         | Some limit -> outcomes.Add(Limit limit)
                         | None ->
                             outcomes.Add(Different $"%s{where} {asked.Symbol.GetType().Name}: ours only %s{show (ourAll - fcsAll)} | FCS only %s{show (fcsAll - ourAll)} | undeclared ours only %s{show (ourUses - fcsUses)} | FCS only %s{show (fcsUses - ourUses)}")
@@ -260,9 +273,10 @@ let private compareState (mutate: Mutation) (state: State) : Task<Outcome list> 
               ReferencingProjects = fun _ -> []
               Projects = fun () -> [ state.Graph ]
               FilesOf = fun _ -> state.Files
-              IsLoading = fun () -> false }
+              IsLoading = fun () -> false
+              BeforeRead = fun _ -> Task.CompletedTask }
 
-        return! compareTokens false mutate state.Scenario state.Step scope checks state.Files state.TextOf [ for f in state.Implementations -> state.Graph, f ]
+        return! compareTokens mutate state.Scenario state.Step scope checks state.Files state.TextOf [ for f in state.Implementations -> state.Graph, f ]
     }
 
 let private summarize (what: string) (outcomes: Outcome list) =
@@ -298,10 +312,11 @@ let private expectAcrossProjects (lib: Scenario) (appText: string) =
                           ReferencingProjects = fun g -> if obj.ReferenceEquals(g, state.Graph) then [ app ] else []
                           Projects = fun () -> [ state.Graph; app ]
                           FilesOf = fun g -> if obj.ReferenceEquals(g, state.Graph) then state.Files else [ appFile ]
-                          IsLoading = fun () -> false }
+                          IsLoading = fun () -> false
+                          BeforeRead = fun _ -> Task.CompletedTask }
 
                     let asking = [ for f in state.Implementations -> state.Graph, f ] @ [ app, appFile ]
-                    return! compareTokens true (fun _ ours -> ours) lib.Name state.Step scope checks files state.TextOf asking
+                    return! compareTokens (fun _ ours -> ours) lib.Name state.Step scope checks files state.TextOf asking
                 })
 
         summarize $"%s{lib.Name}, App on Lib" outcomes
@@ -323,6 +338,26 @@ let tests =
               let! (outcomes: Outcome list) = run true scenario (compareState dropCalls)
               let different = outcomes |> List.filter (function Different _ -> true | _ -> false)
               Expect.isGreaterThan different.Length 10 "no limit may excuse them"
+          }
+
+          testTask "the grid sees real answers emptied" {
+              let emptied: Mutation = fun _ _ -> []
+              let names = [ "implementations more generic than their signature"; "a member more generic than its signature, an override"; "signed: a property's accessors on two lines"; "constructors"; "interface properties" ]
+
+              let excused =
+                  allScenarios
+                  |> List.filter (fun s -> List.contains s.Name names)
+                  |> List.map (fun s ->
+                      task {
+                          let! (real: Outcome list) = run true s (compareState (fun _ ours -> ours))
+                          let! (mutated: Outcome list) = run true s (compareState emptied)
+                          let count (outcomes: Outcome list) = outcomes |> List.filter (function Limit "generic overload" -> true | _ -> false) |> List.length
+                          return s.Name, count real, count mutated
+                      })
+
+              for t in excused do
+                  let! (name: string), (real: int), (mutated: int) = t
+                  Expect.equal mutated real $"%s{name}: emptying real answers adds none to `generic overload`"
           }
 
           testList "by declaration" [ for s in allScenarios -> testTask s.Name { do! expectGrid true s } ]

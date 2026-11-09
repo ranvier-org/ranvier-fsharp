@@ -121,6 +121,10 @@ type FileView =
       Text: string
       /// The graph's version of the text (the one `SetText` returned)
       Version: int64
+      /// What the result read besides the text: the project's context (a new one when a referenced project's assembly
+      /// changes) and the signatures it was set up from. FileSig.Next keeps a signature's object while nothing a later file
+      /// reads of it changed, here or further up, so the same objects mean the same inputs.
+      Upstream: obj[]
       At: int -> int -> FSharpCheckFileResults }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
@@ -592,6 +596,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                               Parse = r.Parsed.Parse
                               Text = r.Parsed.Text
                               Version = r.Parsed.Version
+                              Upstream = [| yield box project.Context; for s in r.Key.Before -> box s |]
                               At =
                                 fun line column ->
                                     match r.Declarations with
