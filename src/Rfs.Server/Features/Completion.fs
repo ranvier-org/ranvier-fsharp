@@ -165,8 +165,8 @@ module Completion =
             SortText = Some(sprintf "%06d" id)
             FilterText = Some d.NameInList }
 
-    /// The list at the position of `path`, once the graph has settled on the file's latest text. The lookup holds off
-    /// the file's checks; a kept row may be checked again in it (FileView.CheckResultsAt). The items carry their names:
+    /// The list at the position of `path`, once the graph has settled on the file's latest text: a request node
+    /// (ProjectGraph.ReadFile), run again on a new text. The lookup holds off the file's checks; a kept row may be checked again in it (FileView.CheckResultsAt). The items carry their names:
     /// reading them reads no typed tree.
     let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<CompletionItem[]> =
         task {
@@ -191,8 +191,8 @@ module Completion =
             | path, line, character -> Some(path.ToObject<string>(), line.ToObject<int>(), character.ToObject<int>())
         | _ -> None
 
-    /// The item with its signature and documentation, or as it is when its position lists it no more. Only the description
-    /// is read inside the lookup: formatting it may load an XML file.
+    /// The item with its signature and documentation, or as it is when its position lists it no more: a request node, as
+    /// for `at`. Only the description is read inside the lookup: formatting it may load an XML file.
     let resolve (graph: ProjectGraph) (item: CompletionItem) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<CompletionItem> =
         task {
             let! tip =
