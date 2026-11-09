@@ -577,32 +577,42 @@ let tests =
           }
 
           testTask "a 4000-row file promotes and answers completion, and so does a row of 4000 lets" {
-              let! (s: Session) = start depsDir depsProject []
-              use _ = disposing s
-              let g = (s.Server.Workspace.ProjectOf d).Value
-              let rows = System.Text.StringBuilder("module Deps.D\n\ntype R = { Name: string; Size: int }\n\n")
+              let dir = Directory.CreateTempSubdirectory "rfs-large-"
 
-              for r in 0..3999 do
-                  rows.Append($"let v%d{r} (x: int) (r: R) = r.Size + x + %d{r}\n") |> ignore
+              try
+                  let path = Path.Combine(dir.FullName, "F.fs")
+                  let rows = System.Text.StringBuilder("module Proj.F\n\ntype R = { Name: string; Size: int }\n\n")
 
-              rows.Append("let last (r: R) = r.S\n") |> ignore
-              let text = rows.ToString()
-              g.SetText(d, text) |> ignore
-              g.Promote d
-              let! (mode: Rfs.Checker.FileMode) = g.WhenPromoted(d, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 3.)
-              Expect.equal mode Rfs.Checker.FileMode.Declarations "promoted"
-              let lines = text.Split '\n'
-              let! (items: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g d (lines.Length - 2) 20 CancellationToken.None
-              Expect.isNonEmpty items "it answers"
+                  for r in 0..3999 do
+                      rows.Append($"let v%d{r} (x: int) (r: R) = if x > %d{r} then (r.Size + x, r.Name, List.map (fun y -> y + x) [ x; %d{r} ]) else (x, r.Name, [])\n") |> ignore
 
-              let lets = System.Text.StringBuilder("module Deps.D\n\nlet deep =\n")
+                  rows.Append("let last (r: R) = r.S\n") |> ignore
+                  let text = rows.ToString()
+                  File.WriteAllText(path, text)
+                  let! deps = ProjectSpec.load depsProject
+                  let host = Rfs.Checker.GraphHost.Start "large"
+                  let! (g: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, { ProjectSpec.sequential deps with ProjectFile = Path.Combine(dir.FullName, "P.fsproj"); SourceFiles = [ path ] })
+                  g.Promote path
+                  let! (mode: Rfs.Checker.FileMode) = g.WhenPromoted(path, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 3.)
+                  Expect.equal mode Rfs.Checker.FileMode.Declarations "promoted"
+                  let lines = text.Split '\n'
+                  let! (items: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g path (lines.Length - 2) 20 CancellationToken.None
+                  Expect.isNonEmpty items "it answers"
+                  let lets = System.Text.StringBuilder("module Proj.F\n\nlet deep =\n")
 
-              for r in 0..3999 do
-                  lets.Append($"    let a%d{r} = %d{r}\n") |> ignore
+                  for r in 0..3999 do
+                      lets.Append($"    let a%d{r} = %d{r}\n") |> ignore
 
-              lets.Append("    a0\n") |> ignore
-              let deep = lets.ToString()
-              g.SetText(d, deep) |> ignore
-              let! (inner: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g d (deep.Split('\n').Length - 2) 6 CancellationToken.None
-              Expect.isNonEmpty inner "a row of 4000 lets answers"
+                  lets.Append("    a0\n") |> ignore
+                  let deep = lets.ToString()
+                  g.SetText(path, deep) |> ignore
+                  let! (inner: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g path (deep.Split('\n').Length - 2) 6 CancellationToken.None
+                  Expect.isNonEmpty inner "a row of 4000 lets answers"
+                  g.Dispose()
+                  (host :> IDisposable).Dispose()
+              finally
+                  try
+                      dir.Delete true
+                  with :? IOException | :? UnauthorizedAccessException ->
+                      ()
           } ]
