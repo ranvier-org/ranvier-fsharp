@@ -20,7 +20,7 @@ open Rfs.Checker
 /// <para>
 /// Ranges: a file's published result is current, kept rows included: shifting a row moves its uses, and App's own uses are
 /// App's. What a use's symbol says of its location is not read for an answer. A signature file's uses are its latest
-/// check's (ProjectGraph.ReadSignature), so a blank line in it moves them.
+/// check's index (ISignatureFile.Uses, read in the same turn), so a blank line in it moves them.
 /// </para>
 /// <para>
 /// A symbol with no key (a local, a parameter) answers its uses in the asking file's result, in one read, so a parameter's
@@ -30,10 +30,10 @@ open Rfs.Checker
 /// <para>
 /// Consistency: every file's index, the project set, the loading state and the name filter's texts are read in one
 /// graph turn (ProjectGraph.ReadInOneTurn), with every file settled on its latest text: one state, across projects. A turn
-/// with any of them pending isn't answered from; the request waits for a later one, with no time limit, until a turn with
-/// everything settled or the client's cancel. So typing holds an answer up until it pauses. While the workspace is loading,
-/// or once a project to read is disposed (a reload hides the project and those that reference it), the answer is Moved,
-/// never a mix or a partial list: what it would wait for may never come.
+/// with any of them pending, or with the workspace loading, isn't answered from; the request waits for a later one, with
+/// no time limit, until a turn with everything settled or the client's cancel. So typing holds an answer up until it
+/// pauses. Once a project to read is disposed (a reload hides the project and those that reference it), the answer is
+/// Moved, never a mix or a partial list: its nodes never change again.
 /// The handler gives LSP's ContentModified, and Ionide's bundled client then shows no results and doesn't ask again: to
 /// the user it looks like no references.
 /// </para>
@@ -182,9 +182,10 @@ module References =
                 | None -> []
 
             // Asked again at each turn the read tries, on the graph thread: the answer is the projects' at that turn
-            let turnScope () : TurnScope =
+            // The definers are the scope's Extra: the answer reads them, so they must be the agreeing turn's
+            let turnScope () : TurnScope<ProjectGraph list> =
                 if scope.IsLoading() then
-                    { Loading = true; Projects = [||]; Name = None }
+                    { Loading = true; Projects = [||]; Name = None; Extra = [] }
                 else
                     let definers = definersNow ()
 
@@ -199,13 +200,13 @@ module References =
                     { Loading = false
                       Projects = [| for p in projects -> p, scope.FilesOf p |]
                       // FSharp.Core's are reached from no text as well (SymbolUses.spelledName)
-                      Name = if definers.IsEmpty then None else spelled }
+                      Name = if definers.IsEmpty then None else spelled
+                      Extra = definers }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
             | TurnRead.Gone -> return Answer.Moved
-            | TurnRead.Read projects ->
+            | TurnRead.Read(definers, projects) ->
                 let files = projects |> Seq.collect snd |> List.ofSeq
-                let definers = definersNow ()
 
                 let kept =
                     [ for f in files do

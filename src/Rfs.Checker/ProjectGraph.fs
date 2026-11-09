@@ -123,22 +123,29 @@ type TurnFile =
     /// Not read: its latest text, at `version`, doesn't contain the name asked for (TurnScope.Name)
     | Skipped of path: string * version: int64
 
-/// What a read in one graph turn reads, as the caller finds it at that turn. Asked again at every turn the read tries.
+/// What a read in one graph turn reads, as the caller finds it at that turn. Asked again at every turn the read tries,
+/// before and after the files are read; the turn counts only if both agree, `Extra` included.
 [<NoComparison; NoEquality>]
-type TurnScope =
-    { /// A load or reload is under way: the projects may lack those it hides, so the read gives TurnRead.Gone
+type TurnScope<'Extra when 'Extra: equality> =
+    { /// A load or reload is under way: the projects may lack those it hides, so the turn counts as pending
       Loading: bool
       /// The projects, each with the files to read of it, in the project's order
       Projects: (ProjectGraph * string list)[]
       /// When given, an implementation file whose latest text doesn't contain it is Skipped rather than read
-      Name: string option }
+      Name: string option
+      /// Whatever else the caller read of the workspace for its answer, so it is the agreeing turn's too
+      Extra: 'Extra }
 
-/// What a read in one graph turn gives.
-and [<RequireQualifiedAccess; NoComparison; NoEquality>] TurnRead =
-    /// Each project's files, in TurnScope's order, every one settled on its latest text in the same turn: one state
-    | Read of (ProjectGraph * TurnFile[])[]
-    /// The scope was loading, a project in it was disposed, or the scope changed during the turn: no later turn of the
-    /// graph makes this scope readable
+/// <summary>What a read in one graph turn gives.</summary>
+/// <remarks>
+/// For a reader such as slice 4's request nodes: everything in `Read` is of one turn. TurnFile.Indexed's version and
+/// each case's path name the file and the text its uses are for; Skipped's version is the text that decided the skip.
+/// </remarks>
+and [<RequireQualifiedAccess; NoComparison; NoEquality>] TurnRead<'Extra> =
+    /// The agreeing scope's Extra, and each project's files in its order, every one settled on its latest text in the
+    /// same turn: one state
+    | Read of extra: 'Extra * files: (ProjectGraph * TurnFile[])[]
+    /// A project in the scope was disposed: its nodes never change again, so no later turn could answer
     | Gone
 
 /// <summary>
@@ -197,6 +204,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     let dependents = ResizeArray<ProjectGraph>()
     let mutable disposed = 0
     let mutable afterSettle: unit -> Task = fun () -> Task.CompletedTask
+    // Graph thread: runs after each file a read in one turn reads. For tests
+    let mutable turnFileHook: TurnFile -> unit = ignore
     // Graph thread. A restart disposes the nodes first, so one that fails leaves nothing that could ever settle.
     let mutable restartFailure: exn = null
 
@@ -721,33 +730,6 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 return None
         }
 
-    /// <summary>
-    /// A file's uses by key, once the file is settled on its latest text: its node's index of the published result, built
-    /// on the first read of that result and shared by every request. Cancelling `ct` ends this wait and not the build,
-    /// which the next read finds done. Fails with ArgumentException for a signature file.
-    /// </summary>
-    member _.ReadUses(file: string, ct: CancellationToken) : Task<UsesRead> =
-        let i = indexOf file
-
-        if isSignatureFile files[i] then
-            invalidArg (nameof file) $"%s{file} is a signature file"
-
-        task {
-            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-
-            return!
-                host.WhenSettled(
-                    (fun () ->
-                        readSettled i (fun f version ->
-                            (f :?> IReadableFile).Uses version
-                            |> ValueOption.map (fun struct (uses, r) ->
-                                { Uses = uses
-                                  Result = box r.Result
-                                  Version = version }))),
-                    linked.Token
-                )
-        }
-
     member internal _.Host: GraphHost = host
 
     /// Whether Dispose has begun. Read on the graph thread inside a turn, after which none of its nodes changes.
@@ -786,6 +768,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
             if skipped then
                 read.Add(TurnFile.Skipped(path, files[i].Text.Version))
+                turnFileHook read[read.Count - 1]
             elif not pending then
                 let file =
                     if isSignatureFile files[i] then
@@ -794,7 +777,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                         readSettled i (fun f version -> (f :?> IReadableFile).Uses version |> ValueOption.map (fun struct (u, _) -> TurnFile.Indexed(path, version, u)))
 
                 match file with
-                | ValueSome f -> read.Add f
+                | ValueSome f ->
+                    read.Add f
+                    turnFileHook f
                 | ValueNone -> pending <- true
 
         if pending then ValueNone else ValueSome(read.ToArray())
@@ -812,14 +797,16 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// </para>
     /// <para>
     /// `scope` runs on the graph thread at each turn tried, before and after the files are read. The workspace changes
-    /// off that thread, so both must agree (the same graphs, files and name, and not loading) for the turn to count; a
-    /// loading scope, or a disposed graph in it, gives Gone at once, as what it waits for may never come: a disposed graph's
-    /// nodes never change, and a reload's end changes no node. A disposal wakes the waiter, as it posts to the graph thread.
+    /// off that thread, so both must agree (the same graphs, files, name and Extra, and not loading) for the turn to count:
+    /// otherwise, as while loading, the turn is pending. The caller must wake the graph thread when what `scope` reads
+    /// changes without a post (Workspace does at the end of a load). A disposed graph in the scope gives Gone at once, as its
+    /// nodes never change; a disposal wakes the waiter, as it posts to the graph thread.
     /// </para>
     /// </remarks>
-    member _.ReadInOneTurn(scope: unit -> TurnScope, ct: CancellationToken) : Task<TurnRead> =
-        let same (a: TurnScope) (b: TurnScope) =
+    member _.ReadInOneTurn(scope: unit -> TurnScope<'Extra>, ct: CancellationToken) : Task<TurnRead<'Extra>> =
+        let same (a: TurnScope<'Extra>) (b: TurnScope<'Extra>) =
             a.Name = b.Name
+            && a.Extra = b.Extra
             && a.Projects.Length = b.Projects.Length
             && Array.forall2
                 (fun (g: ProjectGraph, files: string list) (h: ProjectGraph, others: string list) -> obj.ReferenceEquals(g, h) && files = others)
@@ -829,8 +816,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         let step () =
             let before = scope ()
 
-            if before.Loading || before.Projects |> Array.exists (fun (g, _) -> g.IsDisposed) then
+            if before.Projects |> Array.exists (fun (g, _) -> g.IsDisposed) then
                 ValueSome TurnRead.Gone
+            elif before.Loading then
+                ValueNone
             else
                 for g, _ in before.Projects do
                     if not (obj.ReferenceEquals(g.Host, host)) then
@@ -851,28 +840,15 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
                 let after = scope ()
 
-                if after.Loading || not (same before after) then ValueSome TurnRead.Gone
-                elif pending then ValueNone
-                else ValueSome(TurnRead.Read read)
+                if pending || after.Loading || not (same before after) then
+                    ValueNone
+                else
+                    ValueSome(TurnRead.Read(before.Extra, read))
 
         host.WhenSettled(step, ct)
 
     /// How many indexes of a file's uses were built.
     member _.UsesBuilt: int64 = project.UsesBuilt
-
-    /// Runs `read` off the graph thread on a signature file's latest check, once settled, with what that check resolved.
-    /// The same FileSignature object has the same uses. Takes no lock: a signature's check changes nothing after it.
-    member _.ReadSignature(file: string, read: FileSignature -> Lazy<(struct (FSharp.Compiler.Text.range * bool * FSharp.Compiler.Symbols.FSharpSymbol))[]> -> 'T, ct: CancellationToken) : Task<'T> =
-        let i = indexOf file
-
-        task {
-            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-
-            let! s =
-                host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version)), linked.Token)
-
-            return! Task.Run((fun () -> read s (lazy DeclarationChecker.SignatureUses(project.Context, s))), linked.Token)
-        }
 
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
@@ -1114,6 +1090,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// it as finish.lock before it waits for the lock, and as finish.run just before FinishFile; parse and dependencies
     /// as parse.checked and dependencies.checked once past their check. For tests.
     member internal _.OnFlight(hook: string -> string -> CancellationToken -> unit) : unit = project.FlightHook <- hook
+
+    /// Runs on the graph thread after each file a read in one turn reads (ReadInOneTurn), between that file and the next.
+    member internal _.OnTurnFile(hook: TurnFile -> unit) : unit = turnFileHook <- hook
 
     /// How many flights of the kind found themselves superseded before doing their work. For tests.
     member internal _.SkippedFlights(kind: string) : int64 = project.SkippedFlights kind

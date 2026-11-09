@@ -47,6 +47,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     /// while it loads again) or the server shuts down meanwhile. A request the client cancelled never gets to the handler:
     /// the library cancels the async itself. The edits before the request may still be queued; its answer is for the text
     /// they leave.
+    // JSON-RPC's InternalError. LspResult.internalError in Ionide.LanguageServerProtocol 0.7.0 sends -32602 (InvalidParams)
+    let internalError (message: string) : LspResult<'T> = Error(JsonRpc.Error.Create(-32603, message))
+
     let reading (what: string) (none: 'T) (path: unit -> string) (run: ProjectGraph -> string -> CancellationToken -> Task<'T>) : Async<LspResult<'T>> =
         async {
             let! ct = Async.CancellationToken
@@ -73,7 +76,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
                 | e ->
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
-                    return LspResult.internalError e.Message
+                    return internalError e.Message
         }
 
     /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
@@ -133,7 +136,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 let found = WorkspacePeek.peek p.Directory p.Deep (List.ofArray p.ExcludedDirs)
                 return plain (Responses.workspacePeek found)
             with ex ->
-                return LspResult.internalError ex.Message
+                return internalError ex.Message
         }
 
     member _.FSharpWorkspaceLoad(p: WorkspaceLoadParms) : Async<LspResult<PlainNotification>> =
@@ -143,7 +146,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 let! _ = workspace.Load projects |> Async.AwaitTask
                 return plain (Responses.workspaceLoad true)
             with ex ->
-                return LspResult.internalError ex.Message
+                return internalError ex.Message
         }
 
     /// `rfs/why`: why the declaration at the position was checked again. Waits like the queries do.

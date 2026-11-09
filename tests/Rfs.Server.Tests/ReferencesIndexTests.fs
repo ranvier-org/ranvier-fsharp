@@ -91,16 +91,25 @@ let private dropTrace (host: GraphHost) : Task =
 let private resultOf (g: ProjectGraph) (file: string) : WeakReference =
     Task.Run(fun () -> g.ReadFile(file, (fun view -> WeakReference view.Result), CancellationToken.None).GetAwaiter().GetResult()).Result
 
-/// The same, through the file's index, which a read builds
+/// A file's index, read in one turn as References reads it, which builds it
+let private usesIn (g: ProjectGraph) (file: string) : Task<FileUses> =
+    task {
+        let scope () : TurnScope<unit> = { Loading = false; Projects = [| g, [ file ] |]; Name = None; Extra = () }
+
+        match! g.ReadInOneTurn(scope, CancellationToken.None) with
+        | TurnRead.Read(_, [| _, [| TurnFile.Indexed(_, _, uses) |] |]) -> return uses
+        | other -> return failtest $"no index of %s{file}: %A{other}"
+    }
+
+/// The result a file's index is of, through the index, made off this state machine so no local of it holds the result
 let private indexedResultOf (g: ProjectGraph) (file: string) : WeakReference =
-    Task.Run(fun () ->
-        let read = g.ReadUses(file, CancellationToken.None).GetAwaiter().GetResult()
-        WeakReference read.Result).Result
+    Task.Run(fun () -> (usesIn g file).GetAwaiter().GetResult().Source).Result
 
 let private aText = "module Proj.A\n\ntype T = { F: int }\n\nlet shared = 1\n"
 let private bText = "module Proj.B\n\nlet b = Proj.A.shared\n"
 let private cText = "module Proj.C\n\nlet c = 2\n"
 let private cUsing = "module Proj.C\n\nlet c = Proj.A.shared\n"
+let private dUsing = "module Proj.D\n\nlet d = Proj.A.shared\n"
 let private threeFiles = [ "A.fs", aText; "B.fs", bText; "C.fs", cText ]
 
 /// `shared` at its definition, and `T` at its
@@ -154,50 +163,49 @@ let tests =
                       })
           }
 
-          // The read asks for the files at each turn it tries, on the graph thread: an edit posted from there lands
-          // between that turn and the next, while the request waits
-          testTask "an edit that brings a use into a skipped file during the request is in the answer" {
+          // D comes after C and uses the name, so it is read after C in a turn and checks C's version: an edit of C made
+          // between the two leaves that turn pending
+          testTask "an edit that brings a use into a file skipped in a turn is in the answer" {
               do!
-                  withProject false threeFiles (fun g path scope ->
+                  withProject false (threeFiles @ [ "D.fs", dUsing ]) (fun g path scope ->
                       task {
                           let c = path "C.fs"
-                          let mutable asks = 0
+                          let mutable skipped = 0
 
-                          let scope =
-                              { scope with
-                                  FilesOf =
-                                      fun g' ->
-                                          asks <- asks + 1
-                                          if asks = 3 then g.SetText(c, cUsing) |> ignore
-                                          scope.FilesOf g' }
+                          // Between C and D, in the turn that skipped C
+                          g.OnTurnFile(fun f ->
+                              match f with
+                              | TurnFile.Skipped(file, _) when file = c ->
+                                  skipped <- skipped + 1
+                                  if skipped = 1 then g.SetText(c, cUsing) |> ignore
+                              | _ -> ())
 
                           let! (answer: References.Answer) = References.find scope g (path "A.fs") (fst sharedAt) (snd sharedAt) CancellationToken.None
-                          Expect.isGreaterThanOrEqual asks 3 "the edit was made during the request"
+                          Expect.equal skipped 1 "C was skipped in a turn, and then read"
                           Expect.equal (lines c answer) [ 3 ] "C's new use"
+                          Expect.equal (lines (path "D.fs") answer) [ 3 ] "D's use"
                       })
           }
 
-          testTask "a use that came and went in a skipped file during the request isn't answered" {
+          testTask "a use that came and went in a file skipped in a turn isn't answered" {
               do!
-                  withProject false threeFiles (fun g path scope ->
+                  withProject false (threeFiles @ [ "D.fs", dUsing ]) (fun g path scope ->
                       task {
                           let c = path "C.fs"
-                          let mutable asks = 0
+                          let mutable skipped = 0
 
-                          let scope =
-                              { scope with
-                                  FilesOf =
-                                      fun g' ->
-                                          asks <- asks + 1
+                          g.OnTurnFile(fun f ->
+                              match f with
+                              | TurnFile.Skipped(file, _) when file = c ->
+                                  skipped <- skipped + 1
 
-                                          if asks = 3 then
-                                              g.SetText(c, cUsing) |> ignore
-                                              g.SetText(c, cText) |> ignore
-
-                                          scope.FilesOf g' }
+                                  if skipped = 1 then
+                                      g.SetText(c, cUsing) |> ignore
+                                      g.SetText(c, cText) |> ignore
+                              | _ -> ())
 
                           let! (answer: References.Answer) = References.find scope g (path "A.fs") (fst sharedAt) (snd sharedAt) CancellationToken.None
-                          Expect.isGreaterThanOrEqual asks 3 "the edits were made during the request"
+                          Expect.isGreaterThan skipped 1 "C was skipped in a turn, edited twice, and skipped again"
                           Expect.equal (lines c answer) [] "its last text has none"
                       })
           }
@@ -303,7 +311,7 @@ let tests =
                   withProject false [ "Early.fs", early 0; "Late.fs", late ] (fun g path _ ->
                       task {
                           let mutable n = 0
-                          let reading = g.ReadUses(path "Late.fs", CancellationToken.None)
+                          let reading = usesIn g (path "Late.fs")
                           let clock = Diagnostics.Stopwatch.StartNew()
 
                           while g.UsesBuilt = 0L && clock.Elapsed.TotalSeconds < 90. do
@@ -314,8 +322,8 @@ let tests =
                           Expect.equal g.UsesBuilt 1L $"built once, after %d{n} edits"
                           Expect.isGreaterThan n 2 "edits ran during the build"
                           let! _ = g.AllDiagnostics() |> within
-                          let! (read: UsesRead) = reading |> within
-                          Expect.isGreaterThan read.Uses.Keys 3000 "it has the file's uses"
+                          let! (uses: FileUses) = reading |> within
+                          Expect.isGreaterThan uses.Keys 3000 "it has the file's uses"
                       })
           }
 
@@ -336,8 +344,8 @@ let tests =
                           do! dropTrace host
                           Expect.equal (collected [ control ]) [ true ] "the control: a result nothing indexed is collected"
                           Expect.equal (collected [ indexed ]) [ true ] "the indexed result is collected too"
-                          let! (read: UsesRead) = g.ReadUses(b, CancellationToken.None) |> within
-                          Expect.isGreaterThan read.Uses.Keys 0 "and the index answers for the new result"
+                          let! (uses: FileUses) = usesIn g b |> within
+                          Expect.isGreaterThan uses.Keys 0 "and the index answers for the new result"
                       })
           }
 
@@ -371,7 +379,8 @@ let tests =
               do!
                   withProject false threeFiles (fun g path _ ->
                       task {
-                          let! (read: UsesRead) = g.ReadUses(path "B.fs", CancellationToken.None) |> within
+                          let! (uses: FileUses) = usesIn g (path "B.fs") |> within
+                          let! (result: obj) = g.ReadFile(path "B.fs", (fun v -> box v.Result), CancellationToken.None) |> within
                           let seen = HashSet<obj>(HashIdentity.Reference)
 
                           let rec walk (o: obj) =
@@ -392,8 +401,8 @@ let tests =
                                           if not f.FieldType.IsPointer then
                                               walk (f.GetValue o)
 
-                          walk read.Uses
+                          walk uses
                           Expect.isGreaterThan seen.Count 5 "it walked the index"
-                          Expect.isTrue (obj.ReferenceEquals(read.Uses.Source.Target, read.Result)) "the source is known only weakly"
+                          Expect.isTrue (obj.ReferenceEquals(uses.Source.Target, result)) "the source is known only weakly"
                       })
           } ]

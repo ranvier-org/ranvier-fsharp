@@ -56,14 +56,6 @@ type FileUses internal (source: WeakReference, byKey: Dictionary<string, KeyUses
     /// How many keys it holds
     member _.Keys = byKey.Count
 
-/// A file's uses as read for a request.
-[<NoComparison; NoEquality>]
-type UsesRead =
-    { Uses: FileUses
-      /// The published result: the same object has the same uses
-      Result: obj
-      /// The graph's version of the text the result is for
-      Version: int64 }
 
 /// Symbol keys as references count them, and the index of a file's uses by them.
 module SymbolUses =

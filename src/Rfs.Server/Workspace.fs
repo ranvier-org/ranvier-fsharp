@@ -257,6 +257,8 @@ type private Entry = { Spec: ProjectSpec; Graph: ProjectGraph }
 /// </remarks>
 type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let timeout = defaultArg loadTimeout (Workspace.DefaultLoadTimeout())
+    // Taken on the graph thread too, by a read in one turn (References' scope): nothing that holds it may wait on the
+    // graph thread, or the two wait on each other. Posting to the graph (SetText) doesn't wait.
     let gate = obj ()
     let entries = Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
     let openTexts = Dictionary<string, struct (string * int)>(StringComparer.OrdinalIgnoreCase)
@@ -446,6 +448,11 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     mutations.Release() |> ignore
             finally
                 Interlocked.Decrement &loading |> ignore
+                // A read in one turn waiting through the load counts it as pending: this runs it again
+                try
+                    host.Post ignore
+                with :? ObjectDisposedException ->
+                    ()
         }
 
     let reload (project: string) : Task<unit> =
