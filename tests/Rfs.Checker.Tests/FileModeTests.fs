@@ -913,6 +913,27 @@ let tests =
                       })
           }
 
+          // C1: the D1 comparison remembers which checks it has seen. It must not keep the ones a later edit replaced.
+          testTask "a row's replaced checks are collected while the file stays promoted" {
+              do!
+                  withDeps (fun s ->
+                      task {
+                          do! promote s [ a ]
+                          let! held = s.Graph.DeclarationObjects a
+                          let firstCheck = held.Head
+                          let original = s.Texts[a]
+
+                          for i in 3..6 do
+                              let! r = edit s a (original.Replace("(baseValue + 1) * 2", $"(baseValue + 1) * %d{i}"))
+                              do! expectOracle s r.Diagnostics "the edit"
+
+                          let! mode = s.Graph.WhenPromoted(a, CancellationToken.None) |> settle
+                          Expect.equal mode Declarations "still promoted"
+                          do! dropTrace s
+                          Expect.equal (collected [ firstCheck ]) [ true ] "the row's first check is collected"
+                      })
+          }
+
           // The finish's phases add up to the time spent in FinishFile, so the phase profile attributes all of it
           testTask "the finish phases add up to the finish time" {
               do!

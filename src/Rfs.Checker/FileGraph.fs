@@ -1192,7 +1192,8 @@ module internal FileNodes =
                                 ValueNone
 
                         let live = HashSet<DeclarationKey>(f.Checks |> Seq.map (fun (row, _) -> row.Key), HashIdentity.Structural)
-                        premiseChecked.RemoveWhere(fun c -> not (live.Contains c.Key)) |> ignore
+                        // Only the finish's own: a check replaced by a re-check or a shift holds its sink, environment and tree
+                        premiseChecked.IntersectWith(f.Checks |> Seq.map snd)
 
                         for row, c in f.Checks do
                             row.TypedSignal.Value <- NameIndex.typedKeys path row.Key c.Result.TypedUses
