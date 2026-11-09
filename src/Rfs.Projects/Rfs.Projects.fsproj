@@ -8,6 +8,8 @@
       <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
     </Reference>
     <PackageReference Include="Ionide.ProjInfo" />
+    <!-- The SDK's own loads at run time, through MSBuildLocator -->
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />

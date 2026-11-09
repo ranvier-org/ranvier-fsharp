@@ -93,14 +93,79 @@ let tests =
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
-                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":5,", "\"FormatVersion\":0,"))
-                    (fun j -> j.Replace("\"FormatVersion\":5,", "")) ] do
+                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":6,", "\"FormatVersion\":0,"))
+                    (fun j -> j.Replace("\"FormatVersion\":6,", "")) ] do
                   let json = mutate (ProjectSpec.toJson stale)
                   Expect.notEqual json (ProjectSpec.toJson stale) "mutation applied"
                   File.WriteAllText(cache, json)
                   File.SetLastWriteTimeUtc(cache, DateTime.UtcNow.AddMinutes 1.0)
                   let! again = ProjectSpec.load copy.Project
                   Expect.equal again first "reloaded"
+          }
+
+          // I5. A marked cache shows whether the next load read it or evaluated the project.
+          testTask "a change to what the evaluation read is noticed across sessions" {
+              use copy = copyTiny ()
+              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+
+              let mark () =
+                  File.WriteAllText(cache, File.ReadAllText(cache).Replace("C.fs", "Marked.fs"))
+                  File.SetLastWriteTimeUtc(cache, DateTime.UtcNow)
+
+              let readsCache () =
+                  task {
+                      let! spec = ProjectSpec.load copy.Project
+                      return spec.SourceFiles |> List.exists (fun f -> f.EndsWith "Marked.fs")
+                  }
+
+              let later (path: string) (text: string) =
+                  File.WriteAllText(path, text)
+                  File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes 1.0)
+
+              let shared = Path.Combine(copy.Dir, "shared.props")
+              File.WriteAllText(shared, "<Project />")
+              File.WriteAllText(copy.Project, File.ReadAllText(copy.Project).Replace("</Project>", "<Import Project=\"shared.props\" /></Project>"))
+              let! _ = ProjectSpec.load copy.Project
+              mark ()
+              let! untouched = readsCache ()
+              Expect.isTrue untouched "nothing changed: the cache is read"
+
+              later shared "<Project><PropertyGroup><DefineConstants>FROM_SHARED</DefineConstants></PropertyGroup></Project>"
+              let! imported = readsCache ()
+              Expect.isFalse imported "an imported file changed"
+              let! spec = ProjectSpec.load copy.Project
+              Expect.contains spec.OtherOptions "--define:FROM_SHARED" "with the new options"
+
+              // Made after the evaluation, so nothing read it
+              File.SetLastWriteTimeUtc(shared, DateTime.UtcNow.AddMinutes -1.0)
+              let! _ = ProjectSpec.load copy.Project
+              File.SetLastWriteTimeUtc(cache, DateTime.UtcNow)
+              mark ()
+              later (Path.Combine(copy.Dir, "Directory.Build.props")) "<Project><PropertyGroup><DefineConstants>FROM_DIRECTORY</DefineConstants></PropertyGroup></Project>"
+              let! made = readsCache ()
+              Expect.isFalse made "a Directory.Build.props made since"
+          }
+
+          testTask "the cache is fresh in the artifacts layout, until its assets file changes" {
+              use copy = copyTiny ()
+              File.WriteAllText(Path.Combine(copy.Dir, "Directory.Build.props"), "<Project><PropertyGroup><UseArtifactsOutput>true</UseArtifactsOutput></PropertyGroup></Project>")
+              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let! _ = ProjectSpec.load copy.Project
+              Expect.isFalse (File.Exists(Path.Combine(copy.Dir, "obj", "project.assets.json"))) "the assets file is elsewhere"
+              let assets = Path.Combine(copy.Dir, "artifacts", "obj", "Tiny", "project.assets.json")
+              Expect.isTrue (File.Exists assets) "under artifacts"
+
+              let mark () =
+                  File.WriteAllText(cache, File.ReadAllText(cache).Replace("C.fs", "Marked.fs"))
+                  File.SetLastWriteTimeUtc(cache, DateTime.UtcNow)
+
+              mark ()
+              let! fresh = ProjectSpec.load copy.Project
+              Expect.isTrue (fresh.SourceFiles |> List.exists (fun f -> f.EndsWith "Marked.fs")) "the cache is read"
+
+              File.SetLastWriteTimeUtc(assets, DateTime.UtcNow.AddMinutes 1.0)
+              let! changed = ProjectSpec.load copy.Project
+              Expect.isFalse (changed.SourceFiles |> List.exists (fun f -> f.EndsWith "Marked.fs")) "evaluated again"
           }
 
           testTask "a cache that cannot be written does not fail load" {

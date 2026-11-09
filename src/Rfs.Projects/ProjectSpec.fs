@@ -25,7 +25,7 @@ type ProjectSpec =
 module ProjectSpec =
 
     // Bump when the cache content or the way `load` derives it changes; a mismatch is a cache miss.
-    let private formatVersion = 5
+    let private formatVersion = 6
 
     let toJson (spec: ProjectSpec) =
         let arr (xs: string list) =
@@ -65,14 +65,6 @@ module ProjectSpec =
     let private cachePathFor fsproj (framework: string) = Path.Combine(objDir fsproj, $"rfs-spec-%s{framework}.json")
     let private assetsPath fsproj = Path.Combine(objDir fsproj, "project.assets.json")
 
-    let private isFresh (fsproj: string) (cache: string) =
-        let assets = assetsPath fsproj
-
-        File.Exists cache
-        && File.Exists assets
-        && (let c = File.GetLastWriteTimeUtc cache
-            c >= File.GetLastWriteTimeUtc fsproj && c >= File.GetLastWriteTimeUtc assets)
-
     let private restore (fsproj: string) =
         task {
             let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\"")
@@ -91,6 +83,64 @@ module ProjectSpec =
     // the process's own is the dotnet install, which ignores the repo's global.json and finds an SDK this runtime can't load.
     let private toolsPath =
         lazy (Init.init (DirectoryInfo AppContext.BaseDirectory) None)
+
+    let private sdkOf () = sprintf "%A" toolsPath.Value
+
+    /// The files an evaluation of the project read, and its assets file wherever the layout puts it. A method of its own:
+    /// the MSBuild assemblies load when it is compiled, and `toolsPath` has to have registered them by then.
+    [<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+    let private filesEvaluated (fsproj: string) (properties: (string * string) list) : string list =
+        use collection = new Microsoft.Build.Evaluation.ProjectCollection(dict properties)
+        let project = collection.LoadProject fsproj
+
+        [ for i in project.Imports do
+              i.ImportedProject.FullPath
+
+          match project.GetPropertyValue "ProjectAssetsFile" with
+          | "" -> ()
+          | assets -> assets ]
+
+    /// Imported when they exist, so one made later is in nothing an evaluation read
+    let private conventionalImports (fsproj: string) =
+        let rec up (d: DirectoryInfo) =
+            [ if not (isNull d) then
+                  for name in [ "Directory.Build.props"; "Directory.Build.targets"; "Directory.Packages.props"; "global.json" ] do
+                      Path.Combine(d.FullName, name)
+
+                  yield! up d.Parent ]
+
+        up (FileInfo fsproj).Directory
+
+    /// Whether the cached spec is still what an evaluation would give: the same SDK, and nothing it read has changed since.
+    /// A cache without the list, as when reading it failed, is never fresh.
+    let private isFresh (fsproj: string) (cache: string) =
+        try
+            File.Exists cache
+            && (let c = File.GetLastWriteTimeUtc cache
+                let root = JsonNode.Parse(File.ReadAllText cache)
+
+                not (isNull root["Evaluated"])
+                && root["Sdk"].GetValue<string>() = sdkOf ()
+                && c >= File.GetLastWriteTimeUtc fsproj
+                && root["Evaluated"].AsArray()
+                   |> Seq.forall (fun f ->
+                       let f = f.GetValue<string>()
+                       File.Exists f && c >= File.GetLastWriteTimeUtc f)
+                && conventionalImports fsproj |> List.forall (fun f -> not (File.Exists f) || c >= File.GetLastWriteTimeUtc f))
+        with _ ->
+            false
+
+    let private cacheJson (spec: ProjectSpec) (properties: (string * string) list) =
+        let root = JsonNode.Parse(toJson spec)
+
+        try
+            let evaluated = filesEvaluated spec.ProjectFile properties
+            root["Sdk"] <- JsonValue.Create(sdkOf ())
+            root["Evaluated"] <- JsonArray(evaluated |> List.map (fun x -> JsonValue.Create x :> JsonNode) |> Array.ofList)
+        with ex ->
+            eprintfn "[ranvierautocomplete] %s: the spec cache will not be used, as what the evaluation read is not known: %s" spec.ProjectFile ex.Message
+
+        root.ToJsonString()
 
     /// What the SDK's AssemblyInfo and TargetFramework generators write: assembly attributes, in a namespace holding
     /// nothing. Anything else in a file is a declaration a project's files or its referencing projects can read. A file
@@ -186,8 +236,7 @@ module ProjectSpec =
             failwith
                 $"{spec.ProjectFile}: {missing.Length} referenced assemblies are not on disk (build the referenced projects, build/fetch-corpus.ps1 does it for the corpus):\n{listed}"
 
-    /// Drops the cached spec, so the next `load` evaluates the project again: a change to a props or targets file the
-    /// project imports does not touch the project file, which the cache's freshness check looks at.
+    /// Drops the cached spec, so the next `load` evaluates the project again.
     let invalidate (fsproj: string) : unit =
         try
             let fsproj = Path.GetFullPath fsproj
@@ -232,7 +281,7 @@ module ProjectSpec =
 
                 try
                     Directory.CreateDirectory(objDir fsproj) |> ignore
-                    File.WriteAllText(tmp, toJson spec)
+                    File.WriteAllText(tmp, cacheJson spec properties)
                     File.Move(tmp, cache, true)
                 with
                 | :? IOException
