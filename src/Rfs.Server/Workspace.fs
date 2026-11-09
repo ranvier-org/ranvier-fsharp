@@ -540,6 +540,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
     member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
 
+    /// The source files of the project of `graph`, in file order, signature files too
+    member _.FilesOf(graph: ProjectGraph) : string list =
+        match snapshot () |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
+        | Some e -> e.Spec.SourceFiles
+        | None -> []
+
     /// The projects, transitively, that reference the project of `graph`
     member _.ReferencingProjects(graph: ProjectGraph) : ProjectGraph list =
         let all = snapshot ()

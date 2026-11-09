@@ -141,6 +141,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                     Change = Some TextDocumentSyncKind.Incremental }
                         HoverProvider = Some(U2.C1 true)
                         DefinitionProvider = Some(U2.C1 true)
+                        ReferencesProvider = Some(U2.C1 true)
                         CompletionProvider =
                             Some
                                 { TriggerCharacters = Some [| "."; "'" |]
@@ -301,7 +302,37 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentPrepareRename(_) = notImplemented
         member _.TextDocumentPrepareTypeHierarchy(_) = notImplemented
         member _.TextDocumentRangeFormatting(_) = notImplemented
-        member _.TextDocumentReferences(_) = notImplemented
+        member _.TextDocumentReferences(p: ReferenceParams) =
+            async {
+                let scope: References.Scope =
+                    { OwnersOf = workspace.OwnersOf
+                      ReferencingProjects = workspace.ReferencingProjects
+                      Projects = fun () -> workspace.Projects
+                      FilesOf = workspace.FilesOf }
+
+                let! answer =
+                    reading "references" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                        task {
+                            let! found = References.find scope graph path (int p.Position.Line) (int p.Position.Character) ct
+
+                            match found with
+                            // The client asks again: LSP's ContentModified says just this
+                            | References.Answer.Moved -> return Error(JsonRpc.Error.Create(-32801, "The files changed while references were read"))
+                            | References.Answer.Found uses ->
+                                let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
+
+                                return
+                                    Ok(
+                                        Some
+                                            [| for struct (r, isDefinition) in uses do
+                                                   if p.Context.IncludeDeclaration || not isDefinition then
+                                                       { Uri = Paths.toUri r.FileName
+                                                         Range = { Start = position r.StartLine r.StartColumn; End = position r.EndLine r.EndColumn } } |]
+                                    )
+                        })
+
+                return answer |> Result.bind id
+            }
         member _.TextDocumentRename(_) = notImplemented
         member _.TextDocumentSelectionRange(_) = notImplemented
         member _.TextDocumentSemanticTokensFull(_) = notImplemented
@@ -410,6 +441,7 @@ module Server =
               "workspace/didChangeWatchedFiles"
               "textDocument/hover"
               "textDocument/definition"
+              "textDocument/references"
               "textDocument/completion"
               "completionItem/resolve" ]
 

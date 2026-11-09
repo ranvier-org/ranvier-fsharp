@@ -16,6 +16,8 @@
     <Compile Include="TokenGrid.fs" />
     <Compile Include="DefinitionGridTexts.fs" />
     <Compile Include="DefinitionGridTests.fs" />
+    <Compile Include="ReferencesGridTests.fs" />
+    <Compile Include="ReferencesTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

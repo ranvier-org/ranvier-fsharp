@@ -12,6 +12,7 @@
     <Compile Include="Features/Hover.fs" />
     <Compile Include="Features/Completion.fs" />
     <Compile Include="Features/Definition.fs" />
+    <Compile Include="Features/References.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
