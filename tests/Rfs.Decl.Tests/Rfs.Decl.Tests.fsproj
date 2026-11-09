@@ -10,6 +10,7 @@
     <Compile Include="ContentTests.fs" />
     <Compile Include="GuardTests.fs" />
     <Compile Include="FinishBugTests.fs" />
+    <Compile Include="SchemeNameTests.fs" />
     <Compile Include="D1Tests.fs" />
     <Compile Include="FileLevelTests.fs" />
     <Compile Include="FinishCacheTests.fs" />

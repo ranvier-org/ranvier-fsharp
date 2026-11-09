@@ -137,6 +137,9 @@ let private sigConformOpenTargets = [| "System"; "SigConform.A" |]
 /// Two signature pairs, where whether X.fs fails depends on whether W.fs does (S1-R2)
 let private sigChain2Project = Path.Combine(Path.GetDirectoryName depsDir, "SigChain2", "SigChain2.fsproj")
 let private sigChain2OpenTargets = [| "System"; "V"; "W"; "A"; "Y" |]
+/// Constrained generics read across files
+let private schemesProject = Path.Combine(Path.GetDirectoryName depsDir, "Schemes", "Schemes.fsproj")
+let private schemesOpenTargets = [| "System"; "Schemes.A"; "Schemes.B" |]
 
 let private addOpen (openTargets: string[]) : Mutation =
     fun random text -> Some(place random text (fun indent -> $"%s{indent}open %s{pick random openTargets}"))
@@ -530,6 +533,49 @@ let private unitWithMember (counter: int ref) (follow: (string -> (string * stri
 
             Some(replaceMatch text m (m.Groups[1].Value + string (random.Next 100)), $"edit the body of Unit%s{n}")
 
+/// Generics whose constraint mentions a type variable or a type of the file, each with a use from another file.
+/// `{n}` names the declaration, `{m}` the module holding it.
+let private constrainedShapes =
+    [| "let cg{n} (x: #seq<'a>) = x", "{m}.cg{n} [ 1 ]"
+       "let cg{n}<'a, 'b when 'a :> seq<'b>> (x: 'a) = x", "{m}.cg{n} [ 1 ]"
+       "let inline cg{n} (x: ^T) y = x + y", "{m}.cg{n} 1 2"
+       "type CgC{n}() =\n    member _.Id = 1\n\nlet cg{n}<'a when 'a :> CgC{n}> (x: 'a) = x", "{m}.cg{n} ({m}.CgC{n}())"
+       "type CgG{n}<'a, 'b when 'a :> seq<'b>>(x: 'a) =\n    member _.X = x", "{m}.CgG{n}<int list, int>([ 1 ]).X"
+       "type CgS{n} =\n    static member N(x: #seq<'a>) = x", "{m}.CgS{n}.N [ 1 ]"
+       "[<Measure>]\ntype cgm{n}\n\nlet cg{n}<'a, [<Measure>] 'u when 'a :> seq<float<'u>>> (x: 'a) = x", "{m}.cg{n} [ 1.0<{m}.cgm{n}> ]" |]
+
+let private moduleOf (text: string) =
+    let header = Regex.Match(text, @"^module\s+([\w.]+)", RegexOptions.Multiline)
+    if header.Success then Some header.Groups[1].Value else None
+
+/// Adds a constrained generic at the end of a module file, and remembers which module holds it and how to use it.
+let private constrainedDeclaration (counter: int ref) (defined: ResizeArray<string * string>) : Mutation =
+    fun random text ->
+        match moduleOf text with
+        | None -> None
+        | Some holder ->
+            counter.Value <- counter.Value + 1
+            let declaration, usage = pick random constrainedShapes
+            let fill (s: string) = s.Replace("{n}", string counter.Value).Replace("{m}", holder)
+
+            appended text (fill declaration)
+            |> Option.map (fun edited ->
+                defined.Add(holder, fill usage)
+                edited, $"constrained generic %s{(fill declaration).Replace('\n', ' ')}")
+
+/// A use, from a module `order` puts after it, of a constrained generic: it reads the declaring file's published signature.
+let private constrainedUse (counter: int ref) (defined: ResizeArray<string * string>) (order: string -> int) : Mutation =
+    fun random text ->
+        let here = moduleOf text |> Option.map order |> Option.defaultValue Int32.MaxValue
+        let usable = [| for holder, usage in defined do if order holder < here then usage |]
+
+        if usable.Length = 0 then
+            None
+        else
+            counter.Value <- counter.Value + 1
+            let usage = pick random usable
+            appended text $"let usedCg%d{counter.Value} = %s{usage}" |> Option.map (fun edited -> edited, $"use of a constrained generic: %s{usage}")
+
 /// The first of up to 20 mutations picked at random that applies to the text. Outside the task that uses it: a
 /// recursive function inside a task builder is not compiled to a state machine (FS3511).
 let private mutate (random: Random) (mutations: Mutation[]) (text: string) =
@@ -553,6 +599,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
             elif project = sigUnmatchedProject then sigUnmatchedOpenTargets
             elif project = sigChain2Project then sigChain2OpenTargets
             elif project = sigConformProject then sigConformOpenTargets
+            elif project = schemesProject then schemesOpenTargets
             else depsOpenTargets
         use _ = { new IDisposable with member _.Dispose() = (s :> IAsyncDisposable).DisposeAsync().AsTask().Wait() }
         let random = Random seed
@@ -561,6 +608,14 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
         let originals = Collections.Generic.Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let counter = ref 0
         let follow = ref None
+        // How to use each constrained generic an edit declared
+        let constrained = ResizeArray<string * string>()
+        let moduleOrder = [ for f in files do yield! Option.toList (moduleOf originals[f]) ]
+
+        let orderOf (name: string) =
+            match List.tryFindIndex ((=) name) moduleOrder with
+            | Some i -> i
+            | None -> Int32.MaxValue
         // Each file's edit the previous edit of it left to do next
         let followed = Collections.Generic.Dictionary<string, string -> (string * string) option>(StringComparer.OrdinalIgnoreCase)
 
@@ -593,16 +648,34 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                farAugmentation counter
                farAugmentation counter
                unitWithMember counter follow
-               unitWithMember counter follow |]
+               unitWithMember counter follow
+               constrainedDeclaration counter constrained
+               constrainedDeclaration counter constrained
+               constrainedUse counter constrained orderOf
+               constrainedUse counter constrained orderOf |]
 
         let after = if project = sigUnmatchedProject then [| topHeader |] else [||]
-        let mutations = Array.concat [ before; [| failingDefault |]; after ]
+
+        // Mostly correct code, so a later file has a signature to read: the other edits leave errors in nearly every step
+        let mutations =
+            if project = schemesProject then
+                [| literal
+                   addDeclaration [| "1" |] counter
+                   blankLine
+                   constrainedDeclaration counter constrained
+                   constrainedDeclaration counter constrained
+                   constrainedUse counter constrained orderOf
+                   constrainedUse counter constrained orderOf
+                   constrainedUse counter constrained orderOf |]
+            else
+                Array.concat [ before; [| failingDefault |]; after ]
 
 
         let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
         use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun b -> premise.Enqueue b.Key)
 
         let mutable withErrors = 0
+        let mutable firstError = ""
         let mutable errorFiles = 0
         let mutable checks = 0L
         let mutable published = 0
@@ -640,7 +713,8 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 | _ ->
                     if toggle then
                         s.Texts[file], (if wanted.Contains file then "demote" else "promote")
-                    elif random.Next 6 = 0 then
+                    // A reverted file on Schemes would leave other files' uses of what it declared unresolved
+                    elif project <> schemesProject && random.Next 6 = 0 then
                         originals[file], "revert to the original"
                     else
                         mutate random mutations s.Texts[file]
@@ -684,6 +758,14 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
             if not diff.IsEmpty then
                 fail (String.concat Environment.NewLine diff)
 
+            // What no diagnostic of these texts need show: a published signature that lost a link to its own binders
+            let! results = s.Graph.AllFileResults() |> settle
+
+            for KeyValue(f, result) in results do
+                match result.Signature.OutOfScope() with
+                | [||] -> ()
+                | outOfScope -> fail ($"%s{Path.GetFileName f}'s published signature:\n" + String.concat Environment.NewLine outOfScope)
+
             // Each file's settled diagnostics, asked for before anything settled, are the oracle's for that file too
             for KeyValue(f, settled) in r.Settled do
                 let perFile = Rfs.Lsp.Diagnostics.compare (r.Diagnostics[f] |> Seq.map Rfs.Projects.FcsDiagnostics.ofFcs |> List.ofSeq) (settled |> Seq.map Rfs.Projects.FcsDiagnostics.ofFcs |> List.ofSeq)
@@ -701,6 +783,10 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
 
             if r.Diagnostics.Values |> Seq.exists (Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)) then
                 withErrors <- withErrors + 1
+
+                if firstError = "" then
+                    let d = r.Diagnostics.Values |> Seq.concat |> Seq.find (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                    firstError <- $"step %d{step}, after %s{what}: %s{Path.GetFileName d.FileName} line %d{d.StartLine}: %s{d.Message}"
 
             errorFiles <- errorFiles + (r.Diagnostics.Values |> Seq.filter (Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)) |> Seq.length)
 
@@ -726,6 +812,9 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
             Expect.isGreaterThan conformedEdits 0 $"%A{mode} seed %d{seed}: the run toggles what the signature file overwrites"
 
         Expect.isGreaterThan blankLineEdits 0 $"%A{mode} seed %d{seed}: the run inserts or removes a blank line"
+
+        if project = schemesProject then
+            Expect.isGreaterThanOrEqual (steps - withErrors) 40 $"%A{mode} seed %d{seed}: the run checks correct code for a while. The first error: %s{firstError}"
 
         Expect.equal
             FSharp.Compiler.Declarations.ProjectContext.ShiftFinishMisses
@@ -840,7 +929,10 @@ let private fuzz (name: string) (mode: FileMode) =
 
           // Argument names, arities and type parameter names the signature file overwrites, used by later declarations
           for seed in [ 1515; 4242; 7919; 47514; 63352 ] ->
-              testTask $"SigConform seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigConformProject mode seed 200 } ]
+              testTask $"SigConform seed %d{seed}: 200 random edits equal the oracle after each" { do! run sigConformProject mode seed 200 }
+          // Constrained generics whose declarations and uses are in different files
+          for seed in [ 1515; 4242; 7919 ] ->
+              testTask $"Schemes seed %d{seed}: 200 random edits equal the oracle after each" { do! run schemesProject mode seed 200 } ]
 
 /// The graph as ProjectGraph.Create makes it: every file file-level
 [<Tests>]
