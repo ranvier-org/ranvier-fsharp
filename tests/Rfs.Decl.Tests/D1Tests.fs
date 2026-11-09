@@ -504,10 +504,9 @@ let tests =
                     "\ntype T() =\n    member _.M(_: int) = 1\n\nlet after = 1\n"
                     "\ntype T() =\n    member _.M(t: int) = t\n\nlet after = 1\n"
 
-                // The fingerprint numbers type parameters, and what the declarations after it report shows them by
-                // position too ('a), so a name is not part of what they see
-                conformsWith
-                    false
+                // What the declarations after it report can show a type parameter by the name its user wrote (an
+                // overload list does), so the name is part of what they see
+                conforms
                     "a type parameter takes its name from its signature"
                     "val g: x: 'a -> 'a\nval after: int\n"
                     "\nlet g (x: 'b) = x\n\nlet after = 1\n"

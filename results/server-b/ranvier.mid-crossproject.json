@@ -2,13 +2,13 @@
   "server": "ranvier",
   "scenario": "mid-crossproject",
   "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
-  "startedAt": "2026-11-09T01:51:51.5183706Z",
-  "coldMs": 4957.154399999999,
+  "startedAt": "2026-11-09T04:18:03.4189392Z",
+  "coldMs": 5297.1827,
   "steps": [
     {
       "index": 0,
       "step": "open src/FsAutoComplete.Core/AdaptiveExtensions.fs",
-      "latencyMs": 234.8366,
+      "latencyMs": 253.454,
       "publishes": 1,
       "declsChecked": 0,
       "oracleDiff": null,
@@ -17,7 +17,7 @@
     {
       "index": 1,
       "step": "open src/FsAutoComplete.Logging/FsLibLog.fs",
-      "latencyMs": 153.2237,
+      "latencyMs": 141.2698,
       "publishes": 1,
       "declsChecked": 86,
       "oracleDiff": null,
@@ -26,7 +26,7 @@
     {
       "index": 2,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #1 fwd",
-      "latencyMs": 42.6083,
+      "latencyMs": 44.1323,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -35,7 +35,7 @@
     {
       "index": 3,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #2 inv",
-      "latencyMs": 51.1765,
+      "latencyMs": 30.9606,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -44,7 +44,7 @@
     {
       "index": 4,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #3 fwd",
-      "latencyMs": 12.9051,
+      "latencyMs": 19.994,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -53,7 +53,7 @@
     {
       "index": 5,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #4 inv",
-      "latencyMs": 28.1448,
+      "latencyMs": 13.2571,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -62,7 +62,7 @@
     {
       "index": 6,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #5 fwd",
-      "latencyMs": 14.1758,
+      "latencyMs": 29.134,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -71,7 +71,7 @@
     {
       "index": 7,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #6 inv",
-      "latencyMs": 17.2871,
+      "latencyMs": 14.8404,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -80,7 +80,7 @@
     {
       "index": 8,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #7 fwd",
-      "latencyMs": 12.6985,
+      "latencyMs": 22.4568,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -89,7 +89,7 @@
     {
       "index": 9,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #8 inv",
-      "latencyMs": 13.163,
+      "latencyMs": 12.5035,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -98,7 +98,7 @@
     {
       "index": 10,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #9 fwd",
-      "latencyMs": 16.6022,
+      "latencyMs": 17.8341,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
@@ -107,14 +107,14 @@
     {
       "index": 11,
       "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #10 inv",
-      "latencyMs": 15.1555,
+      "latencyMs": 13.7523,
       "publishes": 1,
       "declsChecked": 87,
       "oracleDiff": [],
       "error": null
     }
   ],
-  "peakWorkingSetMb": 767.2890625,
-  "allocatedMb": 17677.060096740723,
-  "gen2": 22
+  "peakWorkingSetMb": 746.62890625,
+  "allocatedMb": 17697.951538085938,
+  "gen2": 24
 }
