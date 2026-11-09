@@ -116,7 +116,7 @@ let fixTests =
               do! eventually "the last publish" (fun () -> hasVersion s a 501)
           }
 
-          testTask "a document keeps one row, one last list and one source, not one per edit" {
+          testTask "a document keeps one row and one last list, not one per edit" {
               let! s = startSession () |> within
               use _ = disposing s
               do! openAll s [ a ]
@@ -127,7 +127,7 @@ let fixTests =
 
               do! eventually "the last edit's publish" (fun () -> hasVersion s a 5)
               let! retained = s.Server.Publisher.Retained()
-              Expect.equal retained 3 "one row, one last list, one source"
+              Expect.equal retained 2 "one row, one last list"
           }
 
           testTask "a foreign publish does not suppress the file's own" {
@@ -346,8 +346,9 @@ let fixTests =
         ]
 
 /// A copy of Deps whose C.fs, after a #line directive naming A.fs, reports an error that lands in A.fs: a file's
-/// diagnostics in another file. A and C open, then C closed. The session, A, C, the project and the foreign message.
-let private closedForeignSession () : Task<Session * string * string * string * string> =
+/// diagnostics in another file. A and C open, then C closed when `close`. The session, A, C, the project and the
+/// foreign message.
+let private foreignSession (close: bool) : Task<Session * string * string * string * string> =
     task {
         let dir = copyFixtureDir "Deps"
         let project = Path.Combine(dir, "Deps.fsproj")
@@ -360,12 +361,24 @@ let private closedForeignSession () : Task<Session * string * string * string * 
         let foreign (d: Diagnostic) = d.Message.Contains "string"
         do! eventually "C's error in A" (fun () -> lastOf s aFile |> List.exists foreign)
         let message = (lastOf s aFile |> List.find foreign).Message
-        do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri cFile) ])
-        do! eventually "C is cleared" (fun () -> publishesOf s cFile |> Array.exists (fun (_, v, _) -> v = None))
-        do! s.Server.Publisher.Flushed()
-        Expect.contains (lastOf s aFile |> List.map _.Message) message "C's error in A stays: C on disk still reports it"
+
+        if close then
+            do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri cFile) ])
+            do! eventually "C is cleared" (fun () -> publishesOf s cFile |> Array.exists (fun (_, v, _) -> v = None))
+            do! s.Server.Publisher.Flushed()
+            Expect.contains (lastOf s aFile |> List.map _.Message) message "C's error in A stays: C on disk still reports it"
+
         return s, aFile, cFile, project, message
     }
+
+/// Drops `name` from the project file
+let private dropFromProject (project: string) (name: string) =
+    File.WriteAllText(
+        project,
+        (File.ReadAllText project)
+            .Replace($"    <Compile Include=\"%s{name}\" />\r\n", "")
+            .Replace($"    <Compile Include=\"%s{name}\" />\n", "")
+    )
 
 let private weakGraph (s: Session) (path: string) : WeakReference = WeakReference((s.Server.Workspace.ProjectOf path).Value)
 
@@ -495,8 +508,8 @@ let rowTests =
               do! Task.Delay 1000
               do! s.Server.Publisher.Flushed()
               Expect.equal (publishesOf s shared).Length before "S, in the failed project, gets nothing new"
-              let! faults = s.Server.Publisher.Faults()
-              Expect.isGreaterThan faults 0 "and S's fault is logged"
+              let! faulted = s.Server.Publisher.Faulted shared
+              Expect.isTrue faulted "and S's fault is logged"
           }
 
           testTask "a close that a load overtakes still takes the unsaved text out" {
@@ -522,7 +535,7 @@ let rowTests =
           }
 
           testTask "a closed file's diagnostics in an open file follow it while it reports any" {
-              let! (s, aFile, _, _, message) = closedForeignSession ()
+              let! (s, aFile, _, _, message) = foreignSession true
               use _ = disposing s
               // C is closed: only its row's check says that A's edit takes its error away
               do! s.Lsp.DidChange(aFile, 1, replace s aFile "baseValue = 10" "baseValue = \"s\"")
@@ -530,14 +543,10 @@ let rowTests =
           }
 
           testTask "a closed file's diagnostics in an open file go when a reload drops it, and so does the old graph" {
-              let! (s, aFile, _, project, message) = closedForeignSession ()
+              let! (s, aFile, _, project, message) = foreignSession true
               use _ = disposing s
               let old = weakGraph s aFile
-
-              File.WriteAllText(
-                  project,
-                  (File.ReadAllText project).Replace("    <Compile Include=\"C.fs\" />\r\n", "").Replace("    <Compile Include=\"C.fs\" />\n", "")
-              )
+              dropFromProject project "C.fs"
 
               do! s.Server.Workspace.Reload project |> within
               do! s.Server.Publisher.Flushed()
@@ -545,4 +554,51 @@ let rowTests =
               // The closed row went with the reload, so nothing of the publisher holds the replaced graph
               do! dropTrace s.Server.Host
               Expect.isTrue (collected old) "the replaced graph is collected"
+          } 
+          testTask "an open file's diagnostics in another open file go when a reload drops it" {
+              let! (s, aFile, cFile, project, message) = foreignSession false
+              use _ = disposing s
+              dropFromProject project "C.fs"
+              do! s.Server.Workspace.Reload project |> within
+              do! s.Server.Publisher.Flushed()
+              do! eventually "C's empty list" (fun () -> (lastOf s cFile).IsEmpty)
+              do! eventually "A without C's error" (fun () -> not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+          }
+
+          testTask "work after a pump sees every effect of the pump's flush, whatever order they were made in" {
+              let host = Rfs.Checker.GraphHost.Start "after-pump"
+              use _ = { new IAsyncDisposable with member _.DisposeAsync() = (host.Dispose(); ValueTask.CompletedTask) }
+
+              for countingFirst in [ true; false ] do
+                  let adopted = ref 0
+                  let seen = Collections.Concurrent.ConcurrentQueue<int>()
+
+                  let! (signal: Ranvier.Signal<int>) =
+                      host.Read(fun () ->
+                          let signal = Ranvier.Api.createSignal 0
+
+                          let counting () =
+                              Ranvier.Api.createEffect (fun () ->
+                                  if signal.Value > 0 then
+                                      GraphTurn.afterPump host (fun () -> seen.Enqueue adopted.Value))
+
+                          let adopting () =
+                              Ranvier.Api.createEffect (fun () ->
+                                  if signal.Value > 0 then
+                                      adopted.Value <- adopted.Value + 1)
+
+                          Ranvier.Api.createRoot (fun _ ->
+                              if countingFirst then
+                                  counting ()
+                                  adopting ()
+                              else
+                                  adopting ()
+                                  counting ())
+                          |> ignore
+
+                          signal)
+
+                  host.Post(fun () -> signal.Value <- 1)
+                  do! eventually "the count" (fun () -> seen.Count = 1)
+                  Expect.equal (seen.ToArray()) [| 1 |] $"the count includes the adoption (counting effect made first: %b{countingFirst})"
           } ]

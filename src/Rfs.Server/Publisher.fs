@@ -29,6 +29,31 @@ type private Row =
       /// A new epoch asks for one list sent even if it equals the last one: an open, an edit, a load
       Epoch: int64 }
 
+/// What a row's file found, by the file each diagnostic is in. Graph thread.
+[<NoComparison; ReferenceEquality>]
+type private Found =
+    { Groups: IReadOnlyDictionary<string, Rfs.Lsp.Diagnostic list>
+      /// From a check settled for the row as it is now; false while an earlier one is kept
+      Current: bool }
+
+    static member None: Found =
+        { Groups = Dictionary<string, Rfs.Lsp.Diagnostic list>() :> IReadOnlyDictionary<_, _>
+          Current = false }
+
+module internal GraphTurn =
+    /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush. Graph
+    /// thread. A Post from the graph thread runs at once, inside the flush. A settle step that is done at once is removed
+    /// before the host faults parked waits, so a fault elsewhere never reaches it.
+    let afterPump (host: GraphHost) (work: unit -> unit) : unit =
+        host.WhenSettled(fun () ->
+            try
+                work ()
+            with ex ->
+                eprintfn "[ranvierautocomplete] work after a pump failed: %O" ex
+
+            ValueSome())
+        |> ignore
+
 /// <summary>
 /// Document sync and the diagnostics the editor sees: one row per open document, whose effect reads the file's settled
 /// diagnostics and queues the send, under the document's own URI and LSP version, on an ordered outbox.
@@ -44,11 +69,12 @@ type private Row =
 /// Each epoch's first settled list is sent even when it equals the last one, and followed by
 /// <c>rfs/declarationsChecked</c>; later ones only when they differ. Closing sends the empty list, and nothing is sent
 /// for the file after it until it is opened again. A file's list is the union of what each checked file found in it
-/// (after a #line directive, a diagnostic can land in another file): a graph-thread dictionary of each source's last
-/// applied groups. It keeps a source's last settled groups while that source is pending, as a fold over rows would, so
-/// a list may mix a source's older groups with another's newer ones until both settle, as before. A closed file keeps
-/// its row while it reports anything to an open document, so what it reports follows its checks; then the row and its
-/// groups go. After a load, a source no project owns loses its groups, and a closed row follows its owners or goes.
+/// (after a #line directive, a diagnostic can land in another file): each row's value is what its file's check found,
+/// by target, and a row's effect reads every row's value. A row's value keeps its last settled check while the next is
+/// pending (a fold's "last settled value for a pending row"), so a list may mix one file's older findings with another's
+/// newer ones until both settle, as before rows; a row whose file has no owner finds nothing. A closed file keeps its
+/// row while it reports anything to an open document, so what it reports follows its checks; then the row goes, and
+/// with it what it reported. After a load, a closed row follows its owners, or goes with them.
 /// </para>
 /// <para>
 /// A check or graph that fails, for a row's file, publishes nothing new for it and is logged. It touches no other row:
@@ -61,11 +87,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     // Graph thread
     let lastKeys = Dictionary<string, struct (Rfs.Lsp.Range * int * string * string) list>(StringComparer.OrdinalIgnoreCase)
     let lastAdopted = Dictionary<ProjectGraph, int64>(HashIdentity.Reference)
-    // What each checked file reported, by the file the diagnostics are in: a file's diagnostics are the union over sources
-    let contributions = SortedDictionary<string, Dictionary<string, Rfs.Lsp.Diagnostic list>>(StringComparer.OrdinalIgnoreCase)
     let mutable rows: Signal<Map<string, Row>> = Unchecked.defaultof<_>
     let mutable epoch = 0L
-    let mutable faults = 0
+    let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let mutable onClose: string -> unit = ignore
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
@@ -144,41 +168,18 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
         int n
 
-    /// Queues `rfs/declarationsChecked`, counted after the pump that settled the publish before it. Adoption is an effect
-    /// too (FileLevel's `Publish`), and a flush runs its effects in no set order: a posted item runs once the flush is
-    /// over, as the settle waits did before rows. The checks that promote a file are adopted too, so the notification
-    /// after a promotion counts them with whatever edit it follows. Telling them apart in the count would lose the checks
-    /// of a restart, which an edit does cause. Graph thread.
+    /// Queues `rfs/declarationsChecked`, counted once the pump that settled the publish before it has returned: adoption
+    /// is an effect too (FileLevel's `Publish`), and a flush runs its effects in an order of its own. The checks that
+    /// promote a file are adopted too, so the notification after a promotion counts them with whatever edit it follows.
+    /// Telling them apart in the count would lose the checks of a restart, which an edit does cause. Graph thread.
     let notifyChecks () : unit =
-        host.Post(fun () ->
+        GraphTurn.afterPump host (fun () ->
             let body = box { count = countChecks () }
             outbox.Enqueue(Notify(fun () -> client.Notify("rfs/declarationsChecked", body) |> Async.StartAsTask :> Task)))
 
-    /// What every checked file found in `t`. Graph thread.
-    let union (t: string) =
-        [ for KeyValue(_, byTarget) in contributions do
-              match byTarget.TryGetValue t with
-              | true, l -> yield! l
-              | _ -> () ]
-
-    /// Whether `source` reports anything to an open document other than itself. Graph thread.
-    let contributes (source: string) =
-        match contributions.TryGetValue source with
-        | true, groups ->
-            groups
-            |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t source) && (documents.TryFind t).IsSome)
-        | _ -> false
-
-    /// A list for a file other than the one checked, at the document's current version. Graph thread.
-    let sendForeign (target: string) (doc: OpenDocument) (union: Rfs.Lsp.Diagnostic list) : unit =
-        send target doc.Uri (Some doc.LspVersion) union false false
-
-    /// Records what the check of `source` found, and queues the lists of the files it touched that are open: each file's
-    /// list is what every checked file found in it, so a diagnostic that lands in another file (a signature's) is cleared
-    /// when it goes. Diagnostics with no file of the project, rangeless ones included, belong to the checked document.
-    /// The checked file's own list goes to `own`'s URI at its LSP version, always when `forceOwn`; without `own` (the file
-    /// is closed) it isn't sent. Graph thread.
-    let apply (source: string) (settled: FSharpDiagnostic[]) (own: struct (string * int) voption) (forceOwn: bool) : unit =
+    /// What the check of `source` found, by the file each diagnostic is in. Diagnostics with no file of the project,
+    /// rangeless ones included, belong to the checked file.
+    let groupsOf (source: string) (settled: FSharpDiagnostic[]) : IReadOnlyDictionary<string, Rfs.Lsp.Diagnostic list> =
         let target (d: Rfs.Lsp.Diagnostic) =
             if d.File <> "" && not (isSame d.File source) && not (workspace.OwnersOf d.File).IsEmpty then
                 d.File
@@ -191,84 +192,96 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
             let t = target d
             groups[t] <- (match groups.TryGetValue t with | true, l -> l | _ -> []) @ [ d ]
 
-        let touched = HashSet<string>(groups.Keys, StringComparer.OrdinalIgnoreCase)
+        groups
 
-        match contributions.TryGetValue source with
-        | true, previous -> touched.UnionWith previous.Keys
-        | _ -> ()
+    let mutable projection: Projection<string, Found> = Unchecked.defaultof<_>
 
-        touched.Add source |> ignore
-        contributions[source] <- groups
+    /// What every row's file found in `t`, in row order, with the row of `t` itself read from `own`. A tracked read of
+    /// every row. Graph thread.
+    let union (t: string) (own: Found) =
+        let key = rowKey t
 
-        for t in touched do
-            if isSame t source then
-                match own with
-                | ValueSome(struct (uri, version)) -> send t uri (Some version) (union t) forceOwn true
-                | ValueNone -> ()
-            else
-                match documents.TryFind t with
-                | Some doc -> sendForeign t doc (union t)
-                | None -> ()
+        [ for k in projection.Keys do
+              let found = if k = key then own else projection.Get k
 
-    /// The effect of one row. Graph thread.
-    let publishing (item: unit -> Row) : unit =
-        let mutable sent = Int64.MinValue
+              match found.Groups.TryGetValue t with
+              | true, l -> yield! l
+              | _ -> () ]
 
-        createEffect (fun () ->
+    /// Whether a row's file reports anything to an open document other than itself. Graph thread.
+    let reportsToOpen (path: string) (found: Found) =
+        found.Groups
+        |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t path) && (documents.TryFind t).IsSome)
+
+    /// A row's value: what its file's check found, kept from the last settled check while the next one is pending.
+    let finding (item: unit -> Row) : unit -> Found =
+        let mutable last = Found.None
+
+        fun () ->
             let r = item ()
 
             match r.Owners with
-            | [] -> ()
+            | [] ->
+                last <- Found.None
+                last
             | g :: _ ->
                 let settled =
                     try
                         g.TrySettledDiagnostics r.Path
                     with
-                    | NotReadyException _ -> reraise ()
+                    | NotReadyException _ -> ValueNone
                     | ex ->
-                        faults <- faults + 1
+                        faulted.Add r.Path |> ignore
                         log $"%s{r.Path}: no diagnostics to publish, its check failed: %O{ex}"
                         ValueNone
 
                 match settled with
-                | ValueNone -> ()
                 | ValueSome(struct (_, diagnostics)) ->
-                    try
-                        // The row is the document: close changes it in the item that queues the empty list
-                        if r.Open then
-                            let fresh = r.Epoch <> sent
-                            sent <- r.Epoch
-                            apply r.Path diagnostics (ValueSome(struct (r.Uri, r.LspVersion))) fresh
+                    last <- { Groups = groupsOf r.Path diagnostics; Current = true }
+                    last
+                | ValueNone -> { last with Current = false }
 
-                            if fresh then
-                                notifyChecks ()
-                        else
-                            // The file's text is the disk's again: what it reports to the open files follows it for as
-                            // long as it reports anything to one, and then the row goes
-                            apply r.Path diagnostics ValueNone false
+    /// The effect of one row, over the row's own value. Graph thread.
+    let publishing (item: unit -> Row) (own: Memo<Found>) : unit =
+        let mutable sent = Int64.MinValue
 
-                            if not (contributes r.Path) then
-                                host.Post(fun () ->
-                                    match rowOf r.Path with
-                                    | Some now when obj.ReferenceEquals(now, r) ->
-                                        // Nothing it reports is open: it reports nothing more, as a file never opened
-                                        contributions.Remove r.Path |> ignore
-                                        dropRow r.Path
-                                    | _ -> ())
-                    with ex ->
-                        log $"publishing %s{r.Path} failed: %O{ex}")
+        createEffect (fun () ->
+            let r = item ()
+            let found = own.Value
+
+            try
+                // The row is the document: close changes it in the item that queues the empty list
+                if r.Open then
+                    if found.Current then
+                        let fresh = r.Epoch <> sent
+                        sent <- r.Epoch
+                        send r.Path r.Uri (Some r.LspVersion) (union r.Path found) fresh true
+
+                        if fresh then
+                            notifyChecks ()
+                elif found.Current && not (reportsToOpen r.Path found) then
+                    // A closed file reports nothing to an open one: the row goes, after this pump, and with it what it
+                    // reported, as for a file never opened
+                    GraphTurn.afterPump host (fun () ->
+                        match rowOf r.Path with
+                        | Some now when obj.ReferenceEquals(now, r) -> dropRow r.Path
+                        | _ -> ())
+            with ex ->
+                log $"publishing %s{r.Path} failed: %O{ex}")
 
     do
         host.Post(fun () ->
             createRoot (fun _ ->
                 rows <- createSignal Map.empty
 
-                let projection =
+                projection <-
                     createProjectionWith
                         (fun (r: Row) -> r.Key)
                         (fun item ->
-                            publishing item
-                            ignore)
+                            let read = finding item
+                            let own = createMemo (fun _ -> read ())
+                            publishing item own
+                            fun () -> own.Value)
                         (fun () -> rows.Value |> Map.values :> seq<_>)
 
                 // Keeps the projection's passes running: a key's arrival makes its row, its removal disposes it
@@ -279,7 +292,6 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     /// Graph thread.
     let publishEmpty (doc: OpenDocument) (force: bool) : unit =
         if (documents.TryFind doc.Path).IsSome then
-            contributions.Remove doc.Path |> ignore
             send doc.Path doc.Uri (Some doc.LspVersion) [] force false
 
     let openRow (doc: OpenDocument) (owners: ProjectGraph list) =
@@ -370,20 +382,6 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                     setRow { r with Owners = owners; Epoch = nextEpoch () }
                 | _ -> ()
 
-        let gone =
-            [ for KeyValue(source, _) in contributions do
-                  if (workspace.OwnersOf source).IsEmpty && (documents.TryFind source).IsNone then
-                      yield source ]
-
-        for source in gone do
-            let targets = contributions[source].Keys |> Seq.toArray
-            contributions.Remove source |> ignore
-
-            for t in targets do
-                match documents.TryFind t with
-                | Some doc when not (isSame t source) -> sendForeign t doc (union t)
-                | _ -> ()
-
         for doc in documents.All do
             if (workspace.OwnersOf doc.Path).IsEmpty then
                 publishEmpty doc false
@@ -435,7 +433,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     member internal _.PublishForeign(path: string, diagnostics: Rfs.Lsp.Diagnostic list) : Task =
         host.Read(fun () ->
             match documents.TryFind path with
-            | Some doc -> sendForeign path doc diagnostics
+            | Some doc -> send path doc.Uri (Some doc.LspVersion) diagnostics false false
             | None -> ())
         :> Task
 
@@ -461,15 +459,15 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     /// How many graphs the publisher keeps state for. For tests.
     member internal _.RetainedGraphs() : Task<int> = host.Read(fun () -> lastAdopted.Count)
 
-    /// How many times a row's own file failed to give diagnostics, each logged. For tests.
-    member internal _.Faults() : Task<int> = host.Read(fun () -> faults)
+    /// Whether the file's own check failed to give diagnostics for its row, which was logged. For tests.
+    member internal _.Faulted(path: string) : Task<bool> = host.Read(fun () -> faulted.Contains path)
 
     /// Runs `hook` with the path in `Close`, after the disk is read and before the close is posted. For tests.
     member internal _.OnClose(hook: string -> unit) : unit = onClose <- hook
 
-    /// How many rows, last lists and sources the publisher keeps. For tests.
+    /// How many rows and last lists the publisher keeps. For tests.
     member internal _.Retained() : Task<int> =
-        host.Read(fun () -> rows.Value.Count + lastKeys.Count + contributions.Count)
+        host.Read(fun () -> rows.Value.Count + lastKeys.Count)
 
     member _.Dispose() =
         Volatile.Write(&disposed, 1)
