@@ -266,7 +266,6 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let mutable loading = 0
     let lifetime = new CancellationTokenSource()
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
-    let mutable onSetText: ProjectGraph -> string -> int64 -> int -> unit = fun _ _ _ _ -> ()
     let mutable onLoaded: ProjectGraph -> unit = ignore
     let mutable onLoadEndHook: unit -> unit = ignore
 
@@ -348,7 +347,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
                     for f in spec.SourceFiles do
                         match openTexts.TryGetValue f with
-                        | true, struct (t, lspVersion) -> onSetText graph f (graph.SetText(f, t)) lspVersion
+                        | true, struct (t, _) -> graph.SetText(f, t) |> ignore
                         | _ -> ())
 
                 // The settle waits take no token of their own
@@ -542,13 +541,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
             [ for e in Seq.toArray entries.Values do
                   if isSource e.Spec path then
-                      let version = e.Graph.SetText(path, text)
-                      onSetText e.Graph path version lspVersion
-                      yield e.Graph, version ])
-
-    /// Runs `hook` with the graph, file, internal version and LSP version each time an open document's text is set on a
-    /// graph, before any wait on that version can start.
-    member internal _.OnSetText(hook: ProjectGraph -> string -> int64 -> int -> unit) : unit = onSetText <- hook
+                      yield e.Graph, e.Graph.SetText(path, text) ])
 
     /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
     member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
@@ -580,15 +573,11 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             visit root.Spec.ProjectFile
             [ for e in all do if found.Contains e.Spec.ProjectFile then yield e.Graph ]
 
-    /// The editor closed the document: the file on disk is the file's text again, which the caller reads
-    /// Returns the graphs that own the file. A file that is gone from disk keeps its last text in the graph: the project
-    /// no longer loads without it, and the watched-file change that reloads the project settles that.
-    member this.Close(path: string) : ProjectGraph list =
-        this.Close(path, Workspace.ReadOnClose path)
-
     /// <summary>
-    /// <c>Close</c> with the text on disk read already (<c>ReadOnClose</c>), so the caller may be the graph thread.
-    /// <c>None</c>, a file that could not be read, keeps the file's last text in the graphs.
+    /// The editor closed the document: the file on disk is the file's text again, read already by the caller
+    /// (<c>ReadOnClose</c>), so the caller may be the graph thread. Returns the graphs that own the file. <c>None</c>, a
+    /// file that is gone from disk or could not be read, keeps its last text in the graphs: the project no longer loads
+    /// without it, and the watched-file change that reloads the project settles that.
     /// </summary>
     member _.Close(path: string, diskText: string option) : ProjectGraph list =
         let path = Path.GetFullPath path

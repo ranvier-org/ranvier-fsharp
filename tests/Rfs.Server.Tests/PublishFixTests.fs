@@ -226,13 +226,14 @@ let fixTests =
               do! openAll s [ a ]
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
               do! s.Server.Publisher.Flushed()
-              let before = s.Server.Publisher.RetainedGraphs
+              let! before = s.Server.Publisher.RetainedGraphs()
               let counts = s.Counts.Count
               let published = (publishesOf s a).Length
               do! s.Server.Workspace.Reload depsProject |> within
               do! eventually "the publish after the reload" (fun () -> (publishesOf s a).Length > published && s.Counts.Count > counts)
               do! s.Server.Publisher.Flushed()
-              Expect.equal s.Server.Publisher.RetainedGraphs before "state is kept for the live graph only"
+              let! after = s.Server.Publisher.RetainedGraphs()
+              Expect.equal after before "state is kept for the live graph only"
           }
 
           testTask "rapid edits: a list held in the outbox is replaced by a newer version's" {
@@ -300,7 +301,8 @@ let fixTests =
               Expect.isFalse promoted.IsCompleted "the edits came before promotion completed"
               hold.Set()
               let! _ = promoted |> within
-              do! Task.Delay 500
+              // Promotion's last pump queued whatever it changed
+              do! s.Server.Publisher.Flushed()
               let versions = publishesOf s a |> Array.choose (fun (_, v, _) -> v)
               Expect.equal versions (Array.sort versions) "versions only rise"
               Expect.equal (Array.last versions) 5 "the last publish is the last edit"
@@ -342,6 +344,57 @@ let fixTests =
               do! eventually "the empty publish" (fun () -> (lastOf s cFile).IsEmpty)
           }
         ]
+
+/// A copy of Deps whose C.fs, after a #line directive naming A.fs, reports an error that lands in A.fs: a file's
+/// diagnostics in another file. A and C open, then C closed. The session, A, C, the project and the foreign message.
+let private closedForeignSession () : Task<Session * string * string * string * string> =
+    task {
+        let dir = copyFixtureDir "Deps"
+        let project = Path.Combine(dir, "Deps.fsproj")
+        let aFile = Path.Combine(dir, "A.fs")
+        let cFile = Path.Combine(dir, "C.fs")
+        File.AppendAllText(cFile, $"\n# 1 \"%s{aFile}\"\nmodule Foreign =\n    let bad : string = Deps.A.baseValue\n")
+        let! s = startSessionWith dir [ project ] true ignore |> within
+        do! openAll s [ aFile; cFile ]
+        do! eventually "the open publishes" (fun () -> hasVersion s aFile 0 && hasVersion s cFile 0)
+        let foreign (d: Diagnostic) = d.Message.Contains "string"
+        do! eventually "C's error in A" (fun () -> lastOf s aFile |> List.exists foreign)
+        let message = (lastOf s aFile |> List.find foreign).Message
+        do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri cFile) ])
+        do! eventually "C is cleared" (fun () -> publishesOf s cFile |> Array.exists (fun (_, v, _) -> v = None))
+        do! s.Server.Publisher.Flushed()
+        Expect.contains (lastOf s aFile |> List.map _.Message) message "C's error in A stays: C on disk still reports it"
+        return s, aFile, cFile, project, message
+    }
+
+let private weakGraph (s: Session) (path: string) : WeakReference = WeakReference((s.Server.Workspace.ProjectOf path).Value)
+
+let private collected (r: WeakReference) =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+
+    not r.IsAlive
+
+/// Drops the graph's event log, which a Debug build of Ranvier keeps with every value its nodes published (as
+/// ReferencesIndexTests does). A no-op for an untraced Ranvier.
+let private dropTrace (host: Rfs.Checker.GraphHost) : Task =
+    host.Read(fun () ->
+        let graph = host.Graph
+
+        let traceModule =
+            [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+            |> List.tryPick (fun name ->
+                match typeof<Ranvier.Graph>.Assembly.GetType name with
+                | null -> None
+                | t -> Option.ofObj (t.GetMethod "lastSeq") |> Option.map (fun m -> t, m))
+
+        match traceModule with
+        | Some(t, lastSeq) ->
+            let last = lastSeq.Invoke(null, [| box graph |])
+            t.GetMethod("checkpoint").Invoke(null, [| box graph; last; box "dropped" |]) |> ignore
+        | None -> ())
 
 /// The index of the first publish of `path` at `version`, in arrival order
 let private indexOf (s: Session) (path: string) (version: int option) =
@@ -442,4 +495,54 @@ let rowTests =
               do! Task.Delay 1000
               do! s.Server.Publisher.Flushed()
               Expect.equal (publishesOf s shared).Length before "S, in the failed project, gets nothing new"
+              let! faults = s.Server.Publisher.Faults()
+              Expect.isGreaterThan faults 0 "and S's fault is logged"
+          }
+
+          testTask "a close that a load overtakes still takes the unsaved text out" {
+              let! s = startSessionWith depsDir [ depsProject ] false ignore |> within
+              use _ = disposing s
+              do! openAll s [ a; c ]
+              do! eventually "the empty publishes" (fun () -> hasVersion s a 0 && hasVersion s c 0)
+              do! s.Lsp.DidChange(a, 1, replace s a "(s: Shape) : int =" "(s: Shape) : unit =")
+              do! eventually "the server at version 1" (fun () -> (s.Server.Documents.TryFind a |> Option.map _.LspVersion) = Some 1)
+              let! broken = oracleFor s [ a; c ] c
+              Expect.isFalse (List.isEmpty broken) "the unsaved edit breaks C"
+              // The load registers the project, with A's unsaved text, after Close has looked at the disk and before
+              // its post runs
+              s.Server.Publisher.OnClose(fun _ -> s.Load().Wait())
+              s.Server.Publisher.Close a
+              s.Server.Publisher.OnClose ignore
+              do! s.Server.Publisher.Barrier()
+              let graph = (s.Server.Workspace.ProjectOf c).Value
+              let! (settled: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph.Diagnostics c |> within
+              let! onDisk = oracleFor s [] c
+              Expect.isTrue (List.isEmpty onDisk) "C is clean with A as on disk"
+              Expect.isEmpty (settled |> Array.map _.Message |> List.ofArray) "the graph checks C against A on disk"
+          }
+
+          testTask "a closed file's diagnostics in an open file follow it while it reports any" {
+              let! (s, aFile, _, _, message) = closedForeignSession ()
+              use _ = disposing s
+              // C is closed: only its row's check says that A's edit takes its error away
+              do! s.Lsp.DidChange(aFile, 1, replace s aFile "baseValue = 10" "baseValue = \"s\"")
+              do! eventually "A's version 1 without C's error" (fun () -> hasVersion s aFile 1 && not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+          }
+
+          testTask "a closed file's diagnostics in an open file go when a reload drops it, and so does the old graph" {
+              let! (s, aFile, _, project, message) = closedForeignSession ()
+              use _ = disposing s
+              let old = weakGraph s aFile
+
+              File.WriteAllText(
+                  project,
+                  (File.ReadAllText project).Replace("    <Compile Include=\"C.fs\" />\r\n", "").Replace("    <Compile Include=\"C.fs\" />\n", "")
+              )
+
+              do! s.Server.Workspace.Reload project |> within
+              do! s.Server.Publisher.Flushed()
+              do! eventually "A without C's error" (fun () -> not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+              // The closed row went with the reload, so nothing of the publisher holds the replaced graph
+              do! dropTrace s.Server.Host
+              Expect.isTrue (collected old) "the replaced graph is collected"
           } ]
