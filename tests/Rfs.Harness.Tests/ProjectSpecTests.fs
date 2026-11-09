@@ -13,7 +13,7 @@ let private tinyDir =
     up (DirectoryInfo AppContext.BaseDirectory)
 
 let private tinyProject = Path.Combine(tinyDir, "Tiny.fsproj")
-let private cachePath = Path.Combine(tinyDir, "obj", "rfs-spec.json")
+let private cachePath = ProjectSpec.cachePath tinyProject
 
 type private TinyCopy(dir: string) =
     member _.Dir = dir
@@ -78,7 +78,7 @@ let tests =
           testTask "stale cache is ignored when the fsproj is newer" {
               use copy = copyTiny ()
               let! first = ProjectSpec.load copy.Project
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               File.WriteAllText(cache, (ProjectSpec.toJson { first with SourceFiles = [ "stale.fs" ] }))
               File.SetLastWriteTimeUtc(cache, DateTime.UtcNow.AddHours -1.0)
               File.SetLastWriteTimeUtc(copy.Project, DateTime.UtcNow)
@@ -89,7 +89,7 @@ let tests =
           testTask "cache with a missing or different format version is ignored" {
               use copy = copyTiny ()
               let! first = ProjectSpec.load copy.Project
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
@@ -106,7 +106,7 @@ let tests =
           // I5. A marked cache shows whether the next load read it or evaluated the project.
           testTask "a change to what the evaluation read is noticed across sessions" {
               use copy = copyTiny ()
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
 
               let mark () =
                   File.WriteAllText(cache, File.ReadAllText(cache).Replace("C.fs", "Marked.fs"))
@@ -149,7 +149,7 @@ let tests =
           testTask "the cache is fresh in the artifacts layout, until its assets file changes" {
               use copy = copyTiny ()
               File.WriteAllText(Path.Combine(copy.Dir, "Directory.Build.props"), "<Project><PropertyGroup><UseArtifactsOutput>true</UseArtifactsOutput></PropertyGroup></Project>")
-              let cache = Path.Combine(copy.Dir, "obj", "rfs-spec.json")
+              let cache = ProjectSpec.cachePath copy.Project
               let! _ = ProjectSpec.load copy.Project
               Expect.isFalse (File.Exists(Path.Combine(copy.Dir, "obj", "project.assets.json"))) "the assets file is elsewhere"
               let assets = Path.Combine(copy.Dir, "artifacts", "obj", "Tiny", "project.assets.json")
@@ -171,7 +171,7 @@ let tests =
           testTask "a cache that cannot be written does not fail load" {
               use copy = copyTiny ()
               // a directory where the cache file belongs makes the final move fail
-              Directory.CreateDirectory(Path.Combine(copy.Dir, "obj", "rfs-spec.json")) |> ignore
+              Directory.CreateDirectory(ProjectSpec.cachePath copy.Project) |> ignore
               let! spec = ProjectSpec.load copy.Project
               Expect.equal spec.SourceFiles.Length 4 "loaded anyway"
 
@@ -246,6 +246,23 @@ let tests =
                       Directory.Delete(root, true)
                   with _ ->
                       ()
+          }
+
+          // N5. Another version of the code on the same obj keeps its own cache, and neither evicts the other's.
+          testTask "the cache's file name holds the format version, and another version's cache is left alone" {
+              use copy = copyTiny ()
+              let objDir = Path.Combine(copy.Dir, "obj")
+              Directory.CreateDirectory objDir |> ignore
+              let other = Path.Combine(objDir, "rfs-spec.v0.json")
+              File.WriteAllText(other, "{}")
+              let! _ = ProjectSpec.load copy.Project
+              let cache = ProjectSpec.cachePath copy.Project
+              Expect.isTrue (Path.GetFileName(cache).StartsWith "rfs-spec.v") "named for its version"
+              Expect.isTrue (File.Exists cache) "written"
+              Expect.equal (File.ReadAllText other) "{}" "the other version's cache is untouched"
+              ProjectSpec.invalidate copy.Project
+              Expect.isFalse (File.Exists cache) "invalidate drops this version's"
+              Expect.isTrue (File.Exists other) "and not the other's"
           }
 
           test "the SDK is the highest of the runtime's major version, a release over a prerelease" {

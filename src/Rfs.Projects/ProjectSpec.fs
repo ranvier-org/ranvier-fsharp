@@ -61,7 +61,8 @@ module ProjectSpec =
     let private objDir (fsproj: string) =
         Path.Combine(Path.GetDirectoryName fsproj, "obj")
 
-    let private cacheStem = "rfs-spec"
+    // The format version is in the name: two versions of the code on one obj each keep their own cache.
+    let private cacheStem = $"rfs-spec.v%d{formatVersion}"
 
     /// Where `load` caches the spec of a project
     let cachePath fsproj = Path.Combine(objDir fsproj, cacheStem + ".json")
@@ -198,11 +199,11 @@ module ProjectSpec =
         with _ ->
             false
 
-    let private cacheJson (spec: ProjectSpec) (properties: (string * string) list) =
+    let private cacheJson (spec: ProjectSpec) (evaluated: Task<string list>) =
         let root = JsonNode.Parse(toJson spec)
 
         try
-            let evaluated = filesEvaluated spec.ProjectFile properties
+            let evaluated = evaluated.Result
             root["Sdk"] <- JsonValue.Create(sdkOf ())
             root["Evaluated"] <- JsonArray(evaluated |> List.map (fun x -> JsonValue.Create x :> JsonNode) |> Array.ofList)
         with ex ->
@@ -311,8 +312,12 @@ module ProjectSpec =
             let dir = objDir fsproj
 
             if Directory.Exists dir then
-                for cache in Directory.GetFiles(dir, "rfs-spec*.json") do
-                    File.Delete cache
+                // This version's only: `<stem>.json` and `<stem>-<framework>.json`
+                for cache in Directory.GetFiles(dir, cacheStem + "*.json") do
+                    let name = Path.GetFileName cache
+
+                    if name = cacheStem + ".json" || name.StartsWith(cacheStem + "-") then
+                        File.Delete cache
         with
         | :? IOException
         | :? UnauthorizedAccessException ->
@@ -343,13 +348,17 @@ module ProjectSpec =
                 if not (File.Exists(assetsPath fsproj)) then
                     do! restore fsproj
 
+                // The list of what the evaluation read is another evaluation, which runs beside the load's instead of after it
+                // (the SDK is registered by now, as the compiled method needs). It reads files, so it starts after the restore.
+                toolsPath.Value |> ignore
+                let evaluated = Task.Run(fun () -> filesEvaluated fsproj properties)
                 let spec = loadFresh fsproj properties
                 // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
                 let tmp = cache + "." + Guid.NewGuid().ToString("N") + ".tmp"
 
                 try
                     Directory.CreateDirectory(objDir fsproj) |> ignore
-                    File.WriteAllText(tmp, cacheJson spec properties)
+                    File.WriteAllText(tmp, cacheJson spec evaluated)
                     File.Move(tmp, cache, true)
                 with
                 | :? IOException
