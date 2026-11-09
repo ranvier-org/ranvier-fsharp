@@ -25,6 +25,8 @@ type internal KeptResult =
     { Version: int64
       /// The setup the finish was built on: kept only while the current one has the same files and fingerprints
       Key: SetupKey
+      /// The parse the finish was of. The setup's is older once a body was edited.
+      Parsed: Parsed
       Result: FileResult
       /// The lock of the FileStart it was finished on: a flight still running on that start can change the types it holds
       Lock: AsyncReaderWriterLock }
@@ -446,6 +448,7 @@ module internal WholeFile =
                             ValueSome
                                 { Version = f.Version
                                   Key = f.Start.Setup.Key
+                                  Parsed = f.Parsed
                                   Result = f.FileResult
                                   Lock = f.Start.Lock }
                         | _ -> ValueNone
@@ -503,7 +506,7 @@ module internal WholeFile =
                 match published.TryValue with
                 | Ready(ByDeclaration(_, f)) ->
                     let _, c = Array.last f.Checks
-                    [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start ]
+                    [ WeakReference c; WeakReference c.EnvBefore; WeakReference f.Start.Start; WeakReference c.Result ]
                 | _ -> []
 
             member _.Activate() = activate ()
@@ -523,7 +526,7 @@ module internal WholeFile =
                   | ValueSome(Kept k) ->
                       keptAt version k
                       |> ValueOption.map (fun r ->
-                          { Parsed = k.Key.Parsed
+                          { Parsed = k.Parsed
                             Result = r
                             Key = k.Key
                             Lock = ValueSome k.Lock

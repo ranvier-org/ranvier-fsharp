@@ -714,6 +714,121 @@ let tests =
               | References.Answer.Moved -> failtest "nothing moved"
           }
 
+          // I2: a stack overflow here ends the test run, as it ended the server
+          testTask "resolve in a row of 4000 lets answers" {
+              let dir = Directory.CreateTempSubdirectory "rfs-large-"
+
+              try
+                  let path = Path.Combine(dir.FullName, "F.fs")
+                  let lets = System.Text.StringBuilder("module Proj.F\n\nlet deep () =\n")
+
+                  for r in 0..3999 do
+                      lets.Append($"    let a%d{r} = %d{r}\n") |> ignore
+
+                  lets.Append("    a0\n\nlet after = 1\n") |> ignore
+                  File.WriteAllText(path, lets.ToString())
+                  let! deps = ProjectSpec.load depsProject
+                  let host = Rfs.Checker.GraphHost.Start "large"
+                  let! (g: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, { ProjectSpec.sequential deps with ProjectFile = Path.Combine(dir.FullName, "P.fsproj"); SourceFiles = [ path ] })
+                  g.Promote path
+                  let! (_: Rfs.Checker.FileMode) = g.WhenPromoted(path, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 4.)
+                  let line = 3 + 4000
+                  let! (items: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g path line 6 CancellationToken.None
+                  Expect.isNonEmpty items "the list answers"
+                  let item = items |> Array.find (fun i -> i.Label = "a0")
+                  let! (back: Ionide.LanguageServerProtocol.Types.CompletionItem) = Completion.resolve g item path line 6 CancellationToken.None
+                  Expect.isSome back.Detail "resolve answers"
+                  g.Dispose()
+                  (host :> IDisposable).Dispose()
+              finally
+                  try
+                      dir.Delete true
+                  with :? IOException | :? UnauthorizedAccessException ->
+                      ()
+          }
+
+          // I3: a demoted file keeps its last finish, and a reader of it must get that finish's text and parse
+          testTask "a file demoted with no new text answers every feature as a fresh graph does" {
+              let dir = Directory.CreateTempSubdirectory "rfs-kept-"
+
+              try
+                  let before = "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n"
+                  let after = "module Deps.A\n\nlet f (x: int) = x + 1\n\nlet inserted = \"a string\"\n\nlet first = f 1\n\nlet second = \"two\"\n\nlet third = first\n\nlet g2 = third + 1\n"
+                  let! deps = ProjectSpec.load depsProject
+
+                  let specIn (name: string) (text: string) =
+                      let sub = Directory.CreateDirectory(Path.Combine(dir.FullName, name))
+                      let path = Path.Combine(sub.FullName, "F.fs")
+                      File.WriteAllText(path, text)
+                      path, { ProjectSpec.sequential deps with ProjectFile = Path.Combine(sub.FullName, "P.fsproj"); SourceFiles = [ path ] }
+
+                  let path, spec = specIn "kept" before
+                  let freshPath, freshSpec = specIn "fresh" after
+                  let host = Rfs.Checker.GraphHost.Start "kept"
+                  let! (g: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, spec)
+                  let! (fresh: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(host, freshSpec)
+                  let! _ = g.AllDiagnostics() |> within
+                  let! _ = fresh.AllDiagnostics() |> within
+                  g.Promote path
+                  let! _ = g.WhenPromoted(path, CancellationToken.None) |> within
+                  g.SetText(path, after) |> ignore
+                  let! _ = g.AllDiagnostics() |> within
+                  let! _ = g.WhenPromoted(path, CancellationToken.None) |> within
+                  g.Demote path
+                  let! _ = g.AllDiagnostics() |> within
+                  let! (text: string), (parsed: string) = g.ReadFile(path, (fun v -> v.Text, v.Parse.ParseTree.Range.End.ToString()), CancellationToken.None) |> within
+                  let! (freshParsed: string) = fresh.ReadFile(freshPath, (fun v -> v.Parse.ParseTree.Range.End.ToString()), CancellationToken.None) |> within
+                  Expect.equal text after "the view's text is the result's"
+                  Expect.equal parsed freshParsed "the view's parse is the result's"
+
+                  let scope (graph: Rfs.Checker.ProjectGraph) (s: ProjectSpec) : References.Scope =
+                      { OwnersOf = fun p -> if List.contains (Path.GetFullPath p) s.SourceFiles then [ graph ] else []
+                        ReferencingProjects = fun _ -> []
+                        Projects = fun () -> [ graph ]
+                        FilesOf = fun _ -> s.SourceFiles
+                        IsLoading = fun () -> false
+                        BeforeRead = fun _ -> Task.CompletedTask }
+
+                  let answers (graph: Rfs.Checker.ProjectGraph) (s: ProjectSpec) (p: string) (l: int) (c: int) =
+                      task {
+                          let! hover = Hover.at graph p l c CancellationToken.None
+                          let! definition = Definition.at (fun _ -> [ graph ]) graph p l c CancellationToken.None
+                          let! completion = Completion.at graph p l c CancellationToken.None
+                          let! references = References.find (scope graph s) graph p l c CancellationToken.None
+
+                          let referenced =
+                              match references with
+                              | References.Answer.Moved -> [ "moved" ]
+                              | References.Answer.Found uses ->
+                                  uses |> List.map (fun (struct (r, isDefinition)) -> $"%d{r.StartLine}:%d{r.StartColumn}:%b{isDefinition}") |> List.sort
+
+                          return
+                              hover,
+                              definition |> Option.map (fun r -> r.StartLine, r.StartColumn),
+                              completion |> Array.map _.Label,
+                              referenced
+                      }
+
+                  let tokens =
+                      [ for i, line in after.Split '\n' |> Array.indexed do
+                            for m in System.Text.RegularExpressions.Regex.Matches(line, "[A-Za-z_0-9]+") do
+                                i, m.Index + 1, m.Value ]
+
+                  for l, c, name in tokens do
+                      let! ours = answers g spec path l c
+                      let! reference = answers fresh freshSpec freshPath l c
+                      Expect.equal ours reference $"%s{name} at %d{l}:%d{c}"
+
+                  g.Dispose()
+                  fresh.Dispose()
+                  (host :> IDisposable).Dispose()
+              finally
+                  try
+                      dir.Delete true
+                  with :? IOException | :? UnauthorizedAccessException ->
+                      ()
+          }
+
           testTask "a 4000-row file promotes and answers completion, and so does a row of 4000 lets" {
               let dir = Directory.CreateTempSubdirectory "rfs-large-"
 

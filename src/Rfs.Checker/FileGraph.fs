@@ -783,9 +783,10 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                     row, c)
 
     /// `previous` shifted to `decl`, the same declaration at another line (W1), or None when the checker refuses the
-    /// shift. Off the graph thread, under the FileStart's lock.
+    /// shift. Off the graph thread, under the FileStart's lock. From the origin, which the row keeps: Shift points each
+    /// result it walks at the latest, and starting from `previous` the origin would hold every shift through the next.
     member _.TryShift(previous: RowCheck, decl: ParsedDeclaration) : RowCheck option =
-        match DeclarationChecker.Shift(previous.Result, decl) with
+        match DeclarationChecker.Shift(previous.Origin.Result, decl) with
         | ValueSome result ->
             Some(RowCheck(previous.Key, decl, previous.Start, result, previous.EnvBefore, previous.Named, previous.Identity, previous.Later, previous.Origin).KeepingWindowOf previous)
         | ValueNone -> None
@@ -802,7 +803,7 @@ and [<AllowNullLiteral>] internal ImplShared(project: ProjectShared, path: strin
                 let c = previous.Rows[r.Key]
 
                 Nodes.same c.Decl decl
-                || (match DeclarationChecker.Shift(c.Result, decl) with
+                || (match DeclarationChecker.Shift(c.Origin.Result, decl) with
                     | ValueSome result ->
                         rows[r.Key] <- RowCheck(c.Key, decl, c.Start, result, c.EnvBefore, c.Named, c.Identity, c.Later, c.Origin).KeepingWindowOf c
                         true
