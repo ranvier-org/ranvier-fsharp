@@ -272,6 +272,38 @@ let tests =
               Expect.equal (ProjectSpec.sdkForRuntime 10 [ "10.0.100-preview.1"; "10.0.100" ]) (Ok "10.0.100") "a release over a prerelease"
           }
 
+          test "prereleases are ordered by semantic version, whatever the order they are listed in" {
+              for order in [ [ "11.0.100-rc.1.1"; "11.0.100-rc.2.1" ]; [ "11.0.100-rc.2.1"; "11.0.100-rc.1.1" ] ] do
+                  Expect.equal (ProjectSpec.sdkForRuntime 11 order) (Ok "11.0.100-rc.2.1") "rc.2 after rc.1"
+
+              Expect.equal
+                  (ProjectSpec.sdkForRuntime 11 [ "11.0.100-rc.10.1"; "11.0.100-rc.9.1" ])
+                  (Ok "11.0.100-rc.10.1")
+                  "numbers by value"
+
+              Expect.equal (ProjectSpec.sdkForRuntime 11 [ "11.0.100-rc.1.1"; "11.0.100-preview.7" ]) (Ok "11.0.100-rc.1.1") "words in order"
+          }
+
+          testTask "many writers of the SDK's global.json at once all succeed and leave it right" {
+              let dir = Path.Combine(Path.GetTempPath(), "rfs-sdk-race-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let writers =
+                      [ for _ in 1..16 ->
+                            Threading.Tasks.Task.Run(fun () ->
+                                for _ in 1..20 do
+                                    ProjectSpec.ensureGlobalJson dir "10.0.403") ]
+
+                  do! Threading.Tasks.Task.WhenAll writers
+                  Expect.stringContains (File.ReadAllText(Path.Combine(dir, "global.json"))) "10.0.403" "pins the version"
+                  Expect.isEmpty (Directory.GetFiles(dir, "*.tmp")) "no temp files left"
+              finally
+                  try
+                      Directory.Delete(dir, true)
+                  with _ ->
+                      ()
+          }
+
           test "no SDK of the runtime's major version is an error naming the versions found" {
               match ProjectSpec.sdkForRuntime 10 [ "8.0.427"; "9.0.320"; "11.0.100-rc.1.26425.128" ] with
               | Ok v -> failtest $"chose %s{v}"

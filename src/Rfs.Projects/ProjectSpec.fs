@@ -69,27 +69,58 @@ module ProjectSpec =
     let private cachePathFor fsproj (framework: string) = Path.Combine(objDir fsproj, $"%s{cacheStem}-%s{framework}.json")
     let private assetsPath fsproj = Path.Combine(objDir fsproj, "project.assets.json")
 
-    let private versionKey (v: string) =
-        let numeric, release =
+    /// Semantic version order: the numbers, then a release over a prerelease, then the prerelease's dot-separated parts
+    /// (numbers by value and before words, so rc.2 is after rc.1 and rc.10 after rc.2).
+    let private compareVersions (a: string) (b: string) =
+        let split (v: string) =
             match v.IndexOf '-' with
-            | -1 -> v, true
-            | i -> v.Substring(0, i), false
+            | -1 -> v, [||]
+            | i -> v.Substring(0, i), v.Substring(i + 1).Split '.'
 
-        (match Version.TryParse numeric with
-         | true, parsed -> parsed
-         | _ -> Version(0, 0)),
-        release
+        let numeric (v: string) =
+            match Version.TryParse v with
+            | true, parsed -> parsed
+            | _ -> Version(0, 0)
 
-    /// The SDK whose major version is `major`, from the versions `dotnet --list-sdks` gave: the highest, a release over a
-    /// prerelease of the same number. The error names the versions found.
+        let compareParts (x: string) (y: string) =
+            match Int64.TryParse x, Int64.TryParse y with
+            | (true, m), (true, n) -> compare m n
+            | (true, _), _ -> -1
+            | _, (true, _) -> 1
+            | _ -> String.CompareOrdinal(x, y)
+
+        let na, pa = split a
+        let nb, pb = split b
+
+        match compare (numeric na) (numeric nb) with
+        | 0 ->
+            match pa.Length, pb.Length with
+            | 0, 0 -> 0
+            | 0, _ -> 1
+            | _, 0 -> -1
+            | _ ->
+                let n = min pa.Length pb.Length
+
+                match Seq.init n (fun i -> compareParts pa[i] pb[i]) |> Seq.tryFind (fun c -> c <> 0) with
+                | Some c -> c
+                | None -> compare pa.Length pb.Length
+        | c -> c
+
+    let private majorOf (v: string) =
+        match Int32.TryParse(v.Split([| '.'; '-' |]).[0]) with
+        | true, m -> m
+        | _ -> -1
+
+    /// The SDK whose major version is `major`, from the versions `dotnet --list-sdks` gave: the highest by semantic
+    /// version, a release over a prerelease of the same number. The error names the versions found.
     let sdkForRuntime (major: int) (installed: string list) : Result<string, string> =
-        match installed |> List.filter (fun v -> (fst (versionKey v)).Major = major) with
+        match installed |> List.filter (fun v -> majorOf v = major) with
         | [] ->
             let found = if installed.IsEmpty then "none" else String.Join(", ", installed)
 
             Error
                 $"no .NET SDK %d{major} is installed, and this server runs on .NET %d{major}, whose MSBuild has to be of that major version. SDKs found: %s{found}"
-        | some -> Ok(some |> List.maxBy versionKey)
+        | some -> Ok(some |> List.reduce (fun x y -> if compareVersions y x > 0 then y else x))
 
     let private installedSdks () =
         let psi = ProcessStartInfo("dotnet", "--list-sdks")
@@ -110,35 +141,68 @@ module ProjectSpec =
     // directory, whose global.json (or the highest installed SDK, with none) may be of another major version than this
     // runtime, whose MSBuild then fails to load here (System.Runtime 11.0.0.0 into a net10 process). The directory is
     // named by the version, so processes share it.
+    /// Makes `<dir>/global.json` pin `version`. Safe against others doing the same: a file that is already right is left
+    /// alone, and an IO failure (another process replacing the file, so reading or moving onto it is refused for a
+    /// moment) is tried again a few times before it is raised.
+    let ensureGlobalJson (dir: string) (version: string) : unit =
+        let file = Path.Combine(dir, "global.json")
+
+        let content =
+            $"""{{ "sdk": {{ "version": "%s{version}", "rollForward": "disable", "allowPrerelease": true }} }}"""
+
+        let rec attempt (n: int) =
+            try
+                Directory.CreateDirectory dir |> ignore
+
+                if not (File.Exists file) || File.ReadAllText file <> content then
+                    let tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp"
+                    File.WriteAllText(tmp, content)
+
+                    try
+                        File.Move(tmp, file, true)
+                    with _ ->
+                        (try
+                            File.Delete tmp
+                         with _ ->
+                             ())
+
+                        reraise ()
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException when n < 20 ->
+                Threading.Thread.Sleep 25
+                attempt (n + 1)
+
+        attempt 0
+
+    /// A function that remembers its result, but not a failure: an IO error that passes must not stay.
+    let private onceSucceeded (f: unit -> 'a) : unit -> 'a =
+        let gate = obj ()
+        let value = ref None
+
+        fun () ->
+            lock gate (fun () ->
+                match value.Value with
+                | Some v -> v
+                | None ->
+                    let v = f ()
+                    value.Value <- Some v
+                    v)
+
     let private sdkDirectory =
-        lazy
-            (match sdkForRuntime Environment.Version.Major (installedSdks ()) with
-             | Error message -> failwith message
-             | Ok version ->
-                 let dir = Path.Combine(Path.GetTempPath(), "rfs-sdk", version)
-                 let file = Path.Combine(dir, "global.json")
-
-                 let content =
-                     $"""{{ "sdk": {{ "version": "%s{version}", "rollForward": "disable", "allowPrerelease": true }} }}"""
-
-                 try
-                     Directory.CreateDirectory dir |> ignore
-
-                     if not (File.Exists file) || File.ReadAllText file <> content then
-                         let tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp"
-                         File.WriteAllText(tmp, content)
-                         File.Move(tmp, file, true)
-                 with _ when File.Exists file && File.ReadAllText file = content ->
-                     // another process wrote the same file first
-                     ()
-
-                 dir)
+        onceSucceeded (fun () ->
+            match sdkForRuntime Environment.Version.Major (installedSdks ()) with
+            | Error message -> failwith message
+            | Ok version ->
+                let dir = Path.Combine(Path.GetTempPath(), "rfs-sdk", version)
+                ensureGlobalJson dir version
+                dir)
 
     let private restore (fsproj: string) =
         task {
             let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\"")
             // Restores with the SDK the load builds with
-            psi.WorkingDirectory <- sdkDirectory.Value
+            psi.WorkingDirectory <- sdkDirectory ()
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
             use p = Process.Start psi
@@ -151,9 +215,9 @@ module ProjectSpec =
         }
 
     // MSBuildLocator may register only once per process.
-    let private toolsPath = lazy (Init.init (DirectoryInfo sdkDirectory.Value) None)
+    let private toolsPath = onceSucceeded (fun () -> Init.init (DirectoryInfo(sdkDirectory ())) None)
 
-    let private sdkOf () = sprintf "%A" toolsPath.Value
+    let private sdkOf () = sprintf "%A" (toolsPath ())
 
     /// The files an evaluation of the project read, and its assets file wherever the layout puts it. A method of its own:
     /// the MSBuild assemblies load when it is compiled, and `toolsPath` has to have registered them by then.
@@ -199,11 +263,11 @@ module ProjectSpec =
         with _ ->
             false
 
-    let private cacheJson (spec: ProjectSpec) (evaluated: Task<string list>) =
+    let private cacheJson (spec: ProjectSpec) (properties: (string * string) list) =
         let root = JsonNode.Parse(toJson spec)
 
         try
-            let evaluated = evaluated.Result
+            let evaluated = filesEvaluated spec.ProjectFile properties
             root["Sdk"] <- JsonValue.Create(sdkOf ())
             root["Evaluated"] <- JsonArray(evaluated |> List.map (fun x -> JsonValue.Create x :> JsonNode) |> Array.ofList)
         with ex ->
@@ -232,7 +296,7 @@ module ProjectSpec =
     let private loadFresh (fsproj: string) (properties: (string * string) list) : ProjectSpec =
         // Attribute files generated into obj do not take part in declaration checking; what else a build generates there does
         let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
-        let loader = WorkspaceLoader.Create(toolsPath.Value, properties)
+        let loader = WorkspaceLoader.Create(toolsPath (), properties)
 
         let notes = System.Collections.Concurrent.ConcurrentQueue<string>()
         loader.Notifications.Add(fun n -> notes.Enqueue(sprintf "%A" n))
@@ -348,17 +412,13 @@ module ProjectSpec =
                 if not (File.Exists(assetsPath fsproj)) then
                     do! restore fsproj
 
-                // The list of what the evaluation read is another evaluation, which runs beside the load's instead of after it
-                // (the SDK is registered by now, as the compiled method needs). It reads files, so it starts after the restore.
-                toolsPath.Value |> ignore
-                let evaluated = Task.Run(fun () -> filesEvaluated fsproj properties)
                 let spec = loadFresh fsproj properties
                 // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
                 let tmp = cache + "." + Guid.NewGuid().ToString("N") + ".tmp"
 
                 try
                     Directory.CreateDirectory(objDir fsproj) |> ignore
-                    File.WriteAllText(tmp, cacheJson spec evaluated)
+                    File.WriteAllText(tmp, cacheJson spec properties)
                     File.Move(tmp, cache, true)
                 with
                 | :? IOException

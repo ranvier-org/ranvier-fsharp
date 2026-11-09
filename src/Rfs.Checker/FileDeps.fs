@@ -364,7 +364,7 @@ module internal Nodes =
         found
 
     /// Looked up once. None makes `movedOnly` refuse every shift: checking a row again is always sound.
-    let mutable scopeLookup = scopeGetter "ScopeRange"
+    let private scopeLookup = scopeGetter "ScopeRange"
 
     /// Whether `b` is `a` at another line: the same syntax at the same column in the same module (W1). The checker
     /// shifts such a result (DeclarationChecker.Shift) instead of checking it again.
@@ -373,8 +373,12 @@ module internal Nodes =
     /// scope that moved by the delta is still recognised for what it is (ScopesNow). A row checked when it was last, or
     /// before lines came or went below it, has a scope of another shape: it is checked again, or it answers queries from
     /// where its scope used to be. That re-checks the rows between two line edits when the lower one came first.
-    let movedOnly (a: ParsedDeclaration) (b: ParsedDeclaration) =
-        match scopeLookup with
+    let movedOnlyWith
+        (lookup: Func<ParsedDeclaration, FSharp.Compiler.Text.range> option)
+        (a: ParsedDeclaration)
+        (b: ParsedDeclaration)
+        =
+        match lookup with
         | None -> false
         | Some scopeOf ->
             let delta = b.Range.StartLine - a.Range.StartLine
@@ -388,6 +392,8 @@ module internal Nodes =
             && scopeA.StartColumn = scopeB.StartColumn
             && scopeA.EndLine + delta = scopeB.EndLine
             && scopeA.EndColumn = scopeB.EndColumn
+
+    let movedOnly (a: ParsedDeclaration) (b: ParsedDeclaration) = movedOnlyWith scopeLookup a b
 
     /// Whether two prologues are the same header but for the blank lines after it (W1): a line inserted or removed
     /// between the header and the first declaration moves the declarations, which are shifted, and nothing the setup
