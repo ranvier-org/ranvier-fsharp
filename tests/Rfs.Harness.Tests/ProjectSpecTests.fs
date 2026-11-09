@@ -179,6 +179,92 @@ let tests =
               Expect.isEmpty leftovers "temp file removed"
           }
 
+          // The server picks its SDK itself: an exe outside the repo has no global.json pinning this runtime's SDK above it,
+          // and the highest installed SDK may be of a major version this process can't load.
+          testTask "loads from an exe outside the repo when a higher-major SDK is what a global.json above it names" {
+              let dotnetSdks =
+                  let psi = Diagnostics.ProcessStartInfo("dotnet", "--list-sdks", RedirectStandardOutput = true)
+                  let p = Diagnostics.Process.Start psi
+                  let text = p.StandardOutput.ReadToEnd()
+                  p.WaitForExit()
+                  [ for line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries) -> line.Split(' ').[0] ]
+
+              let higher =
+                  dotnetSdks |> List.filter (fun v -> int (v.Split('.').[0]) > Environment.Version.Major)
+
+              if higher.IsEmpty then
+                  skiptest $"no SDK above %d{Environment.Version.Major} is installed, so there is nothing to choose wrongly"
+
+              let root = Path.Combine(Path.GetTempPath(), "rfs-outside-" + Guid.NewGuid().ToString("N"))
+              let bin = Path.Combine(root, "bin")
+              let fixture = Path.Combine(root, "tests", "fixtures", "Tiny")
+
+              try
+                  Directory.CreateDirectory fixture |> ignore
+
+                  for f in Directory.GetFiles tinyDir do
+                      File.Copy(f, Path.Combine(fixture, Path.GetFileName f))
+
+                  let src = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar)
+
+                  for f in Directory.GetFiles(src, "*", SearchOption.AllDirectories) do
+                      let target = Path.Combine(bin, Path.GetRelativePath(src, f))
+                      Directory.CreateDirectory(Path.GetDirectoryName target) |> ignore
+                      File.Copy(f, target)
+
+                  File.WriteAllText(
+                      Path.Combine(root, "global.json"),
+                      $"""{{ "sdk": {{ "version": "%s{List.head higher}", "rollForward": "disable", "allowPrerelease": true }} }}"""
+                  )
+
+                  let psi =
+                      Diagnostics.ProcessStartInfo(
+                          "dotnet",
+                          "\"" + Path.Combine(bin, "Rfs.Harness.Tests.dll") + "\" --filter-test-case \"loads Tiny\"",
+                          WorkingDirectory = root,
+                          RedirectStandardOutput = true,
+                          RedirectStandardError = true
+                      )
+
+                  // What an earlier load in this process set up would otherwise decide the child's MSBuild
+                  for v in [ "MSBUILD_EXE_PATH"; "MSBuildExtensionsPath"; "MSBuildSDKsPath"; "DOTNET_HOST_PATH"; "DOTNET_ROOT" ] do
+                      psi.Environment.Remove v |> ignore
+
+                  let p = Diagnostics.Process.Start psi
+                  let stdout = p.StandardOutput.ReadToEndAsync()
+                  let stderr = p.StandardError.ReadToEndAsync()
+
+                  if not (p.WaitForExit(TimeSpan.FromMinutes 4.0)) then
+                      p.Kill true
+                      failtest "the child did not finish"
+
+                  let output = Text.RegularExpressions.Regex.Replace(stdout.Result + stderr.Result, "\u001b\\[[0-9;?]*[a-zA-Z]", "")
+                  Expect.equal p.ExitCode 0 $"the load succeeded outside the repo:\n%s{output}"
+                  Expect.stringContains output "1 passed" "and it ran the test"
+              finally
+                  try
+                      Directory.Delete(root, true)
+                  with _ ->
+                      ()
+          }
+
+          test "the SDK is the highest of the runtime's major version, a release over a prerelease" {
+              let installed = [ "8.0.427"; "10.0.114"; "10.0.403"; "10.0.401"; "11.0.100-rc.1.26425.128" ]
+              Expect.equal (ProjectSpec.sdkForRuntime 10 installed) (Ok "10.0.403") "not the 11 prerelease"
+              Expect.equal (ProjectSpec.sdkForRuntime 11 installed) (Ok "11.0.100-rc.1.26425.128") "a prerelease when it is all there is"
+              Expect.equal (ProjectSpec.sdkForRuntime 10 [ "10.0.100-preview.1"; "10.0.100" ]) (Ok "10.0.100") "a release over a prerelease"
+          }
+
+          test "no SDK of the runtime's major version is an error naming the versions found" {
+              match ProjectSpec.sdkForRuntime 10 [ "8.0.427"; "9.0.320"; "11.0.100-rc.1.26425.128" ] with
+              | Ok v -> failtest $"chose %s{v}"
+              | Error message ->
+                  Expect.stringContains message "no .NET SDK 10" "says what is missing"
+                  Expect.stringContains message "8.0.427, 9.0.320, 11.0.100-rc.1.26425.128" "lists what was found"
+
+              Expect.isTrue (Result.isError (ProjectSpec.sdkForRuntime 10 [])) "none installed"
+          }
+
           test "missingReferences names -r: paths that are not on disk" {
               let present = Path.Combine(tinyDir, "A.fs")
               let absent = Path.Combine(tinyDir, "obj", "nowhere", "Lib.dll")

@@ -61,13 +61,83 @@ module ProjectSpec =
     let private objDir (fsproj: string) =
         Path.Combine(Path.GetDirectoryName fsproj, "obj")
 
-    let private cachePath fsproj = Path.Combine(objDir fsproj, "rfs-spec.json")
-    let private cachePathFor fsproj (framework: string) = Path.Combine(objDir fsproj, $"rfs-spec-%s{framework}.json")
+    let private cacheStem = "rfs-spec"
+
+    /// Where `load` caches the spec of a project
+    let cachePath fsproj = Path.Combine(objDir fsproj, cacheStem + ".json")
+    let private cachePathFor fsproj (framework: string) = Path.Combine(objDir fsproj, $"%s{cacheStem}-%s{framework}.json")
     let private assetsPath fsproj = Path.Combine(objDir fsproj, "project.assets.json")
+
+    let private versionKey (v: string) =
+        let numeric, release =
+            match v.IndexOf '-' with
+            | -1 -> v, true
+            | i -> v.Substring(0, i), false
+
+        (match Version.TryParse numeric with
+         | true, parsed -> parsed
+         | _ -> Version(0, 0)),
+        release
+
+    /// The SDK whose major version is `major`, from the versions `dotnet --list-sdks` gave: the highest, a release over a
+    /// prerelease of the same number. The error names the versions found.
+    let sdkForRuntime (major: int) (installed: string list) : Result<string, string> =
+        match installed |> List.filter (fun v -> (fst (versionKey v)).Major = major) with
+        | [] ->
+            let found = if installed.IsEmpty then "none" else String.Join(", ", installed)
+
+            Error
+                $"no .NET SDK %d{major} is installed, and this server runs on .NET %d{major}, whose MSBuild has to be of that major version. SDKs found: %s{found}"
+        | some -> Ok(some |> List.maxBy versionKey)
+
+    let private installedSdks () =
+        let psi = ProcessStartInfo("dotnet", "--list-sdks")
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        psi.WorkingDirectory <- Path.GetTempPath()
+        use p = Process.Start psi
+        let stdout = p.StandardOutput.ReadToEnd()
+        p.WaitForExit()
+
+        [ for line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries) do
+              match line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries) with
+              | [||] -> ()
+              | parts -> parts[0] ]
+
+    // ProjInfo's `Init.init` takes a directory and the SDK it finds there with `dotnet --version`, so the SDK is chosen by
+    // the global.json in that directory: one is written for the exact version. Not the exe's directory, nor the working
+    // directory, whose global.json (or the highest installed SDK, with none) may be of another major version than this
+    // runtime, whose MSBuild then fails to load here (System.Runtime 11.0.0.0 into a net10 process). The directory is
+    // named by the version, so processes share it.
+    let private sdkDirectory =
+        lazy
+            (match sdkForRuntime Environment.Version.Major (installedSdks ()) with
+             | Error message -> failwith message
+             | Ok version ->
+                 let dir = Path.Combine(Path.GetTempPath(), "rfs-sdk", version)
+                 let file = Path.Combine(dir, "global.json")
+
+                 let content =
+                     $"""{{ "sdk": {{ "version": "%s{version}", "rollForward": "disable", "allowPrerelease": true }} }}"""
+
+                 try
+                     Directory.CreateDirectory dir |> ignore
+
+                     if not (File.Exists file) || File.ReadAllText file <> content then
+                         let tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp"
+                         File.WriteAllText(tmp, content)
+                         File.Move(tmp, file, true)
+                 with _ when File.Exists file && File.ReadAllText file = content ->
+                     // another process wrote the same file first
+                     ()
+
+                 dir)
 
     let private restore (fsproj: string) =
         task {
             let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\"")
+            // Restores with the SDK the load builds with
+            psi.WorkingDirectory <- sdkDirectory.Value
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
             use p = Process.Start psi
@@ -79,10 +149,8 @@ module ProjectSpec =
                 failwith $"dotnet restore failed for {fsproj}:\n{stdout.Result}{stderr.Result}"
         }
 
-    // MSBuildLocator may register only once per process. The SDK is found from the application's directory: under `dotnet`
-    // the process's own is the dotnet install, which ignores the repo's global.json and finds an SDK this runtime can't load.
-    let private toolsPath =
-        lazy (Init.init (DirectoryInfo AppContext.BaseDirectory) None)
+    // MSBuildLocator may register only once per process.
+    let private toolsPath = lazy (Init.init (DirectoryInfo sdkDirectory.Value) None)
 
     let private sdkOf () = sprintf "%A" toolsPath.Value
 
