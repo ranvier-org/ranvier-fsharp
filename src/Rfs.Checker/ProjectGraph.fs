@@ -706,29 +706,11 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// <remarks>
     /// A location read off a symbol can be stale: a kept row holds an older check's objects, which conformance and shifts
     /// no longer reach, later files hold a signature whose print didn't change, and another project a pickle of one. This
-    /// is what corrects them. It finishes with each file before it waits for the next, so it holds no lock while it waits.
-    /// Its answer is for the texts it finds, which may be newer than the symbol's.
+    /// is what corrects them. A request node that reads the files' indexes (FileUses.DefinitionOf, SignatureDefinitionOf)
+    /// in one graph turn, holding no lock: its answer is for the texts that turn has, which may be newer than the symbol's.
     /// </remarks>
-    member this.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+    member _.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
         let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
-
-        let inSignature (file: string) (conformed: bool) =
-            let i = indexOf file
-
-            // A request node, as ReadFile: a signature's check is never undone in place, so it needs no lock
-            let body (flight: CancellationToken) =
-                match readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version) with
-                | ValueNone -> Request.waitForNextTurn flight
-                | ValueSome s -> Task.Run((fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key, conformed, flight)), flight)
-
-            task {
-                use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-                return! Request.run host body linked.Token
-            }
-
-        let inImplementation (file: string) =
-            this.ReadFile(file, (fun view -> DeclarationChecker.DefinitionLocation(view.Result.CheckResults, key, ct)), ct)
-
         let isSignature (file: string) = file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
         let signature = Path.ChangeExtension(landed, ".fsi")
         let implementation = if isSignature landed then Path.ChangeExtension(landed, ".fs") else landed
@@ -736,32 +718,42 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         let sameFile (x: string) (y: string) =
             String.Equals(Path.GetFullPath x, Path.GetFullPath y, StringComparison.OrdinalIgnoreCase)
 
-        task {
-            if isSignature landed && holds signature && not (sameFile asking implementation) then
-                let! fromSignature = inSignature signature false
+        let inImplementation (file: string) =
+            readSettled (indexOf file) (fun f version -> (f :?> IReadableFile).Uses version |> ValueOption.map (fun struct (u, _) -> u.DefinitionOf key))
 
-                match fromSignature with
-                | Some _ -> return fromSignature
-                | None when holds implementation ->
+        let inSignature (file: string) (conformed: bool) =
+            readSettled (indexOf file) (fun f version ->
+                (f :?> ISignatureFile).Uses version |> ValueOption.map (fun struct (_, u) -> u.SignatureDefinitionOf(key, conformed)))
+
+        let answer () : FSharp.Compiler.Text.range option voption =
+            if isSignature landed && holds signature && not (sameFile asking implementation) then
+                match inSignature signature false with
+                | ValueSome None when holds implementation ->
                     // What the signature doesn't define. A range it does hold here is unread and old, and of what the
                     // signature just didn't answer for: nothing is better.
-                    let! fromImplementation = inImplementation implementation
-
-                    match fromImplementation with
-                    | Some r when isSignature r.FileName -> return None
-                    | _ -> return fromImplementation
-                | None -> return None
+                    inImplementation implementation
+                    |> ValueOption.map (function
+                        | Some r when isSignature r.FileName -> None
+                        | r -> r)
+                | found -> found
             elif holds implementation then
-                let! fromImplementation = inImplementation implementation
-
-                match fromImplementation with
+                match inImplementation implementation with
                 // The range's own file: a signature pairs with its implementation by module name, not by file name
-                | Some r when isSignature r.FileName -> return! (if holds r.FileName then inSignature r.FileName true else Task.FromResult None)
-                | _ -> return fromImplementation
+                | ValueSome(Some r) when isSignature r.FileName -> if holds r.FileName then inSignature r.FileName true else ValueSome None
+                | found -> found
             elif holds signature then
-                return! inSignature signature false
+                inSignature signature false
             else
-                return None
+                ValueSome None
+
+        let body (flight: CancellationToken) =
+            match answer () with
+            | ValueSome found -> Task.FromResult found
+            | ValueNone -> Request.waitForNextTurn flight
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
         }
 
     member internal _.Host: GraphHost = host

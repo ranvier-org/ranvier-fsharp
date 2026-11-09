@@ -36,13 +36,91 @@ type KeyUses =
       /// definitions apart and names a signature
       Definitions: range[] }
 
+/// One definition in a file by its raw key (DeclarationChecker.SymbolKey), with what DeclarationChecker's location lookups
+/// read of its symbol.
+[<Struct; NoComparison; NoEquality>]
+type DefinitionSite =
+    { Key: string
+      /// The symbol's signature location
+      Location: range voption
+      IsGetter: bool
+      IsSetter: bool }
+
+/// DeclarationChecker's location lookups over a file's definitions as plain data: DefinitionLocation's for an
+/// implementation, SignatureLocation's for a signature. The key handling follows the fork's SymbolKeys (service_decl.fs).
+module internal DefinitionSites =
+    let private setterSuffix = "|setter"
+
+    let withoutSetter (key: string) =
+        if key.EndsWith setterSuffix then key.Substring(0, key.Length - setterSuffix.Length) else key
+
+    /// What a signature's definition shares with an implementation that conformed to it: a member's types can differ
+    let conformance (key: string) =
+        let key = withoutSetter key
+
+        match key.Split '|' with
+        | [| assembly; kind; parent; apparent; name; isInstance; _typars; role; types |] ->
+            let arguments = if types = "" then 0 else types.Split(';').Length
+            String.concat "|" [ assembly; kind; parent; apparent; name; isInstance; role; string arguments ]
+        | _ -> key
+
+    /// A property's getter's location first, or its setter's for the setter's key; two other locations answer nothing
+    let locationOf (key: string) (sites: DefinitionSite seq) : range option =
+        let wanted (s: DefinitionSite) = if key.EndsWith setterSuffix then s.IsSetter else s.IsGetter
+
+        let locations =
+            sites
+            |> Seq.sortBy (fun s -> if wanted s then 0 else 1)
+            |> Seq.choose (fun s -> match s.Location with ValueSome r -> Some r | ValueNone -> None)
+            |> Seq.distinct
+            |> Seq.toList
+
+        match locations with
+        | [ only ] -> Some only
+        | first :: _ when key.Split('|')[1] = "property" -> Some first
+        | _ -> None
+
+    let siteOf (key: string) (symbol: FSharpSymbol) : DefinitionSite =
+        let getter, setter =
+            match symbol with
+            | :? FSharpMemberOrFunctionOrValue as v -> v.IsPropertyGetterMethod, v.IsPropertySetterMethod
+            | _ -> false, false
+
+        { Key = key
+          Location =
+            match symbol.SignatureLocation with
+            | Some r -> ValueSome r
+            | None -> ValueNone
+          IsGetter = getter
+          IsSetter = setter }
+
+    let group (by: string -> string) (sites: DefinitionSite seq) : Dictionary<string, DefinitionSite[]> =
+        let d = Dictionary<string, DefinitionSite[]>()
+
+        for key, g in sites |> Seq.groupBy (fun s -> by s.Key) do
+            d[key] <- Array.ofSeq g
+
+        d
+
 /// <summary>
-/// Every symbol use of one check of a file, by key. Immutable and free of typed-tree objects, so it needs no lock and keeps
-/// no check alive.
+/// Every symbol use of one check of a file, by key, and its definitions by raw key. Immutable and free of typed-tree
+/// objects, so it needs no lock and keeps no check alive.
 /// </summary>
 [<Sealed>]
-type FileUses internal (source: WeakReference, byKey: Dictionary<string, KeyUses>) =
+type FileUses
+    internal
+    (
+        source: WeakReference,
+        byKey: Dictionary<string, KeyUses>,
+        definitions: Dictionary<string, DefinitionSite[]>,
+        conforming: Dictionary<string, DefinitionSite[]>
+    ) =
     static let nothing = { Hits = [||]; Definitions = [||] }
+
+    let sitesIn (d: Dictionary<string, DefinitionSite[]>) (key: string) =
+        match d.TryGetValue key with
+        | true, sites -> sites
+        | _ -> [||]
 
     /// The result or signature this was made from, while something else holds it. Weak: holding it would keep the check
     member internal _.Source = source
@@ -55,6 +133,43 @@ type FileUses internal (source: WeakReference, byKey: Dictionary<string, KeyUses
 
     /// How many keys it holds
     member _.Keys = byKey.Count
+
+    /// An implementation file's answer to DeclarationChecker.DefinitionLocation for the raw key, from the check indexed
+    member _.DefinitionOf(key: string) : range option =
+        DefinitionSites.locationOf key (sitesIn definitions (DefinitionSites.withoutSetter key))
+
+    /// A signature file's answer to DeclarationChecker.SignatureLocation for the raw key, from the check indexed
+    member _.SignatureDefinitionOf(key: string, conformed: bool) : range option =
+        let defined = sitesIn conforming (DefinitionSites.conformance key)
+        let exact = defined |> Array.filter (fun s -> DefinitionSites.withoutSetter s.Key = DefinitionSites.withoutSetter key)
+
+        if exact.Length = 0 && conformed then
+            DefinitionSites.locationOf key defined
+        else
+            DefinitionSites.locationOf key exact
+
+    /// An estimate of the bytes it holds (entries, key strings, arrays, ranges), for measuring: the uses by key, then the
+    /// definitions by raw key
+    member _.Footprint: struct (int64 * int64) =
+        // A range is two int64s; arrays hold structs inline
+        let rangeBytes = 16L
+        let text (s: string) = 22L + 2L * int64 s.Length
+        let entry = 24L
+        let mutable keyed = 0L
+
+        for KeyValue(k, u) in byKey do
+            keyed <- keyed + entry + text k + 32L + int64 u.Hits.Length * (rangeBytes + 8L) + 24L + int64 u.Definitions.Length * rangeBytes + 24L
+
+        let mutable raw = 0L
+
+        for d in [ definitions; conforming ] do
+            for KeyValue(k, sites) in d do
+                raw <- raw + entry + text k + 24L
+
+                for site in sites do
+                    raw <- raw + 8L + (8L + rangeBytes) + 8L + text site.Key
+
+        struct (keyed, raw)
 
 
 /// Symbol keys as references count them, and the index of a file's uses by them.
@@ -161,7 +276,12 @@ module SymbolUses =
 
         name |> Option.filter plainIdentifier
 
-    let private build (source: obj) (uses: seq<struct (string * range * bool * range voption)>) =
+    let private build
+        (source: obj)
+        (definitionSites: Dictionary<string, DefinitionSite[]>)
+        (conforming: Dictionary<string, DefinitionSite[]>)
+        (uses: seq<struct (string * range * bool * range voption)>)
+        =
         let hits = Dictionary<string, List<struct (range * bool)>>()
         let definitions = Dictionary<string, List<range>>()
 
@@ -187,13 +307,26 @@ module SymbolUses =
                     | true, d -> d.ToArray()
                     | _ -> [||] }
 
-        FileUses(WeakReference source, byKey)
+        FileUses(WeakReference source, byKey, definitionSites, conforming)
+
+    let private noSites = Dictionary<string, DefinitionSite[]>()
+
+    /// Each definition's site by its raw key, constructors included
+    let private sitesOf (definitions: seq<FSharpSymbol>) : DefinitionSite list =
+        [ for symbol in definitions do
+              match DeclarationChecker.SymbolKey symbol with
+              | Some key -> DefinitionSites.siteOf key symbol
+              | None -> () ]
 
     /// Indexes an implementation file's check.
     let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
         let keys = keysIn check ct
+        let all = check.GetAllUsesOfAllSymbolsInFile ct |> Seq.toArray
 
-        check.GetAllUsesOfAllSymbolsInFile ct
+        let definitions =
+            all |> Seq.filter _.IsFromDefinition |> Seq.map _.Symbol |> sitesOf |> DefinitionSites.group DefinitionSites.withoutSetter
+
+        all
         |> Seq.choose (fun u ->
             keys u
             |> Option.map (fun key ->
@@ -206,10 +339,17 @@ module SymbolUses =
                         ValueNone
 
                 struct (key, u.Range, u.IsFromDefinition, location)))
-        |> build source
+        |> build source definitions noSites
 
-    /// Indexes what a signature file's check resolved. It has no definitions to tell apart.
+    /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
+    /// no locations to tell apart in the uses.
     let internal ofSignature (source: obj) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
+        let conforming =
+            uses
+            |> Seq.choose (fun (struct (_, definition, symbol)) -> if definition then Some symbol else None)
+            |> sitesOf
+            |> DefinitionSites.group DefinitionSites.conformance
+
         // As in an implementation file (keysIn): a pattern's case names no value in the signature that lists the pattern
         let patterns =
             uses
@@ -234,4 +374,4 @@ module SymbolUses =
                 | _ -> keyOf symbol
 
             own |> Option.map (fun key -> struct (key, r, definition, ValueNone)))
-        |> build source
+        |> build source noSites conforming
