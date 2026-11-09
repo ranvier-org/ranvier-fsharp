@@ -57,6 +57,12 @@ type internal IReadableFile =
     /// The published result when it is for text version `version` and the files it was set up from are current
     abstract Readable: version: int64 -> Readable voption
 
+/// A signature file's node, read for what its text says now.
+type internal ISignatureFile =
+    /// Its latest check when it is for text version `version`. Later files may be set up from an earlier check of the
+    /// same print (FileSig.Next), whose ranges are older.
+    abstract LatestCheck: version: int64 -> FileSignature voption
+
 /// Files checked whole (FileLevel): an implementation file by CheckFile, a signature file by CheckSignatureFile, each
 /// set up from the signatures of the files it depends on. An implementation file can be promoted to be checked one
 /// declaration at a time.
@@ -562,4 +568,7 @@ module internal WholeFile =
             member _.MayBuild = false
             member _.DeclarationObjects() = []
             member _.Activate() =
-                createEffect (fun () -> result.TryValue |> ignore) }
+                createEffect (fun () -> result.TryValue |> ignore)
+
+          interface ISignatureFile with
+              member _.LatestCheck version = settledAt project file result version |> ValueOption.map snd }

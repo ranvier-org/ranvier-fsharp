@@ -622,6 +622,83 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             return answer.Value
         }
 
+    /// <summary>
+    /// Where the definition that `key` (DeclarationChecker.SymbolKey) names is now, for a symbol in the file `asking` whose
+    /// own signature location is `symbolLocation`. As FCS answers: a file after a signature sees that signature; in
+    /// the implementation file, and for what it doesn't expose or when it didn't conform for errors, the definition's
+    /// signature location in the file's current result says which. A range in the signature file is read from the latest
+    /// check of it. None when the project holds neither file, or they don't define the key, or a file defines it twice,
+    /// which does not compile, unless the symbol names one of them itself (a property's getter and setter answer the getter's).
+    /// </summary>
+    /// <remarks>
+    /// A location read off a symbol can be stale: a kept row holds an older check's objects, which conformance and shifts
+    /// no longer reach, later files hold a signature whose print didn't change, and another project a pickle of one. This
+    /// is what corrects them. It finishes with each file before it waits for the next, so it holds no lock while it waits.
+    /// Its answer is for the texts it finds, which may be newer than the symbol's.
+    /// </remarks>
+    member this.CurrentLocation(asking: string, symbolLocation: FSharp.Compiler.Text.range, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+        let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
+
+        let inSignature (file: string) =
+            let i = indexOf file
+
+            task {
+                use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+
+                let! s =
+                    host.WhenSettled((fun () -> readSettled i (fun f version -> (f :?> ISignatureFile).LatestCheck version)), linked.Token)
+
+                return! Task.Run(fun () -> DeclarationChecker.SignatureLocation(project.Context, s, key))
+            }
+
+        let inImplementation (file: string) =
+            this.ReadFile(
+                file,
+                (fun view ->
+                    let found =
+                        view.Result.CheckResults.GetAllUsesOfAllSymbolsInFile ct
+                        |> Seq.filter (fun u -> u.IsFromDefinition && DeclarationChecker.SymbolKey u.Symbol = Some key)
+                        |> Seq.map _.Symbol
+                        |> Seq.toList
+                        |> List.sortBy (function
+                            | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as v when v.IsPropertyGetterMethod -> 0
+                            | _ -> 1)
+
+                    match found |> List.choose _.SignatureLocation |> List.distinct with
+                    | [ only ] -> Some only
+                    | first :: _ when key.Contains "|property|" -> Some first
+                    | several -> several |> List.tryFind (fun r -> r = symbolLocation)),
+                ct
+            )
+
+        let isSignature (file: string) = file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+        let landed = symbolLocation.FileName
+        let signature = Path.ChangeExtension(landed, ".fsi")
+        let implementation = if isSignature landed then Path.ChangeExtension(landed, ".fs") else landed
+
+        let sameFile (x: string) (y: string) =
+            String.Equals(Path.GetFullPath x, Path.GetFullPath y, StringComparison.OrdinalIgnoreCase)
+
+        task {
+            if isSignature landed && holds signature && not (sameFile asking implementation) then
+                let! fromSignature = inSignature signature
+
+                match fromSignature with
+                | Some _ -> return fromSignature
+                | None when holds implementation -> return! inImplementation implementation
+                | None -> return None
+            elif holds implementation then
+                let! fromImplementation = inImplementation implementation
+
+                match fromImplementation with
+                | Some r when isSignature r.FileName && holds signature -> return! inSignature signature
+                | _ -> return fromImplementation
+            elif holds signature then
+                return! inSignature signature
+            else
+                return None
+        }
+
     /// How the file's published result was checked: FileLevel while it is pending (mid-edit), and while it is CheckFile's
     /// or a demoted file's kept one.
     member _.Mode(file: string) : Task<Rfs.Checker.FileMode> =

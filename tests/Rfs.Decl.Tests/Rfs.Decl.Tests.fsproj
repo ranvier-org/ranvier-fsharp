@@ -17,6 +17,7 @@
     <Compile Include="ShiftTests.fs" />
     <Compile Include="CrossProjectTests.fs" />
     <Compile Include="EnvAtEndTests.fs" />
+    <Compile Include="SymbolKeyTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

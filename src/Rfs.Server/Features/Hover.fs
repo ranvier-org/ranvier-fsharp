@@ -181,7 +181,7 @@ module Hover =
             | _ -> None
 
     /// What to ask the check for at a position of the text: the line as the check wants it, the long name and its end
-    let private lookupOf (text: string) (line: int) (character: int) : (string * string list * int) option =
+    let internal lookupOf (text: string) (line: int) (character: int) : (string * string list * int) option =
         let lines = text.Split '\n'
 
         if line < 0 || line >= lines.Length then

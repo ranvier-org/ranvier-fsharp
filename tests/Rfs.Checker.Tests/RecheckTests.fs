@@ -350,9 +350,9 @@ let tests =
               Expect.isEmpty diff "the diagnostics equal a full check"
           }
 
-          // Known gap: a re-check of a value keeps its users on the old value, which conformance does not reach, so a use
-          // in a kept row shows no signature location. No diagnostic depends on it. Carried to the query tasks.
-          ptestTask "a kept user of a re-checked value of a signed file shows its signature location" {
+          // A re-check of a value keeps its users on the old value, which conformance does not reach: the symbol's own
+          // signature location stays wrong, and the query (ProjectGraph.CurrentLocation) answers, which is what this compares
+          testTask "a kept user of a re-checked value of a signed file finds its signature location" {
               let project = IO.Path.Combine(IO.Path.GetDirectoryName depsDir, "SigConform", "SigConform.fsproj")
               let! s = startOn project Declarations
               use _ = (s :> IAsyncDisposable)
@@ -403,6 +403,7 @@ let tests =
               let! (r: Edit) = edit s e (source " int")
               Expect.contains (r.NamesIn e) "A" "A re-checks with the same print"
               do! expectOracle s r.Diagnostics "the same target re-checked, user holding the old A"
+              do! expectLocations s e "the same target re-checked: user finds A's signature location"
               let! (r: Edit) = edit s e (source " int" + "\nlet added = 1\n")
               do! expectOracle s r.Diagnostics "conformance with a kept user of the old A"
           }

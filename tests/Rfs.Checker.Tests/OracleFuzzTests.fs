@@ -800,7 +800,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 blankLineEdits <- blankLineEdits + 1
 
                 // A shifted row must point where a full check does (Task 7 review I1), which no diagnostic shows
-                let! locations = locationDiffOfFuzz s file
+                let! locations = locationDiff s file
 
                 if not locations.IsEmpty then
                     fail ("symbol locations differ from a full check:\n" + String.concat Environment.NewLine locations)

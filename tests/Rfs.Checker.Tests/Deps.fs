@@ -264,39 +264,59 @@ let expectOracle (s: Session) (diagnostics: IReadOnlyDictionary<string, FSharpDi
 /// implementation: what go to definition and find references read. An active pattern case's declaration is its tag's
 /// (the subclass's DeclarationLocation, which the base property does not reach). For a namespace, only the use is
 /// compared: it is declared by every file that opens a fragment of it, and which of those its location names depends
-/// on the order checks combined them. So for a symbol another file declares: a later file sees an earlier file's items
-/// through its signature, which is reused while its fingerprint is the same, whatever lines its items moved to. That
-/// is an open gap this check does not cover: the fuzz saw C.fs point one line off into B.fs (task-7-report.md, fix
-/// round 1), and Task 16 carries it.
-let private locationsOf (keptValues: bool) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+/// on the order checks combined them. The signature location is `signatureOf`'s, which is the query for the graph's
+/// results: read off a kept symbol it stays wrong (an older check's objects, which conformance does not reach, and for a
+/// symbol another file declares its signature, reused while its fingerprint is the same). The declared and implementation
+/// locations are read off the symbol: only a kept row's own items are shifted, so for a symbol another file declares they
+/// are not compared, and Task 17, which reads locations too, goes through ProjectGraph.CurrentLocation.
+let private locationsOf (signatureOf: FSharp.Compiler.Symbols.FSharpSymbol -> FSharp.Compiler.Text.range option) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
     results.GetAllUsesOfAllSymbolsInFile()
     |> Seq.map (fun u ->
         let elsewhere =
-            match u.Symbol with
-            | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> true
-            | symbol ->
-                match symbol.DeclarationLocation with
-                | Some m -> not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
-                | None -> false
+            match u.Symbol.DeclarationLocation with
+            | Some m -> not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
+            | None -> false
 
         match u.Symbol with
-        | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere"
+        | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> $"%A{u.Range} %s{u.Symbol.FullName}: a namespace"
+        | _ when elsewhere -> $"%A{u.Range} %s{u.Symbol.FullName}: declared elsewhere, signature %A{signatureOf u.Symbol}"
         | :? FSharp.Compiler.Symbols.FSharpActivePatternCase as case -> $"%A{u.Range} %s{u.Symbol.FullName}: tag %A{case.DeclarationLocation}"
-        // A kept row's use of a module-level value checked again since holds the old value, which conformance did not
-        // reach: its signature location is an open gap ("a kept user ..." in RecheckTests), carried to the query tasks.
-        // Members need no such allowance: their users re-check with the type.
-        | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as v when keptValues && v.IsModuleValueOrMember && not v.IsMember ->
-            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, implementation %A{u.Symbol.ImplementationLocation}"
         | _ ->
-            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{u.Symbol.SignatureLocation}, implementation %A{u.Symbol.ImplementationLocation}")
+            $"%A{u.Range} %s{u.Symbol.FullName}: declared %A{u.Symbol.DeclarationLocation}, signature %A{signatureOf u.Symbol}, implementation %A{u.Symbol.ImplementationLocation}")
     |> Set.ofSeq
+
+/// What the graph's query answers for each symbol of the results that a source file of the project defines. A symbol of
+/// an external assembly, and a local, say for themselves.
+let private currentSignatures (s: Session) (file: string) (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults) =
+    task {
+        let answers = Dictionary<string * FSharp.Compiler.Text.range, FSharp.Compiler.Text.range option>()
+
+        for u in results.GetAllUsesOfAllSymbolsInFile() do
+            match u.Symbol, FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
+            | :? FSharp.Compiler.Symbols.FSharpEntity as e, _, _ when e.IsNamespace -> ()
+            | _, Some key, Some landed when
+                not (answers.ContainsKey(key, landed))
+                && s.Spec.SourceFiles |> List.exists (fun f -> String.Equals(f, landed.FileName, StringComparison.OrdinalIgnoreCase))
+                ->
+                let! answer = s.Graph.CurrentLocation(file, landed, key, System.Threading.CancellationToken.None) |> settle
+                answers[(key, landed)] <- answer
+            | _ -> ()
+
+        return
+            fun (symbol: FSharp.Compiler.Symbols.FSharpSymbol) ->
+                match FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey symbol, symbol.SignatureLocation with
+                | Some key, Some landed when answers.ContainsKey(key, landed) -> answers[(key, landed)]
+                | _, own -> own
+    }
 
 /// The lines by which the symbol locations of the graph's published results for `file` differ from the interactive
 /// checker's for the current texts (Task 7 review I1: a shifted row must not point at another declaration's old items).
-let private locationDiffWith (keptValues: bool) (s: Session) (file: string) : Task<string list> =
+let locationDiff (s: Session) (file: string) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
-        let actual = locationsOf keptValues file graph[file].CheckResults
+        let results = graph[file].CheckResults
+        let! signatureOf = currentSignatures s file results
+        let actual = locationsOf signatureOf file results
         let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
@@ -305,17 +325,12 @@ let private locationDiffWith (keptValues: bool) (s: Session) (file: string) : Ta
             checker.ParseAndCheckFileInProject(s.Spec.ProjectFile, Array.ofList s.Spec.SourceFiles, sourceReader, file)
             |> Async.StartAsTask
 
-        let expected = locationsOf keptValues file reference
+        let expected = locationsOf _.SignatureLocation file reference
 
         return
             [ for l in Set.difference expected actual -> "expected only: " + l
               for l in Set.difference actual expected -> "actual only: " + l ]
     }
-
-let locationDiff (s: Session) (file: string) = locationDiffWith false s file
-
-/// As `locationDiff`, for the fuzz, whose edits reach the open gap in `locationsOf`: only for a signed file.
-let locationDiffOfFuzz (s: Session) (file: string) = locationDiffWith (s.Texts.ContainsKey(file + "i")) s file
 
 let expectLocations (s: Session) (file: string) (what: string) =
     task {

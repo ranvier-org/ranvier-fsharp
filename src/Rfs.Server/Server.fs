@@ -140,6 +140,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                     OpenClose = Some true
                                     Change = Some TextDocumentSyncKind.Incremental }
                         HoverProvider = Some(U2.C1 true)
+                        DefinitionProvider = Some(U2.C1 true)
                         CompletionProvider =
                             Some
                                 { TriggerCharacters = Some [| "."; "'" |]
@@ -254,7 +255,23 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 })
 
         member _.TextDocumentDeclaration(_) = notImplemented
-        member _.TextDocumentDefinition(_) = notImplemented
+        member _.TextDocumentDefinition(p: DefinitionParams) =
+            reading "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                task {
+                    let! found = Definition.at workspace graph path (int p.Position.Line) (int p.Position.Character) ct
+
+                    return
+                        found
+                        |> Option.map (fun r ->
+                            let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
+
+                            U2.C1(
+                                U2.C1
+                                    { Uri = Paths.toUri r.FileName
+                                      Range = { Start = position r.StartLine r.StartColumn; End = position r.EndLine r.EndColumn } }
+                            ))
+                })
+
         member _.TextDocumentDiagnostic(_) = notImplemented
         member _.TextDocumentDocumentColor(_) = notImplemented
         member _.TextDocumentDocumentHighlight(_) = notImplemented
@@ -392,6 +409,7 @@ module Server =
               "workspace/didChangeConfiguration"
               "workspace/didChangeWatchedFiles"
               "textDocument/hover"
+              "textDocument/definition"
               "textDocument/completion"
               "completionItem/resolve" ]
 
