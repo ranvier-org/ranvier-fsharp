@@ -197,35 +197,18 @@ module Hover =
     let tooltipOf (check: FSharpCheckFileResults) (text: string) (line: int) (character: int) : string option =
         lookupOf text line character |> Option.bind (toolTip check line >> format)
 
-    /// Hovers at the position of `path`, once the graph has settled on the file's latest text. Only the check is asked
-    /// inside the read, which holds off the file's checks: the tokenizer reads the file from the top and `format` may
-    /// load an XML file, so both run outside it. A read that finds another text than the name was looked up in looks
-    /// it up again.
+    /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
+    /// ProjectGraph.ReadFile). Only the check is asked under the lock, which holds off the file's checks: the tokenizer
+    /// reads the file from the top, before the lock, and `format` may load an XML file, after the read.
     let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
         task {
-            let mutable looked = None
-            let mutable tip = ValueNone
+            let! tip =
+                graph.ReadFile(
+                    path,
+                    (fun view -> lookupOf view.Text line character),
+                    (fun view lookup -> lookup |> Option.map (toolTip view.Result.CheckResults line)),
+                    ct
+                )
 
-            while tip.IsNone do
-                let current = looked
-
-                let! found =
-                    graph.ReadFile(
-                        path,
-                        (fun view ->
-                            match current with
-                            | Some(text, lookup) when obj.ReferenceEquals(text, view.Text) ->
-                                Choice1Of2(toolTip view.Result.CheckResults line lookup)
-                            | _ -> Choice2Of2 view.Text),
-                        ct
-                    )
-
-                match found with
-                | Choice1Of2 answer -> tip <- ValueSome(Some answer)
-                | Choice2Of2 text ->
-                    match lookupOf text line character with
-                    | Some lookup -> looked <- Some(text, lookup)
-                    | None -> tip <- ValueSome None
-
-            return tip.Value |> Option.bind format
+            return tip |> Option.bind format
         }
