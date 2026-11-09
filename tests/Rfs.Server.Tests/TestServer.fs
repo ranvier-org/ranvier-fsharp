@@ -5,45 +5,59 @@ open System.IO.Pipes
 open System.Threading.Tasks
 open Rfs.Lsp
 
+/// A server running on pipe streams and a client connected to it
+type Connection =
+    { Client: LspClient
+      /// Completes with the result of the server's run, once its input ends or it exits
+      ExitCode: Task<int>
+      /// The server the connection created
+      Server: Task<Rfs.Server.RanvierServer>
+      /// Ends the client's side, so the server's input ends and its run returns
+      Owner: IDisposable }
+
+/// An anonymous pipe's read holds a pool thread until the other end writes or closes, so a connection that stays open
+/// keeps two pool threads for the rest of the process. Closing each write end ends the read on the other side.
+let connect () : Connection =
+    let toServer = new AnonymousPipeServerStream(PipeDirection.Out)
+    let serverReads = new AnonymousPipeClientStream(PipeDirection.In, toServer.ClientSafePipeHandle)
+    let fromServer = new AnonymousPipeServerStream(PipeDirection.In)
+    let serverWrites = new AnonymousPipeClientStream(PipeDirection.Out, fromServer.ClientSafePipeHandle)
+    let created = TaskCompletionSource<Rfs.Server.RanvierServer>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let exitCode =
+        Task.Factory.StartNew(
+            (fun () ->
+                try
+                    Rfs.Server.Server.runWith (fun s -> created.TrySetResult s |> ignore) serverReads serverWrites
+                finally
+                    if created.Task.IsCompletedSuccessfully then
+                        (created.Task.Result :> IDisposable).Dispose()
+
+                    serverWrites.Dispose()),
+            TaskCreationOptions.LongRunning
+        )
+
+    let client = LspClient.Connect(fromServer, toServer)
+
+    { Client = client
+      ExitCode = exitCode
+      Server = created.Task
+      Owner =
+        { new IDisposable with
+            member _.Dispose() =
+                (client :> IDisposable).Dispose()
+                toServer.Dispose() } }
+
 /// Runs the server on pipe streams and connects a client to them. `exitCode` completes with `Server.run`'s result.
 let startRun () : Task<LspClient * Task<int>> =
-    task {
-        let toServer = new AnonymousPipeServerStream(PipeDirection.Out)
-        let serverReads = new AnonymousPipeClientStream(PipeDirection.In, toServer.ClientSafePipeHandle)
-        let fromServer = new AnonymousPipeServerStream(PipeDirection.In)
-        let serverWrites = new AnonymousPipeClientStream(PipeDirection.Out, fromServer.ClientSafePipeHandle)
-
-        let exitCode =
-            Task.Factory.StartNew(
-                (fun () -> Rfs.Server.Server.run serverReads serverWrites),
-                TaskCreationOptions.LongRunning
-            )
-
-        let client = LspClient.Connect(fromServer, toServer)
-        return client, exitCode
-    }
+    let c = connect ()
+    Task.FromResult((c.Client, c.ExitCode))
 
 /// Like `startRun`, and also hands out the server the connection created, for tests that reach into it.
 let startCapturing () : Task<LspClient * IDisposable * Task<Rfs.Server.RanvierServer>> =
-    task {
-        let toServer = new AnonymousPipeServerStream(PipeDirection.Out)
-        let serverReads = new AnonymousPipeClientStream(PipeDirection.In, toServer.ClientSafePipeHandle)
-        let fromServer = new AnonymousPipeServerStream(PipeDirection.In)
-        let serverWrites = new AnonymousPipeClientStream(PipeDirection.Out, fromServer.ClientSafePipeHandle)
-        let created = TaskCompletionSource<Rfs.Server.RanvierServer>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-        Task.Factory.StartNew(
-            (fun () -> Rfs.Server.Server.runWith (fun s -> created.TrySetResult s |> ignore) serverReads serverWrites),
-            TaskCreationOptions.LongRunning
-        )
-        |> ignore
-
-        let client = LspClient.Connect(fromServer, toServer)
-        return client, (client :> IDisposable), created.Task
-    }
+    let c = connect ()
+    Task.FromResult((c.Client, c.Owner, c.Server))
 
 let start () : Task<LspClient * IDisposable> =
-    task {
-        let! client, _ = startRun ()
-        return client, (client :> IDisposable)
-    }
+    let c = connect ()
+    Task.FromResult((c.Client, c.Owner))

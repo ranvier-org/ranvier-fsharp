@@ -48,6 +48,14 @@ let tests =
               Expect.equal code 0 "a clean exit"
           }
 
+          testTask "closing the client's end ends the run" {
+              let c = TestServer.connect ()
+              let! _ = request c.Client "initialize" (initializeParams ())
+              c.Owner.Dispose()
+              let! _ = c.ExitCode |> within
+              ()
+          }
+
           testTask "unimplemented request errors and the server stays up" {
               let! started = TestServer.start ()
               let lsp, (owner: IDisposable) = started
