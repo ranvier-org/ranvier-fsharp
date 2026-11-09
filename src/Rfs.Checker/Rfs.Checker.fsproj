@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <Compile Include="GraphHost.fs" />
+    <Compile Include="Request.fs" />
     <Compile Include="NameIndex.fs" />
     <Compile Include="FileDeps.fs" />
     <Compile Include="FileGraph.fs" />

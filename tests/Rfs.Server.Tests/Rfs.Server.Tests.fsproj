@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="TestServer.fs" />
+    <Compile Include="RequestTests.fs" />
     <Compile Include="LifecycleTests.fs" />
     <Compile Include="WorkspaceTests.fs" />
     <Compile Include="PublishTests.fs" />
@@ -21,6 +22,7 @@
     <Compile Include="ReferencesTests.fs" />
     <Compile Include="ReferencesIndexTests.fs" />
     <Compile Include="WhyTests.fs" />
+    <Compile Include="RequestFeatureTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

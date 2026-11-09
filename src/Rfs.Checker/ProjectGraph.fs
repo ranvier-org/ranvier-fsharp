@@ -187,8 +187,6 @@ and [<RequireQualifiedAccess; NoComparison; NoEquality>] TurnRead<'Extra> =
 /// </remarks>
 and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, initialFiles: IFileNode[], initialOwner: Owner, references: ProjectGraph list, firstSeen: ReferencesSeen, initialWanted: HashSet<int>) =
     let requested = Array.zeroCreate<int64> initialFiles.Length
-    // Cancelled by an edit of the file: what an ad hoc check of it would answer is out of date
-    let edits = Array.init initialFiles.Length (fun _ -> new CancellationTokenSource())
     let lifetime = new CancellationTokenSource()
     let wanted = initialWanted
     // Replaced together by a restart, on the graph thread
@@ -197,6 +195,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     let mutable seen = firstSeen
     let mutable generatedResults: Lazy<FileResult list> = Lazy<FileResult list>.CreateFromValue []
     let mutable filesNow: Signal<IFileNode[]> = Unchecked.defaultof<_>
+    // Set when a restart fails, so a request node waiting on the disposed nodes runs again and fails
+    let mutable restartFailed: Signal<bool> = Unchecked.defaultof<_>
     let mutable assemblyFlight: AsyncMemo<AssemblyState> = Unchecked.defaultof<_>
     let mutable assemblyMemo: Memo<AssemblyState> = Unchecked.defaultof<_>
     let mutable contextMemo: AsyncMemo<ReferencesSeen> = Unchecked.defaultof<_>
@@ -214,6 +214,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             work ()
         with ex ->
             restartFailure <- ex
+
+            if not (isNull (box restartFailed)) then
+                restartFailed.Value <- true
+
             reraise ()
 
     // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle
@@ -251,15 +255,22 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
     /// Reads file `i` once it is settled on its latest text, with every write posted to it and to the files before it
     /// applied, and the projects it references settled. Its result being settled means the files it was set up from are
-    /// current too, transitively (IFileNode.Current).
+    /// current too, transitively (IFileNode.Current). Every read is tracked, so a request node whose body calls it runs
+    /// again when a guard that failed may pass: a write applied, a restart, a restart's failure.
     let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+        if not (isNull (box restartFailed)) then
+            restartFailed.Value |> ignore
+
         if not (isNull restartFailure) then
             raise (InvalidOperationException("The project's nodes could not be made again after a reference changed.", restartFailure))
+
+        if not (isNull (box filesNow)) then
+            filesNow.Value |> ignore
 
         let mutable applied = true
 
         for j in 0..i do
-            if files[j].Text.Version <> Volatile.Read &requested[j] then
+            if files[j].Text.Text.Value.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
         if applied && referencesCurrent () then read files[i] (Volatile.Read &requested[i]) else ValueNone
@@ -380,6 +391,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         linkOwner <-
             createRoot (fun o ->
                 filesNow <- createSignal files
+                restartFailed <- createSignal false
 
                 if not references.IsEmpty then
                     // The context for the references as they stand; the current one while they settle or keep their fingerprints
@@ -507,7 +519,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         let mutable applied = true
 
         for j in 0 .. files.Length - 1 do
-            if files[j].Text.Version <> Volatile.Read &requested[j] then
+            if files[j].Text.Text.Value.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
         if applied && referencesCurrent () then
@@ -558,7 +570,6 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     member _.SetText(file: string, text: string) : int64 =
         let i = indexOf file
         let version = Interlocked.Increment &requested[i]
-        (Interlocked.Exchange(&edits[i], new CancellationTokenSource())).Cancel()
 
         // A disposed graph checks nothing
         if Volatile.Read &disposed = 0 then
@@ -601,13 +612,21 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         settled (fun () -> readSettled i (fun f version -> f.Results version))
 
-    /// Runs `read` off the graph thread on the file's published result, once it is settled on its latest text (as for
-    /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no
-    /// check, shift or finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
-    /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
-    /// signature file, which has no FileResult. `read` runs again, on the file's new text, when an edit of the file
-    /// cancelled an ad hoc check inside it (FileView.CheckResultsAt): only the client's cancel or a reload ends the wait.
-    member _.ReadFile(file: string, read: FileView -> 'T, ct: CancellationToken) : Task<'T> =
+    /// <summary>
+    /// A request node (Request.run) on the file's published result, once it is settled on its latest text (as for
+    /// `Diagnostics`): `prepare` runs off the graph thread on the view, then `read` on the view and what `prepare` gave.
+    /// `prepare` may read the text and the parse, never the check: it runs without the lock.
+    /// </summary>
+    /// <remarks>
+    /// For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no check, shift
+    /// or finish runs on it meanwhile, and the result is still the published one when the lock is taken; when it isn't,
+    /// the request waits for the next turn. A new text of the file, or a newer result, runs the request again on it and
+    /// cancels what ran on the older one, ad hoc checks inside it included (FileView.CheckResultsAt), so a request answers
+    /// for the latest text once it has settled. A newer parse that replaced the file's #line directives while `read` ran
+    /// is a new text too. Cancelling `ct`, or disposing the graph (a reload), cancels the task and nothing shared. Fails
+    /// with ArgumentException for a signature file, which has no FileResult.
+    /// </remarks>
+    member _.ReadFile(file: string, prepare: FileView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
         let i = indexOf file
 
         if isSignatureFile files[i] then
@@ -615,53 +634,60 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         let readable () = readSettled i (fun f version -> (f :?> IReadableFile).Readable version)
 
+        let view (r: Readable) (checks: CancellationToken) =
+            { Result = r.Result
+              Parse = r.Parsed.Parse
+              Text = r.Parsed.Text
+              Version = r.Parsed.Version
+              Before = r.Key.Before
+              At =
+                fun line column ->
+                    match r.Declarations with
+                    | ValueSome(f, roles) -> RowView.at project f roles line column checks
+                    | ValueNone -> r.Result.CheckResults }
+
+        let body (flight: CancellationToken) : Task<'T> =
+            match readable () with
+            | ValueNone -> Request.waitForNextTurn flight
+            | ValueSome r ->
+                let hook = afterSettle
+
+                Task.Run<'T>(fun () ->
+                    task {
+                        do! hook ()
+                        let v = view r flight
+                        let prepared = prepare v
+
+                        let answer () =
+                            try
+                                ValueSome(read v prepared)
+                            with :? SupersededLineDirectivesException ->
+                                ValueNone
+
+                        let inEffect () =
+                            host.Read(fun () ->
+                                match (try readable () with NotReadyException _ -> ValueNone) with
+                                | ValueSome a -> obj.ReferenceEquals(a.Identity, r.Identity)
+                                | ValueNone -> false)
+
+                        let! found =
+                            match r.Lock with
+                            | ValueNone -> Task.FromResult(answer ())
+                            | ValueSome l -> Request.live (acquireExclusive l) inEffect answer flight
+
+                        match found with
+                        | ValueSome v -> return v
+                        | ValueNone -> return! Request.waitForNextTurn flight
+                    })
+
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-            let mutable answer = ValueNone
-
-            while answer.IsNone do
-                let! r = host.WhenSettled(readable, linked.Token)
-                do! afterSettle ()
-
-                let edit = Volatile.Read &edits[i]
-
-                let run (r: Readable) (checks: CancellationToken) =
-                    Task.Run(fun () ->
-                        read
-                            { Result = r.Result
-                              Parse = r.Parsed.Parse
-                              Text = r.Parsed.Text
-                              Version = r.Parsed.Version
-                              Before = r.Key.Before
-                              At =
-                                fun line column ->
-                                    match r.Declarations with
-                                    | ValueSome(f, roles) -> RowView.at project f roles line column checks
-                                    | ValueNone -> r.Result.CheckResults })
-
-                match r.Lock with
-                | ValueNone ->
-                    let! v = run r linked.Token
-                    answer <- ValueSome v
-                | ValueSome l ->
-                    let! held = acquireExclusive l linked.Token
-                    use _ = held
-                    // A finish may have run between the settle and the lock; one in flight now changes the inputs first
-                    let! again = host.Read(fun () -> try readable () with NotReadyException _ -> ValueNone)
-
-                    match again with
-                    | ValueSome a when obj.ReferenceEquals(a.Identity, r.Identity) ->
-                        use checks = CancellationTokenSource.CreateLinkedTokenSource(linked.Token, edit.Token)
-
-                        try
-                            let! v = run a checks.Token
-                            answer <- ValueSome v
-                        with :? OperationCanceledException when edit.IsCancellationRequested && not linked.IsCancellationRequested ->
-                            ()
-                    | _ -> ()
-
-            return answer.Value
+            return! Request.run host body linked.Token
         }
+
+    /// A request node on the file's published result (the other overload), with nothing prepared off the lock.
+    member this.ReadFile(file: string, read: FileView -> 'T, ct: CancellationToken) : Task<'T> =
+        this.ReadFile(file, ignore, (fun view () -> read view), ct)
 
     /// <summary>
     /// Where the definition that `key` (DeclarationChecker.SymbolKey) names is now, for a symbol in the file `asking` whose
@@ -799,8 +825,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// `scope` runs on the graph thread at each turn tried, before and after the files are read. The workspace changes
     /// off that thread, so both must agree (the same graphs, files, name and Extra, and not loading) for the turn to count:
     /// otherwise, as while loading, the turn is pending. The caller must wake the graph thread when what `scope` reads
-    /// changes without a post (Workspace does at the end of a load). A disposed graph in the scope gives Gone at once, as its
-    /// nodes never change; a disposal wakes the waiter, as it posts to the graph thread.
+    /// changes without a post (Workspace does at the end of a load). A disposed graph in the scope gives Gone at the first
+    /// turn that sees it outside a load (a loading scope names no projects), as its nodes never change; a disposal wakes the
+    /// waiter, as it posts to the graph thread.
     /// </para>
     /// </remarks>
     member _.ReadInOneTurn(scope: unit -> TurnScope<'Extra>, ct: CancellationToken) : Task<TurnRead<'Extra>> =

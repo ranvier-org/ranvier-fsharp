@@ -46,7 +46,7 @@ let tests =
               Expect.equal view.Version version "the edit's version"
           }
 
-          testTask "a read holds a finish off the file until it is done" {
+          testTask "a read holds a finish off the file until it is done, and an edit meanwhile runs it again" {
               let! s = startWith Declarations
               use _ = (s :> IAsyncDisposable)
               let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
@@ -60,7 +60,7 @@ let tests =
                   s.Graph.ReadFile(
                       a,
                       (fun v ->
-                          entered.SetResult(())
+                          entered.TrySetResult(()) |> ignore
                           release.Wait(TimeSpan.FromSeconds 60.) |> ignore
                           v.Text),
                       CancellationToken.None
@@ -78,7 +78,9 @@ let tests =
               Expect.equal s.Graph.FinishTicks ticks "no finish ran during the read"
               release.Set()
               let! text = held |> settle
-              Expect.equal text before "the read saw the text it settled on"
+              // A request node: the edit runs it again on the new text, and what the read on the older text gave is
+              // dropped, as a superseded flight's is
+              Expect.equal text after "the read answers for the text the edit left, once the file settles on it"
               let! struct (v, _) = settled |> settle
               Expect.equal v version "the file then settles on the edit"
               Expect.isGreaterThan s.Graph.FinishTicks ticks "and the finish ran"
@@ -143,7 +145,7 @@ let tests =
                       efs,
                       (fun v ->
                           let one = tip v
-                          entered.SetResult(())
+                          entered.TrySetResult(()) |> ignore
                           release.Wait(TimeSpan.FromSeconds 60.) |> ignore
                           one, tip v),
                       CancellationToken.None

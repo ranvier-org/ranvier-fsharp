@@ -43,12 +43,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     let plain (content: string) : LspResult<PlainNotification> = Ok { Content = content }
 
+    // JSON-RPC's InternalError. LspResult.internalError in Ionide.LanguageServerProtocol 0.7.0 sends -32602 (InvalidParams)
+    let internalError (message: string) : LspResult<'T> = Error(JsonRpc.Error.Create(-32603, message))
+
     /// A request that reads a source file: `none` when no project holds it, or the project goes away (a reload hides it
     /// while it loads again) or the server shuts down meanwhile. A request the client cancelled never gets to the handler:
     /// the library cancels the async itself. The edits before the request may still be queued; its answer is for the text
     /// they leave.
-    // JSON-RPC's InternalError. LspResult.internalError in Ionide.LanguageServerProtocol 0.7.0 sends -32602 (InvalidParams)
-    let internalError (message: string) : LspResult<'T> = Error(JsonRpc.Error.Create(-32603, message))
 
     let reading (what: string) (none: 'T) (path: unit -> string) (run: ProjectGraph -> string -> CancellationToken -> Task<'T>) : Async<LspResult<'T>> =
         async {
@@ -71,9 +72,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                 match root ex with
                 | :? OperationCanceledException
-                | :? ObjectDisposedException
-                // A newer parse replaced the file's #line directives while its results were built: an edit got there first
-                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
+                | :? ObjectDisposedException -> return Ok none
                 | e ->
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
                     return internalError e.Message
