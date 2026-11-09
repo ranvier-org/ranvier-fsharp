@@ -42,7 +42,10 @@ type State =
       /// The from-scratch check of an implementation file, made once
       Reference: string -> Task<FSharpCheckFileResults>
       /// The graphs that hold a file, as `Workspace.OwnersOf` gives them
-      OwnersOf: string -> ProjectGraph list }
+      OwnersOf: string -> ProjectGraph list
+      /// The from-scratch check of a file of the project, or of App's file after them as one project: FCS can't check App
+      /// on Lib's unbuilt text as two
+      Combined: string -> Task<FSharpCheckFileResults> }
 
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
@@ -82,7 +85,13 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
             let implementations = files |> List.filter (fun f -> not (f.EndsWith ".fsi"))
             let! deps = ProjectSpec.load depsProject
             let baseSpec = ProjectSpec.sequential deps
-            let libSpec = { baseSpec with ProjectFile = Path.Combine(libDir, "Lib.fsproj"); SourceFiles = files }
+
+            // Each its own assembly: an App whose `-r` names no assembly Lib is called resolves nothing of Lib's
+            let libSpec =
+                { baseSpec with
+                    ProjectFile = Path.Combine(libDir, "Lib.fsproj")
+                    SourceFiles = files
+                    OtherOptions = ("--out:" + Path.Combine(libDir, "Lib.dll")) :: baseSpec.OtherOptions }
 
             let appSpec =
                 { baseSpec with
@@ -90,7 +99,7 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
                     SourceFiles = [ appFile ]
                     ReferencedProjects = [ libSpec.ProjectFile ]
                     ReferencedFrameworks = [ "" ]
-                    OtherOptions = ("-r:" + Path.Combine(libDir, "Lib.dll")) :: baseSpec.OtherOptions }
+                    OtherOptions = ("-r:" + Path.Combine(libDir, "Lib.dll")) :: ("--out:" + Path.Combine(appDir, "App.dll")) :: baseSpec.OtherOptions }
 
             use host = GraphHost.Start "token grid"
             let! (libGraph: ProjectGraph) = ProjectGraph.Create(host, libSpec)
@@ -120,6 +129,10 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
                     let current = texts
                     let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions libSpec)
                     let reader (f: string) = (let t = current[f] in hash t, lazy t)
+                    let combinedFiles = files @ [ appFile ]
+                    let combinedChecker = InteractiveChecker.Create(ProjectSpec.toFcsOptions { libSpec with SourceFiles = combinedFiles })
+                    let combinedReader (f: string) = (let t = (if f = appFile then appText else current[f]) in hash t, lazy t)
+                    let combinedChecks = Dictionary<string, FSharpCheckFileResults>()
 
                     let reference (file: string) =
                         task {
@@ -137,9 +150,22 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
                               Graph = libGraph
                               Files = files
                               Implementations = implementations
-                              TextOf = fun f -> current[f]
+                              TextOf = fun f -> if f = appFile then appText else current[f]
                               Reference = reference
-                              OwnersOf = owners }
+                              OwnersOf = owners
+                              Combined =
+                                fun file ->
+                                    task {
+                                        match combinedChecks.TryGetValue file with
+                                        | true, c -> return c
+                                        | _ ->
+                                            let! _, c, _ =
+                                                combinedChecker.ParseAndCheckFileInProject(libSpec.ProjectFile, Array.ofList combinedFiles, combinedReader, file)
+                                                |> Async.StartAsTask
+
+                                            combinedChecks[file] <- c
+                                            return c
+                                    } }
                             appGraph
                             appFile
 
@@ -239,7 +265,8 @@ let run (promote: bool) (scenario: Scenario) (atState: State -> Task<'T list>) :
                               Implementations = implementations
                               TextOf = fun f -> current[f]
                               Reference = reference
-                              OwnersOf = held }
+                              OwnersOf = held
+                              Combined = reference }
 
                     results.AddRange found
                 }

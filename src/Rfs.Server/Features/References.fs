@@ -23,22 +23,30 @@ open Rfs.Checker
 /// declaration comes from ProjectGraph.CurrentLocation.
 /// </para>
 /// <para>
-/// A symbol with no key (a local, a parameter) answers its uses in the asking file's result, in one read. A named argument
-/// the same, so its parameter's uses in other files aren't found.
+/// A symbol with no key (a local, a parameter) answers its uses in the asking file's result, in one read, so a parameter's
+/// named uses in other files aren't found. A named argument answers the same in its method's file, and nothing elsewhere:
+/// that file's result has neither its definition nor its other uses.
 /// </para>
 /// <para>
 /// Consistency: each file is read alone, holding nothing while another is waited for. The files are read until a whole
-/// pass finds every file on the result the pass before it read, and every signature's declaration where it was. Each
-/// file stayed on that result between its two reads, and the first pass ended before the second began, so at that moment
-/// all of them stood where the answer says. Where edits keep that from happening in a few passes the answer is Moved, never
-/// a mix: the handler gives the client LSP's ContentModified.
+/// pass finds, for every file, the same uses as the pass before it, at the same text version or the next one, and every
+/// signature's declaration where it was. So between the first of those reads and the last each file went through at most
+/// one edit, both of its texts having these uses: at the moment between the passes each file stood at one of them, and
+/// the answer is that moment's. An edit that moves no use doesn't hold the answer up; more than one edit of a file between
+/// its reads does, as nothing was read of the texts between them. A change that only shows in another file's uses while
+/// two files are each edited once between their reads, and is gone again by both of their second reads, isn't seen.
+/// Where edits keep this from happening in a few passes, or a project goes away, or the workspace is loading (a reload
+/// hides the project and those that reference it from the snapshot), the answer is Moved, never a mix or a partial list.
+/// The handler gives LSP's ContentModified, and Ionide's bundled client then shows no results and doesn't ask again: to
+/// the user it looks like no references.
 /// </para>
 /// <para>
 /// Where FCS answers otherwise, counted in the ReferencesGrid's limit list: a key two definitions share answers nothing;
 /// a use in a signature file other than its declaration isn't found, as CheckSignatureFile has no sink; a member more
-/// generic than its signature has two keys, and finds one side; a named argument and its parameter find each other only in
-/// one file; a slot's property and what implements it are one key; a call of an overloaded constructor doesn't add that
-/// overload's `new`. A cursor in a signature file answers nothing.
+/// generic than its signature has a key each side of it, and answers nothing; a parameter's named uses in other files
+/// aren't found; a slot's property with both accessors and what implements it are told apart otherwise than FCS does; a
+/// call of an overloaded constructor doesn't add that overload's `new`. A file linked into two projects finds the asking
+/// project's copy only, as the key names the assembly. A cursor in a signature file answers nothing.
 /// </para>
 /// </remarks>
 module References =
@@ -48,7 +56,9 @@ module References =
         { OwnersOf: string -> ProjectGraph list
           ReferencingProjects: ProjectGraph -> ProjectGraph list
           Projects: unit -> ProjectGraph list
-          FilesOf: ProjectGraph -> string list }
+          FilesOf: ProjectGraph -> string list
+          /// A load or reload is under way: the projects listed may lack those it hides
+          IsLoading: unit -> bool }
 
     /// A use, and whether it is a definition
     type Use = (struct (range * bool))
@@ -56,7 +66,7 @@ module References =
     [<RequireQualifiedAccess; NoComparison>]
     type Answer =
         | Found of Use list
-        /// Edits kept arriving: no moment was seen at which every file stood still
+        /// No moment was seen at which what the files say held still, or a project went away or is loading
         | Moved
 
     [<NoComparison; NoEquality>]
@@ -124,6 +134,11 @@ module References =
             | Some key ->
                 let landed = u.Symbol.SignatureLocation |> Option.orElse u.Symbol.DeclarationLocation |> Option.map _.FileName
                 Keyed(key, landed)
+            // Its method is another file's: this file's result knows only the argument
+            | None when (match u.Symbol with
+                         | :? FSharpParameter as p -> not (String.Equals(p.DeclarationLocation.FileName, u.FileName, StringComparison.OrdinalIgnoreCase))
+                         | _ -> false) ->
+                Nothing
             | None -> InFile [ for d in check.GetUsesOfSymbolInFile(u.Symbol, cancellationToken = ct) -> struct (d.Range, d.IsFromDefinition) ]
 
     /// The symbol under the cursor. Only the check is asked inside the read; a read that finds another text than the name
@@ -160,6 +175,8 @@ module References =
     type private Scanned =
         { /// The result it was read from: the same object has the same uses
           Result: obj
+          /// The text version it was read at
+          Version: int64
           /// With whether its key is the setter's
           Hits: (struct (range * bool * bool))[]
           /// Where each definition here says it is, with whether its key is the setter's. The location can be stale: it
@@ -179,7 +196,8 @@ module References =
         | :? FSharpMemberOrFunctionOrValue as v -> not v.IsConstructor
         | _ -> true
 
-    let private scan (key: string) (result: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : Scanned =
+    let private scan (key: string) (view: FileView) (ct: CancellationToken) : Scanned =
+        let check = view.Result.CheckResults
         let keys = keysIn check ct
         let plain = withoutSetter key
 
@@ -192,7 +210,8 @@ module References =
                 | _ -> None)
             |> Seq.toArray
 
-        { Result = result
+        { Result = view.Result
+          Version = view.Version
           Hits = found |> Array.map (fun (u, setter) -> struct (u.Range, u.IsFromDefinition, setter))
           Definitions =
             found
@@ -205,12 +224,35 @@ module References =
 
     /// Whether more than one definition has this key, which only a file that doesn't compile, or private types of one
     /// name in two files, can have: a property's accessors are one definition, and every fragment declares its namespace.
-    let private isTied (key: string) (definitions: range seq) =
+    /// Across files only the location's file counts: `type C with` in another file or project holds a kept copy of C, whose
+    /// location names the right file at an old line.
+    let private isTied (key: string) (definitionsByFile: (struct (range * bool))[] list) =
         match key.Split('|')[1] with
         | "property"
         | "namespace"
         | "anonymous" -> false
-        | _ -> (definitions |> Seq.distinct |> Seq.length) > 1
+        | _ ->
+            let inOneFile (definitions: (struct (range * bool))[]) =
+                (definitions |> Seq.map (fun (struct (r, _)) -> r) |> Seq.distinct |> Seq.length) > 1
+
+            List.exists inOneFile definitionsByFile
+            || (definitionsByFile
+                |> Seq.concat
+                |> Seq.map (fun (struct (r, _)) -> r.FileName)
+                |> Seq.distinct
+                |> Seq.length) > 1
+
+    /// Whether the same uses at the same or the next text version: see the remarks
+    let private holdsStill (before: Scanned) (now: Scanned) =
+        let sameUse (struct (a: range, b: bool, c: bool)) (struct (x: range, y: bool, z: bool)) = Range.equals a x && b = y && c = z
+        let sameDefinition (struct (a: range, b: bool)) (struct (x: range, y: bool)) = Range.equals a x && b = y
+
+        obj.ReferenceEquals(before.Result, now.Result)
+        || (now.Version - before.Version <= 1L
+            && before.Hits.Length = now.Hits.Length
+            && before.Definitions.Length = now.Definitions.Length
+            && Array.forall2 sameUse before.Hits now.Hits
+            && Array.forall2 sameDefinition before.Definitions now.Definitions)
 
     let private sameFile (a: string) (b: string) =
         String.Equals(Path.GetFullPath a, Path.GetFullPath b, StringComparison.OrdinalIgnoreCase)
@@ -255,7 +297,7 @@ module References =
                                         (fun view ->
                                             match previous.TryGetValue(struct (p, file)) with
                                             | true, s when obj.ReferenceEquals(s.Result, view.Result) -> s
-                                            | _ -> scan key view.Result view.Result.CheckResults ct),
+                                            | _ -> scan key view ct),
                                         ct
                                     )
 
@@ -303,24 +345,42 @@ module References =
                     && current
                        |> Seq.forall (fun (KeyValue(k, s)) ->
                            match previous.TryGetValue k with
-                           | true, before -> obj.ReferenceEquals(before.Result, s.Result)
+                           | true, before -> holdsStill before s
                            | _ -> false)
 
                 last <- current
                 lastSignatures <- now
                 signatureUses <- List.ofSeq signatures
 
-            if not settled then
+            if not settled || gone.Count > 0 || scope.IsLoading() then
                 return Answer.Moved
             else
-                let kept =
-                    [ for KeyValue(struct (p, _), s) in last do
-                          if not (gone.Contains p) then
-                              yield s ]
-
+                let kept = List.ofSeq last.Values
                 let definitions = kept |> List.collect (fun s -> List.ofArray s.Definitions)
+                let isMember = (match key.Split('|')[1] with "member" | "property" -> true | _ -> false)
+                let inSignatures = definitions |> List.choose (fun (struct (r, _)) -> if isSignature r.FileName then Some r.FileName else None) |> List.distinct
 
-                if isTied key (definitions |> Seq.map (fun (struct (r, _)) -> r)) then
+                // A member more generic than its signature has a key each side of it. From a use after the signature its
+                // definer shows no definition; from the implementation, the signature has no such key.
+                let! moreGeneric =
+                    task {
+                        if not isMember then
+                            return false
+                        elif definitions.IsEmpty then
+                            return not definers.IsEmpty
+                        else
+                            let mutable found = false
+
+                            for signature in inSignatures do
+                                for p in 0 .. projects.Length - 1 do
+                                    if not found && scope.FilesOf projects[p] |> List.exists (sameFile signature) then
+                                        let! exact = projects[p].CurrentLocation(signature, signature, key, ct)
+                                        found <- not (exact |> Option.exists (fun r -> isSignature r.FileName))
+
+                            return found
+                    }
+
+                if moreGeneric || isTied key (kept |> List.map _.Definitions) then
                     return Answer.Found []
                 else
                     // A setter's own token is its own symbol, unless it is all the property has: then it is the property
@@ -339,8 +399,11 @@ module References =
     /// Every use of the symbol at the position.
     let find (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<Answer> =
         task {
-            match! asked graph path line character ct with
-            | Nothing -> return Answer.Found []
-            | InFile uses -> return Answer.Found uses
-            | Keyed(key, landed) -> return! everywhere scope graph key landed ct
+            try
+                match! asked graph path line character ct with
+                | Nothing -> return Answer.Found []
+                | InFile uses -> return Answer.Found uses
+                | Keyed(key, landed) -> return! everywhere scope graph key landed ct
+            with :? OperationCanceledException when not ct.IsCancellationRequested ->
+                return Answer.Moved
         }

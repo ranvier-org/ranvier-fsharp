@@ -1,6 +1,7 @@
 namespace Rfs.Server
 
 open System
+open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
@@ -123,6 +124,30 @@ module Completion =
             elif character = 0 then 0
             else character - 1
 
+    /// Runs `f` on a thread of its own with the graph thread's stack: reading a parse tree has no StackGuard, and a row of
+    /// 4000 `let`s overflows a pool thread's, which kills the process.
+    let private onLargeStack (f: unit -> 'T) : 'T =
+        let result = ref ValueNone
+        let failure = ref null
+
+        let thread =
+            Thread(
+                (fun () ->
+                    try
+                        result.Value <- ValueSome(f ())
+                    with ex ->
+                        failure.Value <- ExceptionDispatchInfo.Capture ex),
+                GraphHost.StackSize
+            )
+
+        thread.Start()
+        thread.Join()
+
+        if not (isNull failure.Value) then
+            failure.Value.Throw()
+
+        result.Value.Value
+
     /// The items at the 0-based line and character of the read's text, through FileView.CheckResultsAt.
     let itemsAt (view: FileView) (line: int) (character: int) =
         itemsOf (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
@@ -147,7 +172,7 @@ module Completion =
             let! items =
                 graph.ReadFile(
                     path,
-                    (fun view -> itemsAt view line character),
+                    (fun view -> onLargeStack (fun () -> itemsAt view line character)),
                     ct
                 )
 

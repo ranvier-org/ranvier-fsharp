@@ -313,7 +313,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     { OwnersOf = workspace.OwnersOf
                       ReferencingProjects = workspace.ReferencingProjects
                       Projects = fun () -> workspace.Projects
-                      FilesOf = workspace.FilesOf }
+                      FilesOf = workspace.FilesOf
+                      IsLoading = fun () -> workspace.IsLoading }
+
+                let moved = Error(JsonRpc.Error.Create(-32801, "The files changed while references were read"))
 
                 let! answer =
                     reading "references" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
@@ -321,8 +324,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                             let! found = References.find scope graph path (int p.Position.Line) (int p.Position.Character) ct
 
                             match found with
-                            // The client asks again: LSP's ContentModified says just this
-                            | References.Answer.Moved -> return Error(JsonRpc.Error.Create(-32801, "The files changed while references were read"))
+                            // LSP's ContentModified. Ionide's bundled client shows nothing for it and doesn't ask again
+                            | References.Answer.Moved -> return moved
                             | References.Answer.Found uses ->
                                 let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
 
@@ -336,7 +339,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                     )
                         })
 
-                return answer |> Result.bind id
+                // No project holds the file, which during a load says nothing of the file
+                match answer with
+                | Ok(Ok None) when workspace.IsLoading -> return moved
+                | _ -> return answer |> Result.bind id
             }
         member _.TextDocumentRename(_) = notImplemented
         member _.TextDocumentSelectionRange(_) = notImplemented

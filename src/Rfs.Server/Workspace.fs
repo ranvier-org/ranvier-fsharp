@@ -261,6 +261,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let entries = Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
     let openTexts = Dictionary<string, struct (string * int)>(StringComparer.OrdinalIgnoreCase)
     let mutations = new SemaphoreSlim(1)
+    let mutable loading = 0
     let lifetime = new CancellationTokenSource()
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
     let mutable onSetText: ProjectGraph -> string -> int64 -> int -> unit = fun _ _ _ _ -> ()
@@ -434,12 +435,17 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
     let exclusively (work: unit -> Task<'T>) : Task<'T> =
         task {
-            do! mutations.WaitAsync lifetime.Token
+            Interlocked.Increment &loading |> ignore
 
             try
-                return! work ()
+                do! mutations.WaitAsync lifetime.Token
+
+                try
+                    return! work ()
+                finally
+                    mutations.Release() |> ignore
             finally
-                mutations.Release() |> ignore
+                Interlocked.Decrement &loading |> ignore
         }
 
     let reload (project: string) : Task<unit> =
@@ -539,6 +545,9 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
     /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
     member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
+
+    /// Whether a load or reload is under way or queued: the snapshot may lack projects it hides meanwhile
+    member _.IsLoading: bool = Volatile.Read &loading > 0
 
     /// The source files of the project of `graph`, in file order, signature files too
     member _.FilesOf(graph: ProjectGraph) : string list =

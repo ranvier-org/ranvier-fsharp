@@ -113,6 +113,8 @@ let private start (root: string) (project: string) (opened: string list) =
         Fixtures.build project
         let! (s: Session) = startSessionWith root [ project ] true ignore
         do! openAll s opened
+        // Its texts are set by now: what a test sets on a graph comes after them
+        do! s.Server.Publisher.Barrier().WaitAsync(TimeSpan.FromSeconds 120.)
         return s
     }
 
@@ -138,7 +140,12 @@ let private scopeOf (s: Session) : References.Scope =
     { OwnersOf = s.Server.Workspace.OwnersOf
       ReferencingProjects = s.Server.Workspace.ReferencingProjects
       Projects = fun () -> s.Server.Workspace.Projects
-      FilesOf = s.Server.Workspace.FilesOf }
+      FilesOf = s.Server.Workspace.FilesOf
+      IsLoading = fun () -> s.Server.Workspace.IsLoading }
+
+/// A host for a graph that is made to go away
+module ReferencesTestsHost =
+    let host = lazy (Rfs.Checker.GraphHost.Start "references tests")
 
 /// Each edit writes `n` blank lines above the definition in A and above the use in B, A first. So the states that exist
 /// are A at n and B at n, or A at n + 1 and B at n; a scan that reads A and then B after edits have gone by answers A
@@ -308,7 +315,7 @@ let tests =
 
           testTask "overlapping edits end, and never answer a state that didn't exist" {
               let a, b = overlapping ()
-              let! (s: Session) = start depsDir depsProject [ file "A.fs"; file "B.fs"; d ]
+              let! (s: Session) = start depsDir depsProject []
               use _ = disposing s
               let aFile, bFile = file "A.fs", file "B.fs"
               let graph = (s.Server.Workspace.ProjectOf aFile).Value
@@ -366,38 +373,236 @@ let tests =
               Expect.isEmpty broken "only states that existed"
           }
 
-          testTask "cancelling ends the request between files" {
+          testTask "edits that move no use still answer, at each pass" {
+              let a, b = overlapping ()
+              let! (s: Session) = start depsDir depsProject []
+              use _ = disposing s
+              let aFile, bFile = file "A.fs", file "B.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              graph.SetText(aFile, a 0) |> ignore
+              let text (i: int) = b 0 + $"let far = %d{i}\n"
+              graph.SetText(bFile, text 0) |> ignore
+              let! _ = graph.AllDiagnostics() |> within
+              let mutable edits = 0
+
+              // Runs once a pass: every pass finds another result of B, of another version, with the same uses
+              let scope =
+                  { scopeOf s with
+                      FilesOf =
+                          fun _ ->
+                              edits <- edits + 1
+                              graph.SetText(bFile, text edits) |> ignore
+                              [ aFile; bFile ] }
+
+              let! (answer: References.Answer) = References.find scope graph bFile 1 18 CancellationToken.None
+
+              match answer with
+              | References.Answer.Found uses -> Expect.equal uses.Length 2 "the definition and the use"
+              | References.Answer.Moved -> failtest "nothing it answers moved"
+          }
+
+          testTask "edits that move a use every pass answer Moved" {
+              let a, b = overlapping ()
+              let! (s: Session) = start depsDir depsProject []
+              use _ = disposing s
+              let aFile, bFile = file "A.fs", file "B.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              graph.SetText(aFile, a 0) |> ignore
+              graph.SetText(bFile, b 0) |> ignore
+              let! _ = graph.AllDiagnostics() |> within
+              let mutable edits = 0
+
+              let scope =
+                  { scopeOf s with
+                      FilesOf =
+                          fun _ ->
+                              edits <- edits + 1
+                              graph.SetText(aFile, a edits) |> ignore
+                              [ aFile; bFile ] }
+
+              let! (answer: References.Answer) = References.find scope graph bFile 1 18 CancellationToken.None
+              Expect.isTrue answer.IsMoved $"no two passes agree: %A{answer}, after %d{edits} edits"
+          }
+
+          testTask "cancelling ends the request during the scan, with a read held" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs"; d ]
               use _ = disposing s
+              let aFile = file "A.fs"
               let graph = (s.Server.Workspace.ProjectOf d).Value
+              do! promoted s aFile
+              do! promoted s d
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let gate = new ManualResetEventSlim(false)
+              let entered = new ManualResetEventSlim(false)
+
+              // The asking file is free, and the scan waits on the last file read
+              let held =
+                  graph.ReadFile(
+                      d,
+                      (fun _ ->
+                          entered.Set()
+                          gate.Wait(TimeSpan.FromSeconds 60.) |> ignore),
+                      CancellationToken.None
+                  )
+
+              let! _ = Task.Run(fun () -> entered.Wait(TimeSpan.FromSeconds 60.)) |> within
               let cancelled = new CancellationTokenSource()
+              let mutable reached = false
+
+              let scope =
+                  { scopeOf s with
+                      FilesOf =
+                          fun g ->
+                              reached <- true
+                              s.Server.Workspace.FilesOf g }
+
+              let pending = References.find scope graph aFile (fst at) (snd at) cancelled.Token
+              do! Task.Delay 300
+              Expect.isTrue reached "the request got to the scan"
+              Expect.isFalse pending.IsCompleted "and waits for the held file"
               cancelled.Cancel()
 
               let! outcome =
                   task {
                       try
-                          let! (_: References.Answer) = References.find (scopeOf s) graph d 2 4 cancelled.Token
+                          let! (_: References.Answer) = pending.WaitAsync(TimeSpan.FromSeconds 20.)
                           return "answered"
                       with :? OperationCanceledException ->
                           return "cancelled"
                   }
 
-              Expect.equal outcome "cancelled" "the token is honoured"
+              gate.Set()
+              let! _ = held |> within
+              Expect.equal outcome "cancelled" "the token is honoured while a file is waited for"
           }
 
-          testTask "a project going away answers nothing for it, and shutdown answers nothing" {
+          testTask "a project gone, or the workspace loading, answers Moved and not a partial list" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs"; d ]
               use _ = disposing s
-              let aText = s.Lsp.Text(file "A.fs")
-              let at = position aText "baseValue" 0 1
-              let! (before: Answer) = references s (file "A.fs") at true
+              let aFile = file "A.fs"
+              let graph = (s.Server.Workspace.ProjectOf aFile).Value
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let! (loaded: References.Answer) = References.find (scopeOf s) graph aFile (fst at) (snd at) CancellationToken.None
+              Expect.isFalse loaded.IsMoved "answers while loaded"
+              let! (loading: References.Answer) = References.find { scopeOf s with IsLoading = fun () -> true } graph aFile (fst at) (snd at) CancellationToken.None
+              Expect.isTrue loading.IsMoved "a load is under way"
+
+              // A referencing project that goes away during the scan
+              let other = ProjectSpec.sequential (ProjectSpec.load depsProject).Result
+              let! (right: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(ReferencesTestsHost.host.Value, { other with ProjectFile = Path.Combine(Path.GetDirectoryName depsProject, "Right.fsproj") })
+              right.Dispose()
+
+              let scope =
+                  { scopeOf s with
+                      ReferencingProjects = fun _ -> [ right ]
+                      FilesOf = fun g -> if obj.ReferenceEquals(g, right) then [ aFile ] else s.Server.Workspace.FilesOf g }
+
+              let! (gone: References.Answer) = References.find scope graph aFile (fst at) (snd at) CancellationToken.None
+              Expect.isTrue gone.IsMoved "a project went away"
+          }
+
+          testTask "a reload answers ContentModified from a request waiting on it, and shutdown answers nothing" {
+              let! (s: Session) = start depsDir depsProject [ file "A.fs"; d ]
+              use _ = disposing s
+              let aFile = file "A.fs"
+              do! promoted s d
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let! (before: Answer) = references s aFile at true
               Expect.isNonEmpty before "answers while loaded"
-              let pending = references s (file "A.fs") at true
+              let graph = (s.Server.Workspace.ProjectOf d).Value
+              let gate = new ManualResetEventSlim(false)
+              let entered = new ManualResetEventSlim(false)
+
+              let held =
+                  graph.ReadFile(
+                      d,
+                      (fun _ ->
+                          entered.Set()
+                          gate.Wait(TimeSpan.FromSeconds 60.) |> ignore),
+                      CancellationToken.None
+                  )
+
+              let! _ = Task.Run(fun () -> entered.Wait(TimeSpan.FromSeconds 60.)) |> within
+              let pending = references s aFile at true
+              do! Task.Delay 500
+              Expect.isFalse pending.IsCompleted "it waits for the held file"
               let reload = s.Server.Workspace.Reload depsProject
-              let! (_: Answer) = pending
+
+              let! outcome =
+                  task {
+                      try
+                          let! (answer: Answer) = pending
+                          return $"answered %d{answer.Count}"
+                      with ex ->
+                          return ex.Message
+                  }
+
+              gate.Set()
               do! reload
+              Expect.stringContains outcome "-32801" "ContentModified, not a list that looks complete"
               do! s.Server.Publisher.Barrier().WaitAsync(TimeSpan.FromSeconds 120.)
               (s.Server :> IDisposable).Dispose()
-              let! (afterShutdown: Answer) = references s (file "A.fs") at true
+              let! (afterShutdown: Answer) = references s aFile at true
               Expect.isEmpty afterShutdown "after shutdown"
+          }
+
+          testTask "a member more generic than its signature answers nothing" {
+              let! (s: Session) = start depsDir depsProject []
+              use _ = disposing s
+              let g = (s.Server.Workspace.ProjectOf d).Value
+              g.SetText(file "E.fsi", "module Deps.E\n\ntype T =\n    new: unit -> T\n    member One: x: int -> int\n") |> ignore
+              g.SetText(file "E.fs", "module Deps.E\n\ntype T() =\n    member _.One(x) = x\n") |> ignore
+              g.SetText(d, "module Deps.D\n\nlet z = Deps.E.T().One 1\n") |> ignore
+              let! _ = g.AllDiagnostics() |> within
+              let! (fromDefinition: References.Answer) = References.find (scopeOf s) g (file "E.fs") 3 14 CancellationToken.None
+              let! (fromUse: References.Answer) = References.find (scopeOf s) g d 2 21 CancellationToken.None
+              Expect.equal (string fromDefinition) (string (References.Answer.Found [])) "from the definition"
+              Expect.equal (string fromUse) (string (References.Answer.Found [])) "from the use"
+          }
+
+          testTask "a named argument in another file than its method's answers nothing, and in its file its uses" {
+              let! (s: Session) = start depsDir depsProject []
+              use _ = disposing s
+              let g = (s.Server.Workspace.ProjectOf d).Value
+              g.SetText(file "A.fs", "module Proj.A\n\ntype T =\n    static member M(name: int) = name\n\nlet here = T.M(name = 1)\n") |> ignore
+              g.SetText(file "B.fs", "module Proj.B\n\nlet there = Proj.A.T.M(name = 2)\n") |> ignore
+              let! _ = g.AllDiagnostics() |> within
+              let! (elsewhere: References.Answer) = References.find (scopeOf s) g (file "B.fs") 2 24 CancellationToken.None
+              Expect.equal (string elsewhere) (string (References.Answer.Found [])) "another file"
+              let! (inItsFile: References.Answer) = References.find (scopeOf s) g (file "A.fs") 5 16 CancellationToken.None
+
+              match inItsFile with
+              | References.Answer.Found uses -> Expect.equal uses.Length 3 "its parameter's own, and the argument"
+              | References.Answer.Moved -> failtest "nothing moved"
+          }
+
+          testTask "a 4000-row file promotes and answers completion, and so does a row of 4000 lets" {
+              let! (s: Session) = start depsDir depsProject []
+              use _ = disposing s
+              let g = (s.Server.Workspace.ProjectOf d).Value
+              let rows = System.Text.StringBuilder("module Deps.D\n\ntype R = { Name: string; Size: int }\n\n")
+
+              for r in 0..3999 do
+                  rows.Append($"let v%d{r} (x: int) (r: R) = r.Size + x + %d{r}\n") |> ignore
+
+              rows.Append("let last (r: R) = r.S\n") |> ignore
+              let text = rows.ToString()
+              g.SetText(d, text) |> ignore
+              g.Promote d
+              let! (mode: Rfs.Checker.FileMode) = g.WhenPromoted(d, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes 3.)
+              Expect.equal mode Rfs.Checker.FileMode.Declarations "promoted"
+              let lines = text.Split '\n'
+              let! (items: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g d (lines.Length - 2) 20 CancellationToken.None
+              Expect.isNonEmpty items "it answers"
+
+              let lets = System.Text.StringBuilder("module Deps.D\n\nlet deep =\n")
+
+              for r in 0..3999 do
+                  lets.Append($"    let a%d{r} = %d{r}\n") |> ignore
+
+              lets.Append("    a0\n") |> ignore
+              let deep = lets.ToString()
+              g.SetText(d, deep) |> ignore
+              let! (inner: Ionide.LanguageServerProtocol.Types.CompletionItem[]) = Completion.at g d (deep.Split('\n').Length - 2) 6 CancellationToken.None
+              Expect.isNonEmpty inner "a row of 4000 lets answers"
           } ]
