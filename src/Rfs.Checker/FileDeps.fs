@@ -144,6 +144,8 @@ type internal ProjectShared(ctx: ProjectContext) =
     let mutable scopedCheckHook: string -> unit = ignore
     let mutable beginFileHook: string -> unit = ignore
     let mutable setupHook: string -> unit = ignore
+    let mutable flightHook: string -> string -> CancellationToken -> unit = fun _ _ _ -> ()
+    let skippedFlights = System.Collections.Concurrent.ConcurrentDictionary<string, int64>()
     let finishPhaseTicks = Dictionary<string, int64>()
     let phaseAllocated = Dictionary<string, int64>()
     let premise = Subject<PremiseBreak>()
@@ -212,6 +214,24 @@ type internal ProjectShared(ctx: ProjectContext) =
     member val Post: (unit -> unit) -> unit = ignore with get, set
 
     member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
+
+    /// Runs off the graph thread, with the memo's kind, its path and the flight's token, as an async memo's work starts.
+    /// For tests.
+    member _.FlightHook
+        with get () = Volatile.Read &flightHook
+        and set (hook: string -> string -> CancellationToken -> unit) = Volatile.Write(&flightHook, hook)
+
+    /// Ends a flight that was superseded or disposed: Ranvier drops what such a flight settles with, so this is no fault.
+    member _.ThrowIfSuperseded(kind: string, ct: CancellationToken) =
+        if ct.IsCancellationRequested then
+            skippedFlights.AddOrUpdate(kind, 1L, (fun _ n -> n + 1L)) |> ignore
+            ct.ThrowIfCancellationRequested()
+
+    /// How many flights of `kind` ThrowIfSuperseded ended. For tests.
+    member _.SkippedFlights(kind: string) =
+        match skippedFlights.TryGetValue kind with
+        | true, n -> n
+        | _ -> 0L
 
     /// Adds a finish's FileResult.PhaseTicks to the running totals; finishes of different files run concurrently.
     member _.AddFinishPhaseTicks(phases: IReadOnlyDictionary<string, int64>) =
@@ -371,48 +391,32 @@ module internal Nodes =
 
         memos |> Array.map _.Value
 
-/// Lets only the newest of a node's flights run its work. A ticket is taken on the graph thread when a flight starts,
-/// so a later ticket is a later input; a flight whose ticket is no longer the newest when its turn comes is cancelled.
-/// The work runs under the gate's lock, so its writes to shared state (the context's latest parse and dependency
-/// snapshot, the process-wide line directives) land in ticket order and the newest one's are the ones left.
-[<Sealed>]
-type internal Gate() =
-    let sync = obj ()
-    let mutable issued = 0L
-
-    member _.Issue() = Interlocked.Increment &issued
-
-    member _.Run(ticket: int64, work: unit -> 'T) : 'T =
-        lock sync (fun () ->
-            if ticket <> Interlocked.Read &issued then
-                raise (OperationCanceledException "a later flight superseded this one")
-
-            work ())
-
 /// A source file's text and its parse.
 [<Sealed>]
 type internal FileText(project: ProjectShared, path: string, initial: string, version: int64) =
     let ctx = project.Context
     let text = createSignal { Text = initial; Version = version }
-    let gate = Gate()
+    let parsing = obj ()
 
     let parsed =
-        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
             let t = text.Value
-            let ticket = gate.Issue()
 
             Task.Run<Parsed>(fun () ->
-                gate.Run(
-                    ticket,
-                    fun () ->
-                        let parse = project.Measure("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
+                project.FlightHook "parse" path ct
 
-                        { Version = t.Version
-                          Text = t.Text
-                          Parse = parse
-                          Declarations = [||]
-                          Prologue = t.Text }
-                )))
+                // Parsing writes shared state: the context's latest parse and the process-wide line directives. These
+                // land in input order and the newest one's are left: Ranvier cancels a flight before it runs the next
+                // body, so past this check under the lock, a flight writes before any newer one takes the lock.
+                lock parsing (fun () ->
+                    project.ThrowIfSuperseded("parse", ct)
+                    let parse = project.Measure("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
+
+                    { Version = t.Version
+                      Text = t.Text
+                      Parse = parse
+                      Declarations = [||]
+                      Prologue = t.Text })))
 
     member _.Path = path
     member _.Text = text
@@ -483,29 +487,29 @@ module internal FileDeps =
         has
 
     /// The dependencies of every file, from every file's current parse: re-run whenever any parse changes, so the
-    /// checker's dependency snapshot is of the parses the value holds. Superseded flights do not run, so a late one
-    /// never replaces a newer snapshot.
+    /// checker's dependency snapshot is of the parses the value holds. The check under the lock keeps a late flight
+    /// from replacing a newer snapshot, as for the parse (FileText).
     let create (project: ProjectShared) (files: FileText[]) : AsyncMemo<FileDepsValue> =
         let ctx = project.Context
-        let gate = Gate()
+        let computing = obj ()
 
-        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
             let parsed = Nodes.valuesOfAsync (files |> Array.map _.Parsed)
-            let ticket = gate.Issue()
 
             Task.Run<FileDepsValue>(fun () ->
-                gate.Run(
-                    ticket,
-                    fun () ->
-                        let dependencies =
-                            project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
+                project.FlightHook "dependencies" "" ct
 
-                        { Parsed = parsed
-                          Dependencies = dependencies
-                          SameName = sameNames parsed
-                          HasDependents = hasDependents dependencies
-                          ImplementationOf = implementationsOf parsed }
-                )))
+                lock computing (fun () ->
+                    project.ThrowIfSuperseded("dependencies", ct)
+
+                    let dependencies =
+                        project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
+
+                    { Parsed = parsed
+                      Dependencies = dependencies
+                      SameName = sameNames parsed
+                      HasDependents = hasDependents dependencies
+                      ImplementationOf = implementationsOf parsed })))
 
 /// What a file's setup reads: the earlier files' signatures, either those of the files it depends on or every earlier
 /// one, and the file's parse.

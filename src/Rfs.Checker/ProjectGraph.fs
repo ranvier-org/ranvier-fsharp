@@ -356,7 +356,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 if not references.IsEmpty then
                     // The context for the references as they stand; the current one while they settle or keep their fingerprints
                     contextMemo <-
-                        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                        createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                             let states = Nodes.valuesOf (references |> List.map (fun (r: ProjectGraph) -> r.Assembly) |> Array.ofList)
 
                             let built =
@@ -370,11 +370,15 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                             else
                                 let started = Diagnostics.Stopwatch.GetTimestamp()
 
-                                task {
-                                    let! ctx = ProjectGraph.MakeContext(spec, options, paths, built)
-                                    project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
-                                    return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
-                                })
+                                // Off the graph thread: on it the check would run before anything could supersede the flight
+                                Task.Run<ReferencesSeen>(fun () ->
+                                    task {
+                                        project.FlightHook "context" spec.ProjectFile ct
+                                        project.ThrowIfSuperseded("context", ct)
+                                        let! ctx = ProjectGraph.MakeContext(spec, options, paths, built)
+                                        project.AddPhase("createProject", Diagnostics.Stopwatch.GetTimestamp() - started, 0L)
+                                        return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
+                                    }))
 
                     createEffect (fun () ->
                         match contextMemo.TryValue with
@@ -390,7 +394,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
             runWithOwner linkOwner (fun () ->
                 // Off the graph thread: taking a fingerprint no check asked for describes the file, and hashes them all
                 assemblyFlight <-
-                    createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                    createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                         let nodes = filesNow.Value
 
                         // Until a restart, this project's files are checked against older assemblies
@@ -420,7 +424,11 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                             let results = results |> Array.choose _.Value |> List.ofArray
                             let ctx = project.Context
                             let generated = generatedResults
-                            Task.Run<AssemblyState>(fun () -> Built(DeclarationChecker.ProjectAssembly(ctx, generated.Value @ results, signatures))))
+
+                            Task.Run<AssemblyState>(fun () ->
+                                project.FlightHook "assembly" spec.ProjectFile ct
+                                project.ThrowIfSuperseded("assembly", ct)
+                                Built(DeclarationChecker.ProjectAssembly(ctx, generated.Value @ results, signatures))))
 
                 // The cutoff at the project boundary
                 assemblyMemo <-
@@ -939,6 +947,14 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// Runs `hook` off the graph thread, with the file's path, just before a promotion build sets the file up. For
     /// tests.
     member internal _.OnBeginFile(hook: string -> unit) : unit = project.BeginFileHook <- hook
+
+    /// Runs `hook` off the graph thread, with the memo's kind (parse, dependencies, split, finish, context, assembly),
+    /// its path and the flight's token, as an async memo's work starts, before it checks the token. A finish also runs
+    /// it as finish.lock before it waits for the lock, and as finish.run just before FinishFile. For tests.
+    member internal _.OnFlight(hook: string -> string -> CancellationToken -> unit) : unit = project.FlightHook <- hook
+
+    /// How many flights of the kind found themselves superseded before doing their work. For tests.
+    member internal _.SkippedFlights(kind: string) : int64 = project.SkippedFlights kind
 
     /// Replaces the print a window's close leaves for a declaration, as a variable moved after the close would. For
     /// tests.

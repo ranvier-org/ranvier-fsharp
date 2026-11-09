@@ -13,6 +13,7 @@
     <Compile Include="RecheckTests.fs" />
     <Compile Include="AugmentationTests.fs" />
     <Compile Include="ReadFileTests.fs" />
+    <Compile Include="FlightTests.fs" />
     <Compile Include="SchemeTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="CrossProjectGraphTests.fs" />

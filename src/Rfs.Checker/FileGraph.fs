@@ -983,10 +983,12 @@ module internal FileNodes =
             createMemoWithComparer HashIdentity.Reference (fun _ -> deps.Value.Parsed[index])
 
         let parsed =
-            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+            createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                 let p = ownParse.Value
 
                 Task.Run<Parsed>(fun () ->
+                    project.FlightHook "split" path ct
+                    project.ThrowIfSuperseded("split", ct)
                     let declarations = DeclarationChecker.Split p.Parse
 
                     { p with
@@ -1138,12 +1140,18 @@ module internal FileNodes =
 
         let finish =
             Labels.named (fun () -> $"finish %s{path}") (fun () ->
-                createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ _ ->
+                createAsyncWithPolicy FlightPolicy.CancelPrevious (fun _ ct ->
                     let i = stableInputs.Value
 
                     Task.Run<Finished>(fun () ->
                         task {
+                            project.FlightHook "finish" path ct
+                            project.ThrowIfSuperseded("finish", ct)
+                            project.FlightHook "finish.lock" path ct
                             use! _ = i.Start.Lock.WriteAsync()
+                            // It may have been superseded while it waited for the lock. Once running it runs to its end
+                            project.ThrowIfSuperseded("finish", ct)
+                            project.FlightHook "finish.run" path ct
                             let watch = Diagnostics.Stopwatch.StartNew()
                             // The parse of the text being finished: its diagnostics and #nowarn scopes are the ones published.
                             let fileResult =

@@ -325,6 +325,26 @@ let tests =
               ()
           }
 
+          for kind in [ "context"; "assembly" ] do
+              testTask $"a cancelled %s{kind} flight publishes nothing and is no fault" {
+                  let! s = startMulti FileLevel
+                  use _ = (s :> IAsyncDisposable)
+                  let original = s.Texts[libFs]
+                  let graph = if kind = "context" then s.App else s.Lib
+
+                  let edit (n: int) =
+                      let result = if n = 1 then "string = string x" else "float = float x"
+                      set s libFs (original.Replace("int = x + 1", result))
+
+                  let settledOnNewest () : Task =
+                      task {
+                          let! actual = expectAppOracle s "the newest Lib"
+                          Expect.exists actual (fun (d: Diagnostic) -> d.Message.Contains "float") $"y is a float: %A{actual}"
+                      }
+
+                  do! FlightTests.supersedeOne s.Host graph.OnFlight graph.SkippedFlights kind edit settledOnNewest
+              }
+
           testTask "an edit of App while the restart is pending is not lost" {
               let! s = startMulti FileLevel
               use _ = (s :> IAsyncDisposable)
