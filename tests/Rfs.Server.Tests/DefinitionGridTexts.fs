@@ -597,6 +597,8 @@ let unmatched =
       Steps =
         [ "blank line in the implementation", [ "Impl.fs", blankAbove "let v" a ]
           "value re-checked, same print", [ "Impl.fs", rep "let f (x: int)" "let f (x:  int)" (blankAbove "let v" a) ]
+          // A second finish: the kept user's old value loses the signature its first conformance gave it
+          "a row added, and a kept user of the value", [ "Impl.fs", rep "let f (x: int)" "let f (x:  int)" (blankAbove "let v" a) + "\nlet z = 1\n" ]
           "blank line in the signature", [ "Sig.fsi", blankAbove "val v" si ]
           "blank line in both", [ "Impl.fs", blankAbove "type T" (blankAbove "let v" a); "Sig.fsi", blankAbove "type T" (blankAbove "val v" si) ] ] }
 
