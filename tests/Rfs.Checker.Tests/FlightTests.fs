@@ -112,6 +112,67 @@ let private superseded (holdAt: string) =
         Expect.isEmpty diff "the final state equals a full check"
     }
 
+/// Probes the checker with D's and E's current parses: it refuses D (SupersededLineDirectivesException) when an older
+/// parse's line directives were left, and E's scoped setup (StaleDependenciesException) when the context's latest parse
+/// of D or its dependency snapshot is an older one's.
+let private probeNewestLeft (s: Session) =
+    task {
+        let ctx = s.Graph.Context
+
+        let probe (file: string) =
+            s.Graph.ReadFile(
+                file,
+                (fun (v: FileView) ->
+                    let before = [ for u in v.Upstream[1..] -> u :?> FileSignature ]
+                    DeclarationChecker.CheckFile(ctx, before, v.Parse) |> ignore
+                    before.Length),
+                CancellationToken.None
+            )
+            |> settle
+
+        let! _ = probe d
+        let! read = probe e
+        Expect.isLessThan read (s.Spec.SourceFiles |> List.findIndex (samePath e)) "E is set up from fewer than every earlier file, so the probe reads the snapshot"
+    }
+
+/// An older flight of `kind` passes its check and is held there; a newer edit launches the next flight, which is given
+/// time to reach the lock; then the older goes on. The newer must write after it.
+let private passedCheck (kind: string) =
+    testTask $"an older %s{kind} flight past its check writes before a newer one" {
+        let! s = startWith FileLevel
+        use _ = (s :> IAsyncDisposable)
+        let held = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let newerArrived = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let release = new ManualResetEventSlim(false)
+        let armed = ref 1
+        let arrivals = ref 0
+        let isD path = kind = "dependencies" || samePath path d
+
+        s.Graph.OnFlight(fun k path _ ->
+            if isD path then
+                if k = kind + ".checked" && Interlocked.Exchange(&armed.contents, 0) = 1 then
+                    held.SetResult(())
+                    release.Wait(TimeSpan.FromSeconds 60.) |> ignore
+                elif k = kind && Interlocked.Increment &arrivals.contents = 2 then
+                    newerArrived.TrySetResult(()) |> ignore)
+
+        let original = s.Texts[d]
+        s.Graph.SetText(d, "# 1 \"elsewhere.fsy\"\n" + original) |> ignore
+        do! held.Task |> settle
+        s.Texts[d] <- withAfter original 1
+        let version = s.Graph.SetText(d, s.Texts[d])
+        do! newerArrived.Task |> settle
+        // Time for the newer flight to take the lock, were it free
+        do! Task.Delay 300
+        release.Set()
+        let! struct (v, _) = s.Graph.SettledDiagnostics d |> settle
+        Expect.equal v version "settled on the newer edit"
+        let! _ = s.Graph.AllDiagnostics() |> settle
+        do! probeNewestLeft s
+        let! errors = errorsOf s.Host
+        Expect.isEmpty errors "nothing surfaced"
+    }
+
 [<Tests>]
 let tests =
     // Sequenced: the order test parses D.fs with a line directive, which the process keeps for the file
@@ -120,6 +181,8 @@ let tests =
         "Flight tokens"
         [ superseded "finish"
           superseded "finish.lock"
+          passedCheck "parse"
+          passedCheck "dependencies"
 
           testTask "an older parse that reaches the lock after a newer one leaves the newest's writes" {
               let! s = startWith FileLevel

@@ -950,7 +950,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
     /// Runs `hook` off the graph thread, with the memo's kind (parse, dependencies, split, finish, context, assembly),
     /// its path and the flight's token, as an async memo's work starts, before it checks the token. A finish also runs
-    /// it as finish.lock before it waits for the lock, and as finish.run just before FinishFile. For tests.
+    /// it as finish.lock before it waits for the lock, and as finish.run just before FinishFile; parse and dependencies
+    /// as parse.checked and dependencies.checked once past their check. For tests.
     member internal _.OnFlight(hook: string -> string -> CancellationToken -> unit) : unit = project.FlightHook <- hook
 
     /// How many flights of the kind found themselves superseded before doing their work. For tests.

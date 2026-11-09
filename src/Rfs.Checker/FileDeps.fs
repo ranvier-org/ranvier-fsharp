@@ -410,6 +410,7 @@ type internal FileText(project: ProjectShared, path: string, initial: string, ve
                 // body, so past this check under the lock, a flight writes before any newer one takes the lock.
                 lock parsing (fun () ->
                     project.ThrowIfSuperseded("parse", ct)
+                    project.FlightHook "parse.checked" path ct
                     let parse = project.Measure("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
 
                     { Version = t.Version
@@ -501,6 +502,7 @@ module internal FileDeps =
 
                 lock computing (fun () ->
                     project.ThrowIfSuperseded("dependencies", ct)
+                    project.FlightHook "dependencies.checked" "" ct
 
                     let dependencies =
                         project.Measure("fileDependencies", fun () -> DeclarationChecker.FileDependencies(ctx, parsed |> Array.map _.Parse))
