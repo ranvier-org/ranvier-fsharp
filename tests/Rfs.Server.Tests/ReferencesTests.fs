@@ -511,9 +511,10 @@ let tests =
               let! _ = Task.Run(fun () -> entered.Wait(TimeSpan.FromSeconds 60.)) |> within
               let pending = references s aFile at true
 
-              // Each edit moves B's uses down, and every other one adds another use
+              // Each edit moves B's uses down, and every other one adds another use. A `do` leaves B's signature as it was:
+              // a new value in it would set D up again on a new FileStart, whose index the lock held here doesn't block
               for n in 1..12 do
-                  let extra = if n % 2 = 0 then $"let again%d{n} = baseValue\n\n" else "\n"
+                  let extra = if n % 2 = 0 then "do ignore baseValue\n\n" else "\n"
                   do! s.Lsp.DidChange(bFile, n, replace s bFile "type Counter() =" (extra + "type Counter() ="))
                   do! Task.Delay 30
 
