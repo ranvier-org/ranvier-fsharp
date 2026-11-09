@@ -1256,24 +1256,6 @@ module internal FileNodes =
 /// the FileStart's lock exclusively: no check, finish or environment fold of the file runs meanwhile, so nothing but this
 /// reads a type while a replay hides its members, and the query that follows reads it whole.
 module internal RowView =
-    /// The last declaration starting at or before the 1-based line and 0-based column, or -1. Inside a declaration or
-    /// in the gap after it, the captured environments that apply are its own. After the last one, the finish's end
-    /// environment is current.
-    let private rowAt (checks: (Row * RowCheck)[]) (line: int) (column: int) =
-        let mutable found = -1
-
-        checks
-        |> Array.iteri (fun i (_, c) ->
-            let r = c.Decl.Range
-
-            if r.StartLine < line || (r.StartLine = line && r.StartColumn <= column) then
-                found <- i)
-
-        if found = checks.Length - 1 && found >= 0 && line > (snd checks[found]).Decl.Range.EndLine then
-            -1
-        else
-            found
-
     /// Whether row k was checked in the environment the current results before it assemble: the same results, or shifts
     /// of them, which hold the same values and entities. Compared along the chain, not by the node: checks that raced
     /// (Row.EnvCache) can make two nodes of one chain.
@@ -1308,33 +1290,52 @@ module internal RowView =
 
         node
 
-    /// The published check results when row k's check saw the current names; else a view with row k checked again in the
-    /// current environment and not adopted. A segment's member is checked from its leader: on its own it would change
-    /// the published results in place (an augmentation adds to the type, a later row solves a variable), while its
-    /// leader's check makes new types and variables for the rows after it to change.
-    let at (project: ProjectShared) (f: Finished) (roles: Map<DeclarationKey, Role>) (line: int) (column: int) (ct: CancellationToken) =
-        let k = rowAt f.Checks line column
+    /// The first and last rows of the segment `k` is in, or `k` alone.
+    let private spanOf (f: Finished) (roles: Map<DeclarationKey, Role>) (k: int) =
+        let indexOf (key: DeclarationKey) = f.Checks |> Array.findIndex (fun (row, _) -> row.Key = key)
 
-        if k < 0 || checkedInCurrent f.Checks k then
+        let ofLeader (leader: DeclarationKey) =
+            match roles |> Map.tryFind leader with
+            | Some(Role.Leader span) -> indexOf leader, indexOf (Array.last span)
+            | _ -> k, k
+
+        match roles |> Map.tryFind (fst f.Checks[k]).Key with
+        | Some(Role.Member leader) -> ofLeader leader
+        | Some(Role.Leader _) -> ofLeader (fst f.Checks[k]).Key
+        | _ -> k, k
+
+    /// The published check results when the check of the row that answers a query at the position saw the current names:
+    /// the row it is in, or at a row's start a row before it, whose captured environment reaches it. At the end of the
+    /// file that is the last row. Where no row captured one, the environment at the file's end answers, which the last
+    /// row's result decides when that was checked whole. Otherwise a view with that row checked again in the current
+    /// environment and not adopted. A segment is checked from its leader to its last row: a member on its own would change
+    /// the published results in place (an augmentation adds to the type, a later row solves a variable), and a query in
+    /// it reads what its later rows add and solve, as a full check's does.
+    let at (project: ProjectShared) (f: Finished) (roles: Map<DeclarationKey, Role>) (line: int) (column: int) (ct: CancellationToken) =
+        let current = f.Checks |> Array.map (fun (_, c) -> c.Result)
+
+        let answering =
+            match DeclarationChecker.AnsweringDeclaration(f.Start.Start, current, line, column) with
+            | ValueSome k -> k
+            | ValueNone -> f.Checks.Length - 1
+
+        if answering < 0 || checkedInCurrent f.Checks answering then
             f.FileResult.CheckResults
         else
-            let first =
-                match roles |> Map.tryFind (fst f.Checks[k]).Key with
-                | Some(Role.Member leader) -> f.Checks |> Array.findIndex (fun (row, _) -> row.Key = leader)
-                | _ -> k
-
-            let results = f.Checks |> Array.map (fun (_, c) -> c.Result)
+            // Built first: building them applies the signature file's names and docs, which the view reads too
+            f.FileResult.CheckResults |> ignore
+            let first, last = spanOf f roles answering
+            let results = Array.copy current
             let mutable node = envBefore project f first ct
 
-            for i in first..k do
+            for i in first..last do
                 let _, c = f.Checks[i]
-                let result = DeclarationChecker.CheckDeclarationAdHoc(f.Start.Start, node.Env, c.Decl, ct)
+                results[i] <- DeclarationChecker.CheckDeclarationAdHoc(f.Start.Start, node.Env, c.Decl, ct)
                 project.CountAdHoc()
-                results[i] <- result
 
-                if i < k then
+                if i < last then
                     project.CountEnvExtend()
-                    node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, result))
+                    node <- EnvNode(node, c, DeclarationChecker.ExtendEnvAdHoc(node.Env, results[i]))
 
             DeclarationChecker.ViewResults(f.Start.Start, results, f.Parsed.Parse)
 

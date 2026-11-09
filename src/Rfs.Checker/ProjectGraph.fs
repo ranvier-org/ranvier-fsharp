@@ -123,7 +123,7 @@ type FileView =
       Version: int64
       At: int -> int -> FSharpCheckFileResults }
 
-    /// Check results for a query at the 1-based line and 0-based column, inside the `read` it was given to. In a file
+    /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
     /// checked by declaration, a kept declaration holds the names as they were when it was checked: when an earlier result
     /// has changed since, this checks it again in the current environment and gives a view of that, adopting nothing
     /// (ProjectGraph.AdHocChecks). A file checked whole always has its CheckResults.
@@ -169,6 +169,8 @@ type FileView =
 [<Sealed>]
 type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: ProjectSpec, initialFiles: IFileNode[], initialOwner: Owner, references: ProjectGraph list, firstSeen: ReferencesSeen, initialWanted: HashSet<int>) =
     let requested = Array.zeroCreate<int64> initialFiles.Length
+    // Cancelled by an edit of the file: what an ad hoc check of it would answer is out of date
+    let edits = Array.init initialFiles.Length (fun _ -> new CancellationTokenSource())
     let lifetime = new CancellationTokenSource()
     let wanted = initialWanted
     // Replaced together by a restart, on the graph thread
@@ -516,6 +518,7 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     member _.SetText(file: string, text: string) : int64 =
         let i = indexOf file
         let version = Interlocked.Increment &requested[i]
+        (Interlocked.Exchange(&edits[i], new CancellationTokenSource())).Cancel()
 
         // A disposed graph checks nothing
         if Volatile.Read &disposed = 0 then
@@ -562,7 +565,8 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
     /// `Diagnostics`). For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no
     /// check, shift or finish runs on it meanwhile, and the result is still the published one when the lock is taken. Cancelling `ct`
     /// cancels the wait; a graph disposed (a reload) meanwhile cancels it too. Fails with ArgumentException for a
-    /// signature file, which has no FileResult.
+    /// signature file, which has no FileResult. `read` runs again, on the file's new text, when an edit of the file
+    /// cancelled an ad hoc check inside it (FileView.CheckResultsAt): only the client's cancel or a reload ends the wait.
     member _.ReadFile(file: string, read: FileView -> 'T, ct: CancellationToken) : Task<'T> =
         let i = indexOf file
 
@@ -579,7 +583,9 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                 let! r = host.WhenSettled(readable, linked.Token)
                 do! afterSettle ()
 
-                let run (r: Readable) =
+                let edit = Volatile.Read &edits[i]
+
+                let run (r: Readable) (checks: CancellationToken) =
                     Task.Run(fun () ->
                         read
                             { Result = r.Result
@@ -589,12 +595,12 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
                               At =
                                 fun line column ->
                                     match r.Declarations with
-                                    | ValueSome(f, roles) -> RowView.at project f roles line column linked.Token
+                                    | ValueSome(f, roles) -> RowView.at project f roles line column checks
                                     | ValueNone -> r.Result.CheckResults })
 
                 match r.Lock with
                 | ValueNone ->
-                    let! v = run r
+                    let! v = run r linked.Token
                     answer <- ValueSome v
                 | ValueSome l ->
                     let! held = acquireExclusive l linked.Token
@@ -604,8 +610,13 @@ type ProjectGraph private (host: GraphHost, project: ProjectShared, spec: Projec
 
                     match again with
                     | ValueSome a when obj.ReferenceEquals(a.Identity, r.Identity) ->
-                        let! v = run a
-                        answer <- ValueSome v
+                        use checks = CancellationTokenSource.CreateLinkedTokenSource(linked.Token, edit.Token)
+
+                        try
+                            let! v = run a checks.Token
+                            answer <- ValueSome v
+                        with :? OperationCanceledException when edit.IsCancellationRequested && not linked.IsCancellationRequested ->
+                            ()
                     | _ -> ()
 
             return answer.Value

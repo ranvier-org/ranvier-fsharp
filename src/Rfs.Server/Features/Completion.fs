@@ -105,6 +105,24 @@ module Completion =
                 let found = check.GetDeclarationListInfo(Some parse, pos.Line, lineStr, longName, completionContextAtPos = (pos, context))
                 Array.sortWith order found.Items
 
+    /// The column a list at the 0-based character reads its names from (FSharpCheckerResults' `loc`), which is what picks
+    /// the row that answers: at a row's start, the one before it.
+    let private queryColumn (text: string) (line: int) (character: int) =
+        let lines = text.Split '\n'
+
+        if line < 0 || line >= lines.Length then
+            character
+        else
+            let lineStr = lines[line].TrimEnd '\r'
+
+            if character >= lineStr.Length then lineStr.Length
+            elif lineStr[character] = '.' then character + 1
+            elif character = 0 then 0
+            else character - 1
+
+    let private atQuery (view: FileView) (line: int) (character: int) =
+        itemsOf (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
+
     /// What an item carries for its resolve.
     let dataOf (path: string) (line: int) (character: int) : JToken =
         JObject(JProperty("path", path), JProperty("line", line), JProperty("character", character)) :> JToken
@@ -125,7 +143,7 @@ module Completion =
             let! items =
                 graph.ReadFile(
                     path,
-                    (fun view -> itemsOf (view.CheckResultsAt(line + 1, character)) view.Parse view.Text line character),
+                    (fun view -> atQuery view line character),
                     ct
                 )
 
@@ -151,7 +169,7 @@ module Completion =
                 graph.ReadFile(
                     path,
                     (fun view ->
-                        itemsOf (view.CheckResultsAt(line + 1, character)) view.Parse view.Text line character
+                        atQuery view line character
                         |> Array.tryFind (fun d -> d.NameInList = item.Label)
                         |> Option.map _.Description),
                     ct

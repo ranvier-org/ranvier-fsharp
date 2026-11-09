@@ -116,6 +116,45 @@ let private rename (s: Session) (version: int) (find: string) (text: string) =
         do! promoted s d
     }
 
+/// The tooltip of the name on the 0-based line, ending at the column, read from the typed tree: check results cache
+/// tooltips by line, column, line text and width, so every read has a width of its own
+let private widths = ref 80
+
+let private uncachedTip (check: FSharpCheckFileResults) (text: string) (line: int) (endColumn: int) (name: string) =
+    let width = Interlocked.Increment widths
+    let lines = text.Split '\n'
+    let lineStr = lines[line].TrimEnd '\r'
+    Hover.format (check.GetToolTip(line + 1, endColumn, lineStr, [ name ], FSharp.Compiler.Tokenization.FSharpTokenTag.Identifier, width))
+
+/// The end of the text, as a position
+let private endOf (text: string) =
+    let lines = text.Split '\n'
+    lines.Length - 1, lines[lines.Length - 1].Length
+
+/// The list at the position equals a from-scratch check's of the current text
+let private expectFcs (s: Session) (at: int * int) (what: string) =
+    task {
+        let text = s.Lsp.Text d
+        let! (actual: Set<string>) = completionNames s d at
+        let! reference = expected s (diskTexts () |> Map.add d text) d at
+        Expect.isNonEmpty reference $"%s{what}: FCS lists something"
+        let missing = Set.difference reference actual
+        let extra = Set.difference actual reference
+        Expect.isTrue (missing.IsEmpty && extra.IsEmpty) $"%s{what} at %A{at}: missing %A{missing}, extra %A{extra}"
+        return actual
+    }
+
+/// A session with D.fs open as `text`, whichever way the file is checked
+let private openAnyD (text: string) =
+    task {
+        let! s = startSession () |> within
+        do! s.Lsp.DidOpen(d, text)
+        do! eventually "the open publish" (fun () -> hasVersion s d 0)
+        let graph = (s.Server.Workspace.ProjectOf d).Value
+        let! _ = graph.WhenPromoted(d, CancellationToken.None) |> within
+        return s
+    }
+
 let private augmentedText =
     "module Deps.D\n\nlet earlier = 1\n\ntype T() =\n    member _.A = 1\n\ntype T with\n    member _.B = 2\n\nlet useT = T().A\n\nlet last = 4\n"
 
@@ -218,11 +257,7 @@ let tests =
               do! eventually "the edit's publish" (fun () -> hasVersion s efs 1)
               do! promoted s efs
               let hover () =
-                  graph.ReadFile(
-                      efs,
-                      (fun view -> Hover.tooltipOf view.Result.CheckResults view.Text 2 4),
-                      CancellationToken.None
-                  )
+                  graph.ReadFile(efs, (fun view -> uncachedTip view.Result.CheckResults view.Text 2 5 "f"), CancellationToken.None)
 
               let! (before: string option) = hover () |> within
               Expect.stringContains before.Value "Adds one" "with the signature's documentation"
@@ -241,15 +276,153 @@ let tests =
               do! rename s 1 "let earlier" "let earlier2"
 
               let hover () =
-                  graph.ReadFile(d, (fun view -> Hover.tooltipOf view.Result.CheckResults view.Text (fst (after view.Text "let items" 0)) 6), CancellationToken.None)
+                  graph.ReadFile(d, (fun view -> uncachedTip view.Result.CheckResults view.Text (fst (after view.Text "let items" 0)) 9 "items"), CancellationToken.None)
 
               let! (before: string option) = hover () |> within
+              Expect.stringContains before.Value "ResizeArray<obj>" "the finish's default"
               let line = fst (after (s.Lsp.Text d) "    inner" 0)
               let! (names: Set<string>) = completionNames s d (line, 4)
               Expect.contains names "earlier2" "the current name"
               Expect.isGreaterThan graph.AdHocChecks 0L "checked ad hoc"
               let! (later: string option) = hover () |> within
               Expect.equal later before "the variable the finish defaulted is still solved in the published results"
+          }
+
+          testTask "past the last row, an unedited file equals FCS" {
+              for what, text in
+                  [ "a last let", "module Deps.D\n\nlet first = 1\n\nlet last = 4\n"
+                    "a last open", "module Deps.D\n\nlet first = 1\n\nopen System\n"
+                    "typing a let", "module Deps.D\n\nlet first = 1\n\nlet x = "
+                    "a last module rec", "module Deps.D\n\nlet first = 1\n\nmodule rec Inner =\n    let i = 1\n"
+                    "two fragments", "namespace Deps.N1\n\nmodule M1 =\n    let y = 1\n\nnamespace Deps.N2\n\nmodule M2 =\n    let z = 2\n" ] do
+                  let! s = openAnyD text
+                  use _ = disposing s
+                  let! _ = expectFcs s (endOf text) what
+                  ()
+          }
+
+          testTask "past the last row of a stale file, the current names, as FCS" {
+              for what, text, find, replacement, name in
+                  [ "a last let", "module Deps.D\n\nlet oldName = 1\n\nlet last = 4\n", "let oldName", "let newName", "newName"
+                    "a last open", "module Deps.D\n\nlet oldName = 1\n\nopen System\n", "let oldName", "let newName", "newName"
+                    "a last module rec", "module Deps.D\n\nlet oldName = 1\n\nmodule rec Inner =\n    let i = 1\n", "let oldName", "let newName", "newName"
+                    "two fragments", "namespace Deps.N1\n\nmodule M1 =\n    let y = 1\n\nnamespace Deps.N1\n\nmodule M2 =\n    let z = 2\n", "module M1", "module M1b", "M1b" ] do
+                  let! s = openAnyD text
+                  use _ = disposing s
+                  let graph = (s.Server.Workspace.ProjectOf d).Value
+                  do! s.Lsp.DidChange(d, 1, replace s d find replacement)
+                  do! eventually "the edit's publish" (fun () -> hasVersion s d 1)
+                  let! _ = graph.WhenPromoted(d, CancellationToken.None) |> within
+                  let! (names: Set<string>) = expectFcs s (endOf (s.Lsp.Text d)) what
+                  Expect.contains names name $"%s{what}: the current name"
+          }
+
+          testTask "before the first row, the published environment holds the current names" {
+              let! s = openD ("// top\n" + keptText)
+              use _ = disposing s
+              do! rename s 1 "let oldName" "let newName"
+              let! (names: Set<string>) = expectFcs s (0, 0) "before the first row"
+              Expect.contains names "newName" "the current name"
+          }
+
+          testTask "in a stale segment, before a later row, what that row adds or solves is there, as FCS" {
+              for what, text, needle in
+                  [ "a type before its augmentation", "module Deps.D\n\nlet earlier = 1\n\ntype T() =\n    member x.M(o: T) = o.ToString()\n\ntype T with\n    member _.B = 2\n", "= o."
+                    "an augmentation before another", "module Deps.D\n\nlet earlier = 1\n\ntype T() =\n    member _.A = 1\n\ntype T with\n    member x.B = x.A\n\ntype T with\n    member _.C = 3\n", "= x."
+                    "a window row before the solution", "module Deps.D\n\nlet earlier = 1\n\nlet r = ref []\n\nlet look () = r.Value.Length\n\nlet solve () = r.Value <- [ 1 ]\n", "look () = r.Value." ] do
+                  let! s = openD text
+                  use _ = disposing s
+                  do! rename s 1 "let earlier" "let earlier2"
+                  let! _ = expectFcs s (after (s.Lsp.Text d) needle 0) what
+                  ()
+          }
+
+          testTask "at a row's start the row before answers, stale or fresh, as FCS" {
+              // A stale row at column 0: its own captures do not reach it
+              let! s = openD keptText
+              use _ = disposing s
+              do! rename s 1 "let oldName" "let newName"
+              let! (stale: Set<string>) = expectFcs s (fst (after (s.Lsp.Text d) "let kept" 0), 0) "column 0 of a stale row"
+              Expect.contains stale "newName" "the current name"
+              // The same position once the row was edited, so it is fresh and the row before it is not
+              do! rename s 2 "let inner = 3" "let inner = 5"
+              let! (fresh: Set<string>) = expectFcs s (fst (after (s.Lsp.Text d) "let kept" 0), 0) "column 0 of a fresh row"
+              Expect.contains fresh "newName" "the current name"
+          }
+
+          testTask "at a row's start inside a split module the row before answers, as FCS" {
+              let! s = openD "module Deps.D\n\nlet oldName = 1\n\nmodule Inner =\n    let a = 1\n    let b = 2\n\nlet last = 4\n"
+              use _ = disposing s
+              do! rename s 1 "let oldName" "let newName"
+              let line = fst (after (s.Lsp.Text d) "let b" 0)
+              let! (names: Set<string>) = expectFcs s (line, 4) "column 4 of a row in a module"
+              Expect.contains names "newName" "the current name"
+              let! (first: Set<string>) = expectFcs s (fst (after (s.Lsp.Text d) "let a" 0), 4) "column 4 after the header, which captures nothing"
+              Expect.contains first "newName" "the current name"
+          }
+
+          testTask "a view applies the finish's defaults to its own rows, as FCS" {
+              for what, text, needle in
+                  [ "a variable inside the row", "module Deps.D\n\nlet earlier = 1\n\nlet y =\n    let z = ref None\n    z.Value.Value.ToString()\n", "z.Value.Value."
+                    "a window's leader", "module Deps.D\n\nlet earlier = 1\n\nlet z = ref None\n\nlet y = z.Value.Value.ToString()\n", "z.Value.Value." ] do
+                  let! s = openD text
+                  use _ = disposing s
+                  do! rename s 1 "let earlier" "let earlier2"
+                  let! (names: Set<string>) = expectFcs s (after (s.Lsp.Text d) needle 0) what
+                  Expect.contains names "GetHashCode" $"%s{what}: obj's members, as the default leaves it"
+          }
+
+          testTask "resolve in a stale row of a signed file with no read before it shows the signature's doc" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              let efsi, efs = file "E.fsi", file "E.fs"
+              do! s.Lsp.DidOpen(efsi, "module Deps.E\n\n/// Adds one\nval f: x: int -> int\n\nval g: int\n")
+              do! s.Lsp.DidOpen(efs, "module Deps.E\n\nlet f y = y + 1\n\nlet other = 1\n\nlet g =\n    let inner = f 1\n    inner\n")
+              do! eventually "the open publish" (fun () -> hasVersion s efs 0)
+              do! promoted s efs
+              do! s.Lsp.DidChange(efs, 1, replace s efs "let other = 1" "let other2 = 1")
+              do! eventually "the edit's publish" (fun () -> hasVersion s efs 1)
+              do! promoted s efs
+              let line = fst (after (s.Lsp.Text efs) "    inner" 0)
+              let! (items: JsonObject[] option) = completionItems s efs (line, 4)
+              let item = items.Value |> Array.find (fun i -> i["label"].GetValue<string>() = "f")
+              let! (back: JsonObject) = resolved s item
+              Expect.stringContains (back["documentation"].["value"].GetValue<string>()) "Adds one" "as FCS shows it"
+          }
+
+          testTask "an edit of the file cancels an ad hoc check, and the read runs on its text" {
+              let! s = openD keptText
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf d).Value
+              do! rename s 1 "let oldName" "let newName"
+              let adHoc = graph.AdHocChecks
+              let reads = ref 0
+              let edited = (s.Lsp.Text d).Replace("let inner = 3", "let inner = 5")
+
+              let! (answer: Set<string> * string) =
+                  graph.ReadFile(
+                      d,
+                      (fun view ->
+                          // The edit arrives after the read began, before its check
+                          if Interlocked.Increment reads = 1 then
+                              graph.SetText(d, edited) |> ignore
+
+                          let line = fst (after view.Text "    inner" 0)
+
+                          let names =
+                              Completion.itemsOf (view.CheckResultsAt(line + 1, 3)) view.Parse view.Text line 4
+                              |> Array.map _.NameInList
+                              |> Set.ofArray
+
+                          names, view.Text),
+                      CancellationToken.None
+                  )
+                  |> within
+
+              Expect.equal reads.Value 2 "cancelled by the edit, and read again"
+              Expect.equal (snd answer) edited "the answer is for the edit's text"
+              Expect.contains (fst answer) "newName" "the current name"
+              Expect.equal graph.AdHocChecks adHoc "the first read's check never ran, and the edited row is fresh"
           }
 
           testTask "completion in a file with an augmentation equals FCS, in and after a stale segment" {
@@ -280,7 +453,7 @@ let tests =
               do! rename s 1 "let earlier" "let earlier2"
               let before = graph.AdHocChecks
               do! assertEqualFcs ()
-              // `useT` on its own, then the augmentation from the type it extends: alone it would add to the published type
+              // `useT` on its own, then the segment from the type the augmentation extends: alone it would add to the published type
               Expect.equal (graph.AdHocChecks - before) 3L "both rows are kept and stale"
 
               // The ad hoc checks of the segment left the type as it was: one member B, and diagnostics as the oracle's
@@ -561,8 +734,8 @@ let tests =
               do! Task.Delay 500
               Expect.isFalse pending.IsCompleted "the file cannot settle while its check is held"
               do! s.Server.Workspace.Reload s.Project |> within
-              let! (actual: JsonObject[] option) = pending |> within
               gate.Set()
+              let! (actual: JsonObject[] option) = pending |> within
               Expect.isNone actual "the project went away: no list"
           }
 
