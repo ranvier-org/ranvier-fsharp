@@ -1,0 +1,104 @@
+{
+  "name": "mid-references",
+  "corpus": "mid",
+  "project": "src/FsAutoComplete.Core/FsAutoComplete.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/FsAutoComplete.Core/ParseAndCheckResults.fs"
+    },
+    {
+      "open": "src/FsAutoComplete.Core/CodeGeneration.fs"
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 55,
+          "character": 5
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 139,
+          "character": 16
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 208,
+          "character": 44
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 382,
+          "character": 35
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 423,
+          "character": 35
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/ParseAndCheckResults.fs",
+        "position": {
+          "line": 679,
+          "character": 26
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/CodeGeneration.fs",
+        "position": {
+          "line": 20,
+          "character": 5
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/CodeGeneration.fs",
+        "position": {
+          "line": 209,
+          "character": 37
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/CodeGeneration.fs",
+        "position": {
+          "line": 520,
+          "character": 42
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FsAutoComplete.Core/CodeGeneration.fs",
+        "position": {
+          "line": 228,
+          "character": 48
+        }
+      }
+    }
+  ]
+}

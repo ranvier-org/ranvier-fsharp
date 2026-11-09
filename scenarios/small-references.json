@@ -1,0 +1,104 @@
+{
+  "name": "small-references",
+  "corpus": "small",
+  "project": "src/FSharp.Data.Adaptive/FSharp.Data.Adaptive.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/FSharp.Data.Adaptive/Core/Transaction.fs"
+    },
+    {
+      "open": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs"
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 310,
+          "character": 8
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 318,
+          "character": 17
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/Core/Transaction.fs",
+        "position": {
+          "line": 36,
+          "character": 111
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 9,
+          "character": 29
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 20,
+          "character": 36
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 300,
+          "character": 19
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 181,
+          "character": 16
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 28,
+          "character": 20
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 122,
+          "character": 17
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+        "position": {
+          "line": 427,
+          "character": 8
+        }
+      }
+    }
+  ]
+}

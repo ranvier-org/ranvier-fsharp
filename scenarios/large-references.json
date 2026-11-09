@@ -1,0 +1,104 @@
+{
+  "name": "large-references",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "open": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    }
+  ]
+}
