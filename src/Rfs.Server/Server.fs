@@ -1,7 +1,10 @@
 namespace Rfs.Server
 
 open System
+open System.Collections.Concurrent
 open System.IO
+open System.Threading
+open System.Threading.Tasks
 open Ionide.LanguageServerProtocol
 open Ionide.LanguageServerProtocol.JsonRpc
 open Ionide.LanguageServerProtocol.Server
@@ -286,6 +289,64 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     interface IDisposable with
         member _.Dispose() = dispose ()
 
+/// <summary>
+/// Reads a stream on a thread of its own. Standard input and anonymous pipes have no asynchronous read: `ReadAsync` blocks
+/// the pool thread it runs on, until the next message. The connection's dispatch is queued on that thread's local queue
+/// just before it blocks there, and other pool threads only take from a local queue when the global one is empty, so
+/// while the pool stays busy no message that was read is handled. Here `ReadAsync` holds no pool thread, and that thread
+/// goes on to run what it queued.
+/// </summary>
+/// <remarks>Does not own the stream. A read cancelled while it is blocked loses what it then reads.</remarks>
+type internal ThreadReadStream(inner: Stream) =
+    inherit Stream()
+
+    let reads = new BlockingCollection<struct (Memory<byte> * TaskCompletionSource<int>)>()
+
+    let reader =
+        Thread(
+            (fun () ->
+                for struct (buffer, finished) in reads.GetConsumingEnumerable() do
+                    try
+                        finished.TrySetResult(inner.Read buffer.Span) |> ignore
+                    with ex ->
+                        finished.TrySetException ex |> ignore),
+            IsBackground = true,
+            Name = "server input"
+        )
+
+    do reader.Start()
+
+    override _.CanRead = true
+    override _.CanSeek = false
+    override _.CanWrite = false
+    override _.Length = raise (NotSupportedException())
+
+    override _.Position
+        with get () = raise (NotSupportedException())
+        and set _ = raise (NotSupportedException())
+
+    override _.Flush() = ()
+    override _.Seek(_, _) = raise (NotSupportedException())
+    override _.SetLength _ = raise (NotSupportedException())
+    override _.Write(_: byte[], _: int, _: int) = raise (NotSupportedException())
+    override _.Read(buffer: byte[], offset: int, count: int) = inner.Read(buffer, offset, count)
+
+    override _.ReadAsync(buffer: Memory<byte>, ct: CancellationToken) : ValueTask<int> =
+        let finished = TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let registration = ct.Register(fun () -> finished.TrySetCanceled ct |> ignore)
+        finished.Task.ContinueWith((fun (_: Task<int>) -> registration.Dispose()), TaskScheduler.Default) |> ignore
+        reads.Add(struct (buffer, finished))
+        ValueTask<int> finished.Task
+
+    override this.ReadAsync(buffer: byte[], offset: int, count: int, ct: CancellationToken) : Task<int> =
+        this.ReadAsync(Memory(buffer, offset, count), ct).AsTask()
+
+    override _.Dispose(disposing: bool) =
+        if disposing then
+            reads.CompleteAdding()
+
+        base.Dispose disposing
+
 module Server =
     /// The methods this server answers. Every other method gets the library's MethodNotFound error.
     let private implemented =
@@ -310,10 +371,12 @@ module Server =
 
     /// Runs the server, telling `created` about the server the connection makes. For tests.
     let internal runWith (created: RanvierServer -> unit) (input: Stream) (output: Stream) : int =
+        use reading = new ThreadReadStream(input)
+
         let reason =
             start
                 (handlings ())
-                input
+                reading
                 output
                 (fun (notify, request) -> new RanvierClient(notify, request))
                 (fun client ->

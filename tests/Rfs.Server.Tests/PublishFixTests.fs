@@ -73,23 +73,42 @@ let fixTests =
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
               do! s.Lsp.DidChange(a, 1, atEnd s a "\n// ")
               let stop = ref false
+              let started = ref 0
 
-              // The thread pool is busy, as it is when a real editor types
-              let burners =
+              // The thread pool is busy, as it is when a real editor types, and its global queue is never empty, so no
+              // thread takes work from another's local queue. Each burner goes to the back of that queue between spins:
+              // one that keeps its thread would hold up the test's own polling too, as the pool adds threads slowly.
+              let burners: Task list =
                   [ for _ in 1 .. Environment.ProcessorCount * 2 ->
-                        Task.Run(fun () ->
-                            while not stop.Value do
-                                Thread.SpinWait 2000) ]
+                        Task.Run<unit>(fun () ->
+                            task {
+                                Interlocked.Increment started |> ignore
+
+                                while not stop.Value do
+                                    Thread.SpinWait 2000
+                                    do! Task.Yield()
+                            }) ]
 
               try
+                  do! eventually "the burners" (fun () -> started.Value = burners.Length)
+
                   for i in 2..501 do
                       do! s.Lsp.DidChange(a, i, atEnd s a (string (char (97 + i % 26))))
 
-                  do!
-                      eventually "the server's text" (fun () ->
-                          match s.Server.Documents.TryFind a with
-                          | Some d -> d.LspVersion = 501 && d.Text = s.Lsp.Text a
-                          | None -> false)
+                  // Tells a server that is behind from one whose text went wrong
+                  let state = ref "no document"
+
+                  try
+                      do!
+                          eventually "the server's text" (fun () ->
+                              match s.Server.Documents.TryFind a with
+                              | Some d ->
+                                  let client = s.Lsp.Text a
+                                  state.Value <- $"server at version %d{d.LspVersion}, %d{d.Text.Length} chars; client %d{client.Length} chars"
+                                  d.LspVersion = 501 && d.Text = client
+                              | None -> false)
+                  with ex ->
+                      failtest $"%s{ex.Message}: %s{state.Value}"
               finally
                   stop.Value <- true
 
