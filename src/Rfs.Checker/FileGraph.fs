@@ -1314,6 +1314,11 @@ module internal RowView =
 
         same && not (isNull node) && isNull node.Check
 
+    /// Whether every row of the finish was checked in the environment the current results before it assemble, so its
+    /// published check results answer every position as `at` would.
+    let allCurrent (f: Finished) =
+        Seq.forall (checkedInCurrent f.Checks) (seq { 0 .. f.Checks.Length - 1 })
+
     /// The environment before row `first`, without touching the cache the graph's checks read.
     let private envBefore (project: ProjectShared) (f: Finished) (first: int) (ct: CancellationToken) =
         let mutable node = f.Start.Root
