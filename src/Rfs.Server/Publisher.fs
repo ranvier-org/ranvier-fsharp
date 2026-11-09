@@ -422,6 +422,13 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
     /// The editor closed the document: the file on disk is its text again, it is demoted, and its diagnostics cleared
     member _.Close(path: string) : unit = post (fun () -> closeNow path)
 
+    /// A file that is not open changed on disk and the graphs have its new text: the open documents hear what that changed
+    member _.DiskChanged(path: string) : unit =
+        post (fun () ->
+            match (documents.TryFind path).IsNone, workspace.OwnersOf path with
+            | true, (_ :: _ as owners) -> start path (fun ct -> runClosed path owners ct)
+            | _ -> ())
+
     /// A project has loaded: its open documents were given their texts, so they are promoted and published
     member _.Loaded(graph: ProjectGraph) : unit = post (fun () -> loadedNow graph)
 

@@ -617,7 +617,15 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     let name = Path.GetFileName path
                     let ext = Path.GetExtension path
 
-                    if ext = ".fsproj" || ext = ".props" || ext = ".targets" || name = "project.assets.json" then
+                    let built =
+                        (ext = ".props" || ext = ".targets")
+                        && path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                           |> Array.exists (fun s -> s.Equals("obj", StringComparison.OrdinalIgnoreCase) || s.Equals("bin", StringComparison.OrdinalIgnoreCase))
+
+                    // Restore writes these under obj, with the project.assets.json that is watched as well
+                    if built then
+                        ()
+                    elif ext = ".fsproj" || ext = ".props" || ext = ".targets" || name = "project.assets.json" then
                         for e in snapshot () do
                             let projectDir = Path.GetDirectoryName e.Spec.ProjectFile
 
@@ -625,7 +633,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                                 if ext = ".fsproj" then
                                     String.Equals(e.Spec.ProjectFile, path, StringComparison.OrdinalIgnoreCase)
                                 elif name = "project.assets.json" then
-                                    String.Equals(Path.GetDirectoryName(Path.GetDirectoryName path), projectDir, StringComparison.OrdinalIgnoreCase)
+                                    let assetsDir = Path.GetDirectoryName path
+
+                                    String.Equals(Path.GetDirectoryName assetsDir, projectDir, StringComparison.OrdinalIgnoreCase)
+                                    // The artifacts layout: artifacts/obj/<project>/project.assets.json
+                                    || (String.Equals(Path.GetFileName assetsDir, Path.GetFileNameWithoutExtension e.Spec.ProjectFile, StringComparison.OrdinalIgnoreCase)
+                                        && String.Equals(Path.GetFileName(Path.GetDirectoryName assetsDir), "obj", StringComparison.OrdinalIgnoreCase))
                                 else
                                     // a props or targets file applies to the projects in and below its directory
                                     let dir = Path.GetDirectoryName path
@@ -633,13 +646,17 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
                             if belongs && not (toReload.Contains e.Spec.ProjectFile) then
                                 toReload.Add e.Spec.ProjectFile
-                    elif (ext = ".fs" || ext = ".fsi") && not deleted && not (lock gate (fun () -> openTexts.ContainsKey path)) then
-                        for e in snapshot () do
-                            if isSource e.Spec path then
-                                try
-                                    e.Graph.SetText(path, File.ReadAllText path) |> ignore
-                                with :? IOException as ex ->
-                                    log $"%s{path} could not be read: %s{ex.Message}"
+                    elif (ext = ".fs" || ext = ".fsi") && not deleted then
+                        // One critical section with Open, so the disk text cannot overtake a text opened meanwhile
+                        lock gate (fun () ->
+                            if not (openTexts.ContainsKey path) then
+                                for e in snapshot () do
+                                    if isSource e.Spec path then
+                                        try
+                                            e.Graph.SetText(path, File.ReadAllText path) |> ignore
+                                        with
+                                        | :? IOException
+                                        | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}")
 
                 for p in toReload do
                     do! reload p
