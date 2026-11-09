@@ -533,13 +533,14 @@ let tests =
               let at = position (s.Lsp.Text aFile) "baseValue" 0 1
               let mutable loading = true
 
+              // The load ends once the scan is under way: only a read before the snapshot sees it
               let ended =
                   { scopeOf s with
-                      IsLoading =
-                          fun () ->
-                              let was = loading
+                      IsLoading = fun () -> loading
+                      BeforeRead =
+                          fun _ ->
                               loading <- false
-                              was }
+                              Task.CompletedTask }
 
               let! (loadEnded: References.Answer) = References.find ended graph aFile (fst at) (snd at) CancellationToken.None
               Expect.isTrue loadEnded.IsMoved $"the snapshot was taken during a load: %A{loadEnded}"
