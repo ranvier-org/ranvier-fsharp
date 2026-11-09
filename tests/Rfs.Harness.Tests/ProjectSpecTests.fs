@@ -93,8 +93,8 @@ let tests =
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
-                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":3,", "\"FormatVersion\":0,"))
-                    (fun j -> j.Replace("\"FormatVersion\":3,", "")) ] do
+                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":5,", "\"FormatVersion\":0,"))
+                    (fun j -> j.Replace("\"FormatVersion\":5,", "")) ] do
                   let json = mutate (ProjectSpec.toJson stale)
                   Expect.notEqual json (ProjectSpec.toJson stale) "mutation applied"
                   File.WriteAllText(cache, json)

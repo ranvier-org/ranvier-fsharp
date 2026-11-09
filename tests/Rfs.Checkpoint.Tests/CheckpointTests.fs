@@ -285,7 +285,7 @@ let tests =
                   set [ "createProject"; "parse"; "fileDependencies"; "checkFile"; "setup"; "tail"; "definitions"; "fingerprint"; "render"; "checkSignatureFile" ]
 
               let finishPhases =
-                  set [ "wait"; "refilter"; "leftovers"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
+                  set [ "wait"; "refilter"; "leftovers"; "envAtEnd"; "assemble"; "replay"; "tail"; "typedUses"; "fingerprints"; "signature"; "render"; "sinks" ]
 
               for s in decl["steps"].AsArray() do
                   let ms = s["finishPhaseMs"].AsObject()
