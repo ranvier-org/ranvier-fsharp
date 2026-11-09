@@ -96,6 +96,14 @@ module private ProjectNodes =
 
         direct |> List.collect visit
 
+/// What a request reads of a file before it takes the lock (ProjectGraph.ReadFile's `prepare`): the text and its parse,
+/// which no check changes. No result, check or signature: nothing live can be read without the lock.
+type TextView =
+    { Parse: FSharpParseFileResults
+      Text: string
+      /// The graph's version of the text (the one `SetText` returned)
+      Version: int64 }
+
 /// A file's settled result with the parse and text it is for.
 type FileView =
     { Result: FileResult
@@ -614,8 +622,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
     /// <summary>
     /// A request node (Request.run) on the file's published result, once it is settled on its latest text (as for
-    /// `Diagnostics`): `prepare` runs off the graph thread on the view, then `read` on the view and what `prepare` gave.
-    /// `prepare` may read the text and the parse, never the check: it runs without the lock.
+    /// `Diagnostics`): `prepare` runs off the graph thread on the text and parse, without the lock, then `read` under it on
+    /// the view and what `prepare` gave.
     /// </summary>
     /// <remarks>
     /// For a file checked by declaration `read` holds the lock of the result's FileStart exclusively, so no check, shift
@@ -628,7 +636,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// disposing the graph (a reload), cancels the task and nothing shared. Fails with ArgumentException for a signature
     /// file, which has no FileResult.
     /// </remarks>
-    member _.ReadFile(file: string, prepare: FileView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
+    member _.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
         let i = indexOf file
 
         if isSignatureFile files[i] then
@@ -658,7 +666,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                     task {
                         do! hook ()
                         let v = view r flight
-                        let prepared = prepare v
+                        let prepared = prepare ({ Parse = v.Parse; Text = v.Text; Version = v.Version }: TextView)
 
                         let answer () = ValueSome(read v prepared)
 

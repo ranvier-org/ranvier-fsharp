@@ -240,4 +240,19 @@ let tests =
               GC.Collect()
               let alive = kept |> Seq.filter _.IsAlive |> Seq.length
               Expect.equal alive 0 $"of %d{kept.Count} requests sampled, alive"
+          }
+
+          test "what a file read prepares without the lock is given the text and parse, nothing live" {
+              let readFile =
+                  typeof<ProjectGraph>.GetMethods()
+                  |> Array.find (fun m -> m.Name = "ReadFile" && m.GetParameters().Length = 4)
+
+              let prepare = readFile.GetParameters()[1]
+              let prepared = prepare.ParameterType.GetGenericArguments()[0]
+
+              let allowed = [ typeof<string>; typeof<int64>; typeof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults> ]
+              let fields = prepared.GetProperties() |> Array.map (fun p -> p.Name, p.PropertyType)
+              let live = fields |> Array.filter (fun (_, t) -> not (List.contains t allowed)) |> Array.map fst
+              Expect.isEmpty live $"%s{prepared.Name} has only the text and its parse"
+              Expect.equal (fields |> Array.map fst |> Set.ofArray) (set [ "Parse"; "Text"; "Version" ]) "all three"
           } ]
