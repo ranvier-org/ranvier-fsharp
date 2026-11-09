@@ -9,8 +9,7 @@ type OpenDocument =
     { Uri: string
       Path: string
       LspVersion: int
-      Text: string
-      Graph: ProjectGraph option }
+      Text: string }
 
 /// The open documents, and for each (graph, file) the map from the graph's internal text versions to the LSP versions
 /// they were set for.
@@ -69,6 +68,8 @@ type Documents() =
                         versions[k] <- m
                         m
 
+                // A publish only ever wants the latest: an older version answers nothing, as it does when it is not found
+                map.Clear()
                 map[version] <- lspVersion)
 
     member _.LspVersionOf(graph: ProjectGraph, path: string, version: int64) : int option =
@@ -88,3 +89,6 @@ type Documents() =
 
     /// How many (graph, file) version maps are kept. For tests.
     member internal _.VersionMaps: int = lock gate (fun () -> versions.Count)
+
+    /// How many versions the maps hold. For tests.
+    member internal _.VersionEntries: int = lock gate (fun () -> versions.Values |> Seq.sumBy _.Count)

@@ -116,6 +116,19 @@ let fixTests =
               do! eventually "the last publish" (fun () -> hasVersion s a 501)
           }
 
+          testTask "a document keeps one version per graph, not one per edit" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+
+              for v in 1..5 do
+                  do! s.Lsp.DidChange(a, v, atEnd s a "\n// ")
+
+              do! eventually "the last edit's publish" (fun () -> hasVersion s a 5)
+              Expect.equal s.Server.Documents.VersionEntries 1 "one version for one graph"
+          }
+
           testTask "a foreign publish does not suppress the file's own" {
               let! s = startSession () |> within
               use _ = disposing s

@@ -68,7 +68,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                 match root ex with
                 | :? OperationCanceledException
-                | :? ObjectDisposedException -> return Ok none
+                | :? ObjectDisposedException
+                // A newer parse replaced the file's #line directives while its results were built: an edit got there first
+                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
                 | e ->
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
                     return LspResult.internalError e.Message

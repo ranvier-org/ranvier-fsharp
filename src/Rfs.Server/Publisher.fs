@@ -113,6 +113,8 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
         }
 
     /// `rfs/declarationsChecked`: the declaration checks adopted since the previous one, over all projects. Holds `gate`.
+    /// The checks that promote a file are adopted too, so the notification after a promotion counts them with whatever
+    /// edit it follows. Telling them apart in the count would lose the checks of a restart, which an edit does cause.
     let notifyChecks () : Task =
         task {
             let mutable n = 0L
@@ -337,8 +339,7 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
             { Uri = uri
               Path = path
               LspVersion = version
-              Text = text
-              Graph = workspace.ProjectOf path }
+              Text = text }
 
         documents.Open document
 
@@ -394,7 +395,6 @@ type Publisher(workspace: Workspace, client: RanvierClient, documents: Documents
         for doc in documents.All do
             match workspace.OwnersOf doc.Path with
             | owners when owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph)) ->
-                documents.Update(doc.Path, (fun d -> { d with Graph = Some owners.Head })) |> ignore
                 owners.Head.Promote doc.Path
                 start doc.Path (fun ct -> run doc.Path owners true ct)
             | _ -> ()
