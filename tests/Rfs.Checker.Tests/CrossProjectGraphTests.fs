@@ -357,7 +357,9 @@ let tests =
               Expect.equal version 1L "the version SetText returned"
           }
 
-          testTask "a read held over a restart ends on the old result, and the next read is on the new" {
+          // A request node runs its read again on a newer result (ProjectGraph.ReadFile), so the held read answers on the
+          // new context once it is let go; the restart itself does not wait for it
+          testTask "a read held over a restart does not hold it up, and answers on the new context" {
               let! s = startMulti Declarations
               use _ = (s :> IAsyncDisposable)
               let hold = new ManualResetEventSlim(false)
@@ -377,8 +379,8 @@ let tests =
               change s libFs "let f (x: int) : int = x + 1" "let f (x: int) : string = string x"
               let! broken = expectAppOracle s "restarted beside a held read"
               Expect.isNonEmpty broken "the restart did not wait for the reader"
-              let! old = settleHolding hold reading
-              Expect.equal old 0 "the reader's result is the one it was given"
+              let! held = settleHolding hold reading
+              Expect.equal held (List.length broken) "the held read ran again on the new context"
               let! now = s.App.ReadFile(useFs, (fun (view: FileView) -> view.Result.Diagnostics.Length), CancellationToken.None) |> settle
               Expect.equal now (List.length broken) "the next read is on the new context"
           }
