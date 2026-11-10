@@ -1,0 +1,1061 @@
+{
+  "name": "huge-edit-hover",
+  "corpus": "huge",
+  "project": "src/Compiler/FSharp.Compiler.Service.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "open": "src/Compiler/AbstractIL/il.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 881,
+            "character": 27
+          },
+          "end": {
+            "line": 881,
+            "character": 28
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 881,
+            "character": 27
+          },
+          "end": {
+            "line": 881,
+            "character": 28
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 1849,
+            "character": 75
+          },
+          "end": {
+            "line": 1849,
+            "character": 76
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 1849,
+            "character": 75
+          },
+          "end": {
+            "line": 1849,
+            "character": 76
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 2076,
+          "character": 7
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 3145,
+            "character": 36
+          },
+          "end": {
+            "line": 3145,
+            "character": 37
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 3145,
+            "character": 36
+          },
+          "end": {
+            "line": 3145,
+            "character": 37
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 3440,
+          "character": 47
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 4846,
+            "character": 33
+          },
+          "end": {
+            "line": 4846,
+            "character": 34
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 4846,
+            "character": 33
+          },
+          "end": {
+            "line": 4846,
+            "character": 34
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 4818,
+          "character": 6
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 6010,
+            "character": 66
+          },
+          "end": {
+            "line": 6010,
+            "character": 67
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 6010,
+            "character": 66
+          },
+          "end": {
+            "line": 6010,
+            "character": 67
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 6192,
+          "character": 15
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 7575,
+            "character": 60
+          },
+          "end": {
+            "line": 7575,
+            "character": 61
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 7575,
+            "character": 60
+          },
+          "end": {
+            "line": 7575,
+            "character": 61
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 7575,
+          "character": 35
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 9316,
+            "character": 14
+          },
+          "end": {
+            "line": 9316,
+            "character": 15
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 9316,
+            "character": 14
+          },
+          "end": {
+            "line": 9316,
+            "character": 15
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 8947,
+          "character": 33
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 10369,
+            "character": 66
+          },
+          "end": {
+            "line": 10369,
+            "character": 67
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 10369,
+            "character": 66
+          },
+          "end": {
+            "line": 10369,
+            "character": 67
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 10319,
+          "character": 94
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 11696,
+            "character": 117
+          },
+          "end": {
+            "line": 11696,
+            "character": 118
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 11696,
+            "character": 117
+          },
+          "end": {
+            "line": 11696,
+            "character": 118
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 11707,
+          "character": 48
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 13034,
+            "character": 21
+          },
+          "end": {
+            "line": 13034,
+            "character": 22
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "range": {
+          "start": {
+            "line": 13034,
+            "character": 21
+          },
+          "end": {
+            "line": 13034,
+            "character": 22
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/Checking/Expressions/CheckExpressions.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 13086,
+          "character": 36
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Compiler/AbstractIL/il.fs",
+        "range": {
+          "start": {
+            "line": 1153,
+            "character": 14
+          },
+          "end": {
+            "line": 1153,
+            "character": 18
+          }
+        },
+        "text": "uint8"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    },
+    {
+      "settle": "src/Compiler/AbstractIL/il.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Compiler/Checking/Expressions/CheckExpressions.fs",
+        "position": {
+          "line": 710,
+          "character": 6
+        }
+      }
+    }
+  ]
+}

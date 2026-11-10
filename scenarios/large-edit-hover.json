@@ -1,0 +1,1058 @@
+{
+  "name": "large-edit-hover",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 12,
+            "character": 32
+          },
+          "end": {
+            "line": 12,
+            "character": 33
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 12,
+            "character": 32
+          },
+          "end": {
+            "line": 12,
+            "character": 33
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 29,
+            "character": 20
+          },
+          "end": {
+            "line": 29,
+            "character": 21
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 29,
+            "character": 20
+          },
+          "end": {
+            "line": 29,
+            "character": 21
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 17,
+          "character": 10
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 30,
+            "character": 30
+          },
+          "end": {
+            "line": 30,
+            "character": 31
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 30,
+            "character": 30
+          },
+          "end": {
+            "line": 30,
+            "character": 31
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 23,
+          "character": 18
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 34,
+            "character": 35
+          },
+          "end": {
+            "line": 34,
+            "character": 36
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 34,
+            "character": 35
+          },
+          "end": {
+            "line": 34,
+            "character": 36
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 30,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 45,
+            "character": 33
+          },
+          "end": {
+            "line": 45,
+            "character": 34
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 45,
+            "character": 33
+          },
+          "end": {
+            "line": 45,
+            "character": 34
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 45,
+          "character": 29
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 48,
+            "character": 33
+          },
+          "end": {
+            "line": 48,
+            "character": 34
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 48,
+            "character": 33
+          },
+          "end": {
+            "line": 48,
+            "character": 34
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 48,
+          "character": 13
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 58,
+            "character": 54
+          },
+          "end": {
+            "line": 58,
+            "character": 55
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 58,
+            "character": 54
+          },
+          "end": {
+            "line": 58,
+            "character": 55
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 58,
+          "character": 16
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 93,
+            "character": 25
+          },
+          "end": {
+            "line": 93,
+            "character": 26
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 93,
+            "character": 25
+          },
+          "end": {
+            "line": 93,
+            "character": 26
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 79,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 95,
+            "character": 17
+          },
+          "end": {
+            "line": 95,
+            "character": 18
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 95,
+            "character": 17
+          },
+          "end": {
+            "line": 95,
+            "character": 18
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 99,
+          "character": 19
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 113,
+            "character": 51
+          },
+          "end": {
+            "line": 113,
+            "character": 52
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 113,
+            "character": 51
+          },
+          "end": {
+            "line": 113,
+            "character": 52
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 136,
+          "character": 101
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 124,
+            "character": 54
+          },
+          "end": {
+            "line": 124,
+            "character": 54
+          }
+        },
+        "text": " |> string"
+      }
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "hover": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "position": {
+          "line": 15,
+          "character": 42
+        }
+      }
+    }
+  ]
+}

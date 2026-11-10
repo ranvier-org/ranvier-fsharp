@@ -1,0 +1,1064 @@
+{
+  "name": "large-edit-references",
+  "corpus": "large",
+  "project": "src/Fantomas.Core/Fantomas.Core.fsproj",
+  "kind": "requests",
+  "steps": [
+    {
+      "open": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "open": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "open": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 91,
+            "character": 29
+          },
+          "end": {
+            "line": 91,
+            "character": 30
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 91,
+            "character": 29
+          },
+          "end": {
+            "line": 91,
+            "character": 30
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 91,
+            "character": 54
+          },
+          "end": {
+            "line": 91,
+            "character": 55
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 91,
+            "character": 54
+          },
+          "end": {
+            "line": 91,
+            "character": 55
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 84,
+          "character": 13
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 163,
+            "character": 21
+          },
+          "end": {
+            "line": 163,
+            "character": 22
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 163,
+            "character": 21
+          },
+          "end": {
+            "line": 163,
+            "character": 22
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 226,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 159,
+            "character": 42
+          },
+          "end": {
+            "line": 159,
+            "character": 43
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 159,
+            "character": 42
+          },
+          "end": {
+            "line": 159,
+            "character": 43
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 230,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 313,
+            "character": 75
+          },
+          "end": {
+            "line": 313,
+            "character": 76
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 313,
+            "character": 75
+          },
+          "end": {
+            "line": 313,
+            "character": 76
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 267,
+          "character": 9
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 554,
+            "character": 54
+          },
+          "end": {
+            "line": 554,
+            "character": 55
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "range": {
+          "start": {
+            "line": 554,
+            "character": 54
+          },
+          "end": {
+            "line": 554,
+            "character": 55
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Trivia.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 568,
+          "character": 4
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 75,
+            "character": 24
+          },
+          "end": {
+            "line": 75,
+            "character": 25
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 75,
+            "character": 24
+          },
+          "end": {
+            "line": 75,
+            "character": 25
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 8,
+          "character": 36
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 295,
+            "character": 57
+          },
+          "end": {
+            "line": 295,
+            "character": 58
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 295,
+            "character": 57
+          },
+          "end": {
+            "line": 295,
+            "character": 58
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 232,
+          "character": 41
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 329,
+            "character": 25
+          },
+          "end": {
+            "line": 329,
+            "character": 26
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 329,
+            "character": 25
+          },
+          "end": {
+            "line": 329,
+            "character": 26
+          }
+        },
+        "text": "0"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 254,
+          "character": 23
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 1012,
+            "character": 75
+          },
+          "end": {
+            "line": 1012,
+            "character": 76
+          }
+        },
+        "text": "2"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "range": {
+          "start": {
+            "line": 1012,
+            "character": 75
+          },
+          "end": {
+            "line": 1012,
+            "character": 76
+          }
+        },
+        "text": "1"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Context.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Context.fs",
+        "position": {
+          "line": 941,
+          "character": 37
+        }
+      }
+    },
+    {
+      "fire": {
+        "file": "src/Fantomas.Core/Queue.fs",
+        "range": {
+          "start": {
+            "line": 124,
+            "character": 54
+          },
+          "end": {
+            "line": 124,
+            "character": 54
+          }
+        },
+        "text": " |> string"
+      }
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    },
+    {
+      "settle": "src/Fantomas.Core/Queue.fs"
+    },
+    {
+      "references": {
+        "file": "src/Fantomas.Core/Trivia.fs",
+        "position": {
+          "line": 81,
+          "character": 12
+        }
+      }
+    }
+  ]
+}
