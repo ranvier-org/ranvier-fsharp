@@ -276,7 +276,7 @@ type private Feature =
 /// Every token of every file before the edit asked settled (filling the last answers), the same checked from scratch
 /// by FCS, then the edits with every check held, and every token of the new texts from the last state: refused, or an
 /// answer that equals the old one at the place the edits say the token was, every range moved by the edits alone
-let private grid (feature: Feature) (shape: Shape) : Task<Counts> =
+let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts> =
     task {
         let failures = ResizeArray<string>()
         let refused = Dictionary<Refusal, int>()
@@ -454,7 +454,7 @@ let private grid (feature: Feature) (shape: Shape) : Task<Counts> =
         let! _ =
             match shape.App with
             | None ->
-                run true { Name = shape.Name; Files = shape.Files; Steps = [] } (fun state ->
+                run promote { Name = shape.Name; Files = shape.Files; Steps = [] } (fun state ->
                     atState state [ state.Graph ] [ for f in state.Implementations -> state.Graph, f ] state.Reference)
             | Some app ->
                 runReferencing { Name = shape.Name; Files = shape.Files; Steps = [] } app (fun state appGraph appFile ->
@@ -468,15 +468,16 @@ let private grid (feature: Feature) (shape: Shape) : Task<Counts> =
               Failures = List.ofSeq failures }
     }
 
-let private expectGrid (feature: Feature) (shape: Shape) (c: Counts) =
+let private expectGrid (promote: bool) (feature: Feature) (shape: Shape) (c: Counts) =
     let refusals = c.Refused |> Map.toList |> List.map (fun (r, k) -> $"%A{r} %d{k}") |> String.concat ", "
-    printfn "last-state %A grid, %s: %d cases, %d answered (%d old answers at a limit), refused: %s" feature shape.Name c.Cases c.Answered c.Limits refusals
+    let mode = if promote then "by declaration" else "file level"
+    printfn "last-state %A grid, %s (%s): %d cases, %d answered (%d old answers at a limit), refused: %s" feature shape.Name mode c.Cases c.Answered c.Limits refusals
     let shown = c.Failures |> List.truncate 12 |> String.concat "\n  "
     Expect.isTrue c.Failures.IsEmpty $"%d{c.Failures.Length} of %d{c.Cases} failed:\n  %s{shown}"
     Expect.isGreaterThan c.Cases 0 "cases"
     Expect.equal (c.Refused.TryFind Refusal.Reloading) (Some c.Cases) "every case refuses while busy"
 
-    if feature = References then
+    if feature = References && promote then
         for r in shape.Refusals do
             Expect.isTrue (c.Refused.ContainsKey r) $"%s{shape.Name} refuses with %A{r} somewhere"
 
@@ -490,10 +491,14 @@ let tests =
     testSequenced
     <| testList
         "LastStateUsesGrid"
-        [ for feature in [ References; Definition ] do
-              for shape in shapes do
-                  yield
-                      testTask $"%A{feature} from the last state at every token after an edit: %s{shape.Name}" {
-                          let! c = grid feature shape
-                          expectGrid feature shape c
-                      } ]
+        [ for promote in [ true; false ] do
+              for feature in [ References; Definition ] do
+                  // App's project is checked by declaration only (TokenGrid.runReferencing)
+                  for shape in shapes |> List.filter (fun s -> promote || s.App.IsNone) do
+                      let mode = if promote then "by declaration" else "file level"
+
+                      yield
+                          testTask $"%A{feature} from the last state at every token after an edit: %s{shape.Name} (%s{mode})" {
+                              let! c = grid promote feature shape
+                              expectGrid promote feature shape c
+                          } ]
