@@ -619,7 +619,7 @@ let tests =
               Expect.isTrue gone.IsMoved "a project went away"
           }
 
-          testTask "a load that starts during a turn, or another set of projects by its end, leaves it pending, and the next answers" {
+          testTask "a turn that finds a load under way leaves the read pending, and the next answers" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
               use _ = disposing s
               let aFile = file "A.fs"
@@ -628,43 +628,22 @@ let tests =
               let! (expected: References.Answer) = References.find (scopeOf s) graph aFile (fst at) (snd at) CancellationToken.None
               let mutable asks = 0
 
-              // Not loading when the turn starts, loading when it ends, and not again: the workspace changes off the graph thread
+              // Loading at the first turn, and not after: the scope is asked once a turn
               let started =
                   { scopeOf s with
                       IsLoading =
                           fun () ->
                               asks <- asks + 1
-                              asks = 2 }
+                              asks = 1 }
 
               let pending = References.find started graph aFile (fst at) (snd at) CancellationToken.None
-              do! whenAsked "the turn's end saw the load" (fun () -> asks >= 2)
-              // Workspace posts this at a load's end
+              do! whenAsked "the turn that saw the load" (fun () -> asks >= 1)
+              do! Task.Delay 300
+              Expect.isFalse pending.IsCompleted "the loading turn isn't answered from"
+              // The loading signal's end wakes the read
               let! _ = graph.Mode aFile
               let! (loadEnded: References.Answer) = pending |> within
               Expect.equal (sprintf "%A" loadEnded) (sprintf "%A" expected) "the answer of the turn after the load"
-
-              let other = ProjectSpec.sequential (ProjectSpec.load depsProject).Result
-              let! (app: Rfs.Checker.ProjectGraph) = Rfs.Checker.ProjectGraph.Create(graph.Host, { other with ProjectFile = Path.Combine(Path.GetDirectoryName depsProject, "Back.fsproj") })
-              let mutable referencing = 0
-
-              let cameBack =
-                  { scopeOf s with
-                      ReferencingProjects =
-                          fun _ ->
-                              referencing <- referencing + 1
-                              if referencing <= 1 then [] else [ app ] }
-
-              let back = References.find cameBack graph aFile (fst at) (snd at) CancellationToken.None
-              // The first turn disagrees, and no node it read changes: wake the read, as Workspace does when entries change
-              do! whenAsked "the turn that disagreed" (fun () -> referencing >= 2)
-              graph.Host.Post ignore
-              let! (projectBack: References.Answer) = back |> within
-              app.Dispose()
-
-              match projectBack with
-              | References.Answer.Moved -> failtest "nothing went away"
-              | References.Answer.Found uses ->
-                  Expect.isTrue (uses |> List.exists (fun (struct (r, _)) -> r.FileName = aFile)) "a later turn answers, from the projects it has"
           }
 
           testTask "a load, and a watched change of a closed file, during a request answer, not ContentModified" {
@@ -789,7 +768,7 @@ let tests =
                           ()
               }
 
-          testTask "a reload answers ContentModified from a request waiting on it, and shutdown answers nothing" {
+          testTask "a reload during a request answers from after it, not a mix, and shutdown answers nothing" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs"; d ]
               use _ = disposing s
               let aFile = file "A.fs"
@@ -829,7 +808,10 @@ let tests =
 
               gate.Set()
               do! reload
-              Expect.stringContains outcome "-32801" "ContentModified, not a list that looks complete"
+              // The answer of the state after the reload, asked once it has ended
+              let! (after: Answer) = references s aFile at true
+              Expect.isNonEmpty after "answers after the reload"
+              Expect.equal outcome $"answered %d{after.Count}" "the waiting request answers the state after the reload"
               do! s.Server.Publisher.Barrier().WaitAsync(TimeSpan.FromSeconds 120.)
               (s.Server :> IDisposable).Dispose()
               let! (afterShutdown: Answer) = references s aFile at true

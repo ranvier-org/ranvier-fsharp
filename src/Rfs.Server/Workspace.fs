@@ -251,17 +251,50 @@ type private Entry = { Spec: ProjectSpec; Graph: ProjectGraph }
 /// The projects the server has loaded, each on its own <see cref="ProjectGraph"/> over one shared host.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A load settles each project's cold diagnostics before it returns. The settle is bounded by a timeout
 /// (<c>RFS_LOAD_TIMEOUT_MS</c>, ten minutes by default): a project that does not settle in time is <c>Failed</c> and its
 /// graph is disposed, and the rest of the load goes on. Loads, reloads and project-file changes run one at a time.
+/// </para>
+/// <para>
+/// The loaded projects are a keyed collection on the host's graph, and whether a load is under way a signal there;
+/// the owners of each file, the projects and what references what are memos over them. All of it changes only on the
+/// graph thread, so a read there (the members ending in <c>Now</c>) is tracked and of one turn with the files'
+/// nodes. Off that thread the members read the entries as the graph thread last left them.
+/// </para>
 /// </remarks>
 type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let timeout = defaultArg loadTimeout (Workspace.DefaultLoadTimeout())
-    // Taken on the graph thread too, by a read in one turn (References' scope): nothing that holds it may wait on the
-    // graph thread, or the two wait on each other. Posting to the graph (SetText) doesn't wait.
-    let gate = obj ()
-    let entries = Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase)
+    // Graph thread
     let openTexts = Dictionary<string, struct (string * int)>(StringComparer.OrdinalIgnoreCase)
+    let mutable entries: Ranvier.KeyedCollection<string, Entry> = Unchecked.defaultof<_>
+    let mutable loadingNow: Ranvier.Signal<int> = Unchecked.defaultof<_>
+    let mutable entryList: Ranvier.Memo<Entry[]> = Unchecked.defaultof<_>
+    let mutable ownersMemo: Ranvier.Memo<IReadOnlyDictionary<string, ProjectGraph list>> = Unchecked.defaultof<_>
+    // Any thread: the entries, in load order, as the graph thread last left them
+    let mutable published: Entry[] = [||]
+
+    let keyOf (project: string) = project.ToUpperInvariant()
+
+    do
+        host
+            .Read(fun () ->
+                Ranvier.Api.createRoot (fun _ ->
+                    entries <- Ranvier.Api.createKeyedCollection (fun (e: Entry) -> keyOf e.Spec.ProjectFile)
+                    loadingNow <- Ranvier.Api.createSignal 0
+                    entryList <- Ranvier.Api.createMemo (fun _ -> [| for k in entries.Rows.Keys -> entries.Rows.Get k |])
+
+                    ownersMemo <-
+                        Ranvier.Api.createMemo (fun _ ->
+                            let owners = Dictionary<string, ProjectGraph list>(StringComparer.OrdinalIgnoreCase)
+
+                            for e in entryList.Value do
+                                for f in e.Spec.SourceFiles do
+                                    owners[f] <- (match owners.TryGetValue f with | true, l -> l | _ -> []) @ [ e.Graph ]
+
+                            owners :> IReadOnlyDictionary<_, _>))
+                |> ignore)
+            .Wait()
     let mutations = new SemaphoreSlim(1)
     let mutable loading = 0
     let lifetime = new CancellationTokenSource()
@@ -290,17 +323,43 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let isSource (spec: ProjectSpec) (path: string) =
         spec.SourceFiles |> List.exists (fun f -> String.Equals(f, path, StringComparison.OrdinalIgnoreCase))
 
-    let snapshot () = lock gate (fun () -> entries.Values |> Seq.toArray)
+    let snapshot () = Volatile.Read &published
 
-    let remove (project: string) =
-        lock gate (fun () ->
-            match entries.TryGetValue project with
-            | true, e ->
-                entries.Remove project |> ignore
-                Some e
-            | _ -> None)
+    let find (project: string) =
+        snapshot () |> Array.tryFind (fun e -> String.Equals(e.Spec.ProjectFile, project, StringComparison.OrdinalIgnoreCase))
 
-    let isLoaded (project: string) = lock gate (fun () -> entries.ContainsKey project)
+    /// Graph thread
+    let republish () =
+        Volatile.Write(&published, Ranvier.Api.untrack (fun () -> entryList.Value))
+
+    /// Removes the projects' entries in one graph item, and returns them
+    let remove (projects: string list) : Task<Entry list> =
+        host.Read(fun () ->
+            let found = projects |> List.choose find
+
+            for e in found do
+                entries.Remove(keyOf e.Spec.ProjectFile) |> ignore
+
+            republish ()
+            found)
+
+    let isLoaded (project: string) = (find project).IsSome
+
+    /// The projects, transitively, that reference the project of `graph`, among `all`
+    let referencingIn (all: Entry[]) (graph: ProjectGraph) : ProjectGraph list =
+        match all |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
+        | None -> []
+        | Some root ->
+            let found = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+            let rec visit (file: string) =
+                for e in all do
+                    if e.Spec.ReferencedProjects |> List.exists (fun r -> String.Equals(r, file, StringComparison.OrdinalIgnoreCase))
+                       && found.Add e.Spec.ProjectFile then
+                        visit e.Spec.ProjectFile
+
+            visit root.Spec.ProjectFile
+            [ for e in all do if found.Contains e.Spec.ProjectFile then yield e.Graph ]
 
     /// Loads one project (its references have been visited), and settles its cold check
     let loadGraph (spec: ProjectSpec) : Task<LoadResult> =
@@ -311,23 +370,21 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 // The ones that are not loaded (they failed to) stay the files on disk
                 // or are loaded for another framework than this project resolved to: only those are its assembly
                 let references =
-                    lock gate (fun () ->
-                        List.zip spec.ReferencedProjects spec.ReferencedFrameworks
-                        |> List.choose (fun (r, framework) ->
-                            match entries.TryGetValue r with
-                            | true, e when ProjectSpec.isFSharpProject r && (String.IsNullOrEmpty framework || e.Spec.TargetFramework = framework) ->
-                                Some e.Graph
-                            | _ -> None))
+                    List.zip spec.ReferencedProjects spec.ReferencedFrameworks
+                    |> List.choose (fun (r, framework) ->
+                        match find r with
+                        | Some e when ProjectSpec.isFSharpProject r && (String.IsNullOrEmpty framework || e.Spec.TargetFramework = framework) ->
+                            Some e.Graph
+                        | _ -> None)
 
                 // A graph has one framework: this project's edits of them show only in a build
                 let otherFrameworks =
-                    lock gate (fun () ->
-                        List.zip spec.ReferencedProjects spec.ReferencedFrameworks
-                        |> List.choose (fun (r, framework) ->
-                            match entries.TryGetValue r with
-                            | true, e when ProjectSpec.isFSharpProject r && not (String.IsNullOrEmpty framework) && e.Spec.TargetFramework <> framework ->
-                                Some(r, framework, e.Spec.TargetFramework)
-                            | _ -> None))
+                    List.zip spec.ReferencedProjects spec.ReferencedFrameworks
+                    |> List.choose (fun (r, framework) ->
+                        match find r with
+                        | Some e when ProjectSpec.isFSharpProject r && not (String.IsNullOrEmpty framework) && e.Spec.TargetFramework <> framework ->
+                            Some(r, framework, e.Spec.TargetFramework)
+                        | _ -> None)
 
                 for r, framework, loaded in otherFrameworks do
                     let text =
@@ -340,16 +397,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 created.Value <- Some graph
                 onGraphCreated graph
 
-                // Registered before the settle wait, in the same critical section that reads the open texts and sets
-                // them: an `Open` either lands in `openTexts` first and is read here, or finds the entry and sets its
+                // Registered before the settle wait, in the graph item that reads the open texts and sets them: an `Open`
+                // (a graph item too) either lands in `openTexts` first and is read here, or finds the entry and sets its
                 // text after these, so older text never overwrites newer.
-                lock gate (fun () ->
-                    entries[spec.ProjectFile] <- { Spec = spec; Graph = graph }
+                do!
+                    host.Read(fun () ->
+                        entries.AddOrUpdate { Spec = spec; Graph = graph }
+                        republish ()
 
-                    for f in spec.SourceFiles do
-                        match openTexts.TryGetValue f with
-                        | true, struct (t, _) -> graph.SetText(f, t) |> ignore
-                        | _ -> ())
+                        for f in spec.SourceFiles do
+                            match openTexts.TryGetValue f with
+                            | true, struct (t, _) -> graph.SetText(f, t) |> ignore
+                            | _ -> ())
 
                 // The settle waits take no token of their own
                 try
@@ -371,7 +430,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
                 return Loaded spec.ProjectFile
             with ex ->
-                remove spec.ProjectFile |> ignore
+                // The removal is a graph item, and the disposal's posts follow it
+                try
+                    remove [ spec.ProjectFile ] |> ignore
+                with :? ObjectDisposedException ->
+                    ()
+
                 created.Value |> Option.iter (fun g -> (g :> IDisposable).Dispose())
                 return Failed(spec.ProjectFile, ex.Message)
         }
@@ -435,9 +499,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             return (requested @ others) |> List.map (fun k -> results[k])
         }
 
+    /// The loading signal follows the count: a read in one turn waiting through the load counts it as pending, and
+    /// runs again when it ends
+    let postLoading () =
+        try
+            host.Post(fun () -> loadingNow.Value <- Volatile.Read &loading)
+        with :? ObjectDisposedException ->
+            ()
+
     let exclusively (work: unit -> Task<'T>) : Task<'T> =
         task {
             Interlocked.Increment &loading |> ignore
+            postLoading ()
 
             try
                 do! mutations.WaitAsync lifetime.Token
@@ -448,11 +521,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     mutations.Release() |> ignore
             finally
                 Interlocked.Decrement &loading |> ignore
-                // A read in one turn waiting through the load counts it as pending: this runs it again
-                try
-                    host.Post ignore
-                with :? ObjectDisposedException ->
-                    ()
+                postLoading ()
         }
 
     /// Reloads `projects` and every project that references one of them, each once: a branch switch or a root props
@@ -487,10 +556,10 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 |> List.filter (isRoot >> not)
                 |> List.distinctBy (fun p -> p.ToUpperInvariant())
 
-            for p in roots @ referencing do
-                match remove p with
-                | Some e -> (e.Graph :> IDisposable).Dispose()
-                | None -> ()
+            let! removed = remove (roots @ referencing)
+
+            for e in removed do
+                (e.Graph :> IDisposable).Dispose()
 
             for p in roots do
                 ProjectSpec.invalidate p
@@ -555,13 +624,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         let path = Path.GetFullPath path
         let lspVersion = defaultArg lspVersion 0
 
-        // One critical section with the registration in loadGraph: the order of the SetText calls is the order of the texts
-        lock gate (fun () ->
-            openTexts[path] <- struct (text, lspVersion)
+        // Graph thread, as the registration in loadGraph: the order of the SetText calls is the order of the texts
+        openTexts[path] <- struct (text, lspVersion)
 
-            [ for e in Seq.toArray entries.Values do
-                  if isSource e.Spec path then
-                      yield e.Graph, e.Graph.SetText(path, text) ])
+        [ for e in snapshot () do
+              if isSource e.Spec path then
+                  yield e.Graph, e.Graph.SetText(path, text) ]
 
     /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
     member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
@@ -576,22 +644,28 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         | None -> []
 
     /// The projects, transitively, that reference the project of `graph`
-    member _.ReferencingProjects(graph: ProjectGraph) : ProjectGraph list =
-        let all = snapshot ()
+    member _.ReferencingProjects(graph: ProjectGraph) : ProjectGraph list = referencingIn (snapshot ()) graph
 
-        match all |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
+    /// Graph thread, tracked: whether a load or reload is under way or queued
+    member internal _.LoadingNow() : bool = loadingNow.Value > 0
+
+    /// Graph thread, tracked: the graphs of the projects that have `path` (a full path) as a source file, in load order
+    member internal _.OwnersNow(path: string) : ProjectGraph list =
+        match ownersMemo.Value.TryGetValue path with
+        | true, owners -> owners
+        | _ -> []
+
+    /// Graph thread, tracked: the projects' graphs, in load order
+    member internal _.ProjectsNow() : ProjectGraph list = entryList.Value |> Array.map _.Graph |> List.ofArray
+
+    /// Graph thread, tracked: the source files of the project of `graph`, as FilesOf
+    member internal _.FilesNow(graph: ProjectGraph) : string list =
+        match entryList.Value |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
+        | Some e -> e.Spec.SourceFiles
         | None -> []
-        | Some root ->
-            let found = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
-            let rec visit (file: string) =
-                for e in all do
-                    if e.Spec.ReferencedProjects |> List.exists (fun r -> String.Equals(r, file, StringComparison.OrdinalIgnoreCase))
-                       && found.Add e.Spec.ProjectFile then
-                        visit e.Spec.ProjectFile
-
-            visit root.Spec.ProjectFile
-            [ for e in all do if found.Contains e.Spec.ProjectFile then yield e.Graph ]
+    /// Graph thread, tracked: as ReferencingProjects
+    member internal _.ReferencingNow(graph: ProjectGraph) : ProjectGraph list = referencingIn entryList.Value graph
 
     /// <summary>
     /// The editor closed the document: the file on disk is the file's text again, read already by the caller
@@ -602,14 +676,13 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     member _.Close(path: string, diskText: string option) : ProjectGraph list =
         let path = Path.GetFullPath path
 
-        // One critical section with loadGraph and Open, so the disk text cannot overtake a newer open text
-        lock gate (fun () ->
-            openTexts.Remove path |> ignore
+        // Graph thread, as loadGraph and Open, so the disk text cannot overtake a newer open text
+        openTexts.Remove path |> ignore
 
-            [ for e in Seq.toArray entries.Values do
-                  if isSource e.Spec path then
-                      diskText |> Option.iter (fun t -> e.Graph.SetText(path, t) |> ignore)
-                      yield e.Graph ])
+        [ for e in snapshot () do
+              if isSource e.Spec path then
+                  diskText |> Option.iter (fun t -> e.Graph.SetText(path, t) |> ignore)
+                  yield e.Graph ]
 
     /// The text of `path` on disk, for <c>Close</c>; None, and a line on stderr, when it can't be read
     static member ReadOnClose(path: string) : string option =
@@ -631,10 +704,6 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     member _.OwnersOf(path: string) : ProjectGraph list =
         let path = Path.GetFullPath path
         snapshot () |> Array.filter (fun e -> isSource e.Spec path) |> Array.map _.Graph |> List.ofArray
-
-    member _.IsOpen(path: string) : bool =
-        let path = Path.GetFullPath path
-        lock gate (fun () -> openTexts.ContainsKey path)
 
     /// Applies watched-file changes: a project, props, targets or assets file reloads the projects it belongs to; a
     /// source file that is not open is read from disk. `deleted` marks a deleted file.
@@ -685,18 +754,17 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                         | :? IOException
                         | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}"
 
-                // Every closed file's disk text in one graph item, so the graphs settle once for all of them (N6). One
-                // critical section with Open, so the disk text cannot overtake a text opened meanwhile.
+                // Every closed file's disk text in one graph item, so the graphs settle once for all of them (N6). A graph
+                // item as Open is, so the disk text cannot overtake a text opened meanwhile.
                 if onDisk.Count > 0 then
                     do!
                         host.Read(fun () ->
-                            lock gate (fun () ->
-                                Ranvier.Api.batch (fun () ->
-                                    for path, text in onDisk do
-                                        if not (openTexts.ContainsKey path) then
-                                            for e in snapshot () do
-                                                if isSource e.Spec path then
-                                                    e.Graph.SetText(path, text) |> ignore)))
+                            Ranvier.Api.batch (fun () ->
+                                for path, text in onDisk do
+                                    if not (openTexts.ContainsKey path) then
+                                        for e in snapshot () do
+                                            if isSource e.Spec path then
+                                                e.Graph.SetText(path, text) |> ignore))
 
                 if toReload.Count > 0 then
                     do! reload (List.ofSeq toReload)

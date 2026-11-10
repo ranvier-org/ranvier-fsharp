@@ -22,7 +22,7 @@ open Helpers
 type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable disposed = 0
     let workspace = new Workspace(host, client)
-    let documents = Documents()
+    let documents = Documents(host)
     let publisher = new Publisher(host, workspace, client, documents)
 
     do
@@ -400,12 +400,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentRangeFormatting(_) = notImplemented
         member _.TextDocumentReferences(p: ReferenceParams) =
             async {
+                // Read on the graph thread, tracked, in the turn that reads the files
                 let scope: References.Scope =
-                    { OwnersOf = workspace.OwnersOf
-                      ReferencingProjects = workspace.ReferencingProjects
-                      Projects = fun () -> workspace.Projects
-                      FilesOf = workspace.FilesOf
-                      IsLoading = fun () -> workspace.IsLoading }
+                    { OwnersOf = fun path -> workspace.OwnersNow(Path.GetFullPath path)
+                      ReferencingProjects = workspace.ReferencingNow
+                      Projects = workspace.ProjectsNow
+                      FilesOf = workspace.FilesNow
+                      IsLoading = workspace.LoadingNow }
 
                 let moved = Error(JsonRpc.Error.Create(-32801, "The files changed while references were read"))
 

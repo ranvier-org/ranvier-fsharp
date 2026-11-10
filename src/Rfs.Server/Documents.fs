@@ -1,7 +1,9 @@
 namespace Rfs.Server
 
 open System
-open System.Collections.Generic
+open System.Threading
+open Ranvier
+open Rfs.Checker
 
 /// A document the editor has open. `Uri` is exactly what the client sent, and is what every publish for it carries.
 type OpenDocument =
@@ -10,35 +12,59 @@ type OpenDocument =
       LspVersion: int
       Text: string }
 
-/// The open documents, by path. Written on the graph thread (the Publisher's document sync), read anywhere.
-type Documents() =
-    let gate = obj ()
-    let documents = Dictionary<string, OpenDocument>(StringComparer.OrdinalIgnoreCase)
+/// <summary>
+/// The open documents, by path: a keyed collection on the host's graph, so editing one wakes only what read that one.
+/// </summary>
+/// <remarks>
+/// Written on the graph thread (the Publisher's document sync). <c>TryFindNow</c> is the tracked read there; the other
+/// reads, from any thread, see the documents as the graph thread last left them, in the order they were opened.
+/// </remarks>
+type Documents(host: GraphHost) =
+    let keyOf (path: string) = path.ToUpperInvariant()
+    // Graph thread
+    let mutable rows: KeyedCollection<string, OpenDocument> = Unchecked.defaultof<_>
+    // Any thread
+    let mutable published: Map<string, OpenDocument> = Map.empty
+    let mutable inOrder: OpenDocument list = []
 
+    do
+        host
+            .Read(fun () -> createRoot (fun _ -> rows <- createKeyedCollection (fun (d: OpenDocument) -> keyOf d.Path)) |> ignore)
+            .Wait()
+
+    /// Graph thread
+    let republish () =
+        let all = untrack (fun () -> [ for k in rows.Rows.Keys -> rows.Rows.Get k ])
+        Volatile.Write(&published, all |> List.map (fun d -> keyOf d.Path, d) |> Map.ofList)
+        Volatile.Write(&inOrder, all)
+
+    /// Graph thread
     member _.Open(document: OpenDocument) : unit =
-        lock gate (fun () -> documents[document.Path] <- document)
+        rows.AddOrUpdate document
+        republish ()
 
-    member _.TryFind(path: string) : OpenDocument option =
-        lock gate (fun () ->
-            match documents.TryGetValue path with
-            | true, d -> Some d
-            | _ -> None)
+    member _.TryFind(path: string) : OpenDocument option = Volatile.Read &published |> Map.tryFind (keyOf path)
 
-    member _.Update(path: string, update: OpenDocument -> OpenDocument) : OpenDocument option =
-        lock gate (fun () ->
-            match documents.TryGetValue path with
-            | true, d ->
-                let updated = update d
-                documents[path] <- updated
-                Some updated
-            | _ -> None)
+    /// Graph thread, tracked: the document at `path`, as the collection holds it in this turn
+    member _.TryFindNow(path: string) : OpenDocument option = rows.Rows.TryGet(keyOf path)
 
-    member _.Close(path: string) : OpenDocument option =
-        lock gate (fun () ->
-            match documents.TryGetValue path with
-            | true, d ->
-                documents.Remove path |> ignore
-                Some d
-            | _ -> None)
+    /// Graph thread
+    member this.Update(path: string, update: OpenDocument -> OpenDocument) : OpenDocument option =
+        match this.TryFind path with
+        | Some d ->
+            let updated = update d
+            rows.AddOrUpdate updated
+            republish ()
+            Some updated
+        | None -> None
 
-    member _.All: OpenDocument list = lock gate (fun () -> documents.Values |> List.ofSeq)
+    /// Graph thread
+    member this.Close(path: string) : OpenDocument option =
+        match this.TryFind path with
+        | Some d ->
+            rows.Remove(keyOf path) |> ignore
+            republish ()
+            Some d
+        | None -> None
+
+    member _.All: OpenDocument list = Volatile.Read &inOrder

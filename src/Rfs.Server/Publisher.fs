@@ -219,7 +219,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     /// Whether a row's file reports anything to an open document other than itself. Graph thread.
     let reportsToOpen (path: string) (found: Found) =
         found.Groups
-        |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t path) && (documents.TryFind t).IsSome)
+        |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t path) && (documents.TryFindNow t).IsSome)
 
     /// A row's value: what its file's check found, kept from the last settled check while the next one is pending, as
     /// the same object, so a pending row's re-runs change nothing downstream. A failed check keeps only the file's own
@@ -231,7 +231,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         fun () ->
             let r = item ()
 
-            match r.Owners with
+            // The owners now, tracked: a reload that drops the file, or replaces its graph, changes them in the item
+            // that removes the old graph, so no row reads a replaced graph's findings (N-1)
+            match workspace.OwnersNow r.Path with
             | [] ->
                 failing <- false
                 last <- nothing
@@ -391,14 +393,6 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         a.Length = b.Length && List.forall2 (fun x y -> obj.ReferenceEquals(x, y)) a b
 
     let loadedNow (graph: ProjectGraph) =
-        // First every other row's owners as they are now, so no row reads a replaced graph's findings once this one's
-        // rows can settle: a file the reload dropped finds nothing from here on (N-1)
-        for r in rows.Value |> Map.values |> Seq.toArray do
-            let owners = workspace.OwnersOf r.Path
-
-            if not (owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph))) && not (sameOwners owners r.Owners) then
-                setRow { r with Owners = owners }
-
         for doc in documents.All do
             match workspace.OwnersOf doc.Path with
             | owners when owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph)) ->

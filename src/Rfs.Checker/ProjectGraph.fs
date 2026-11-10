@@ -131,8 +131,8 @@ type TurnFile =
     /// Not read: its latest text, at `version`, doesn't contain the name asked for (TurnScope.Name)
     | Skipped of path: string * version: int64
 
-/// What a read in one graph turn reads, as the caller finds it at that turn. Asked again at every turn the read tries,
-/// before and after the files are read; the turn counts only if both agree, `Extra` included.
+/// What a read in one graph turn reads, as the caller finds it at that turn: asked once at every turn the read tries,
+/// on the graph thread, in the same turn as the files.
 [<NoComparison; NoEquality>]
 type TurnScope<'Extra when 'Extra: equality> =
     { /// A load or reload is under way: the projects may lack those it hides, so the turn counts as pending
@@ -887,24 +887,14 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// work on the graph thread (GraphHost.WhenSettled). A file with F# errors has a result like any other.
     /// </para>
     /// <para>
-    /// `scope` runs on the graph thread at each turn tried, before and after the files are read. The workspace changes
-    /// off that thread, so both must agree (the same graphs, files, name and Extra, and not loading) for the turn to count:
-    /// otherwise, as while loading, the turn is pending. The caller must wake the graph thread when what `scope` reads
-    /// changes without a post (Workspace does at the end of a load). A disposed graph in the scope gives Gone at the first
-    /// turn that sees it outside a load (a loading scope names no projects), as its nodes never change; a disposal wakes the
-    /// waiter, as it posts to the graph thread.
+    /// `scope` runs on the graph thread once at each turn tried, in the same turn as the files: what it reads must
+    /// change only on the graph thread (Workspace's state does), so it is that turn's. A loading scope is pending. A
+    /// disposed graph in the scope gives Gone at the first turn that sees it outside a load (a loading scope names no
+    /// projects), as its nodes never change; a disposal wakes the waiter, as it posts to the graph thread. A fault of a
+    /// project in the scope, after the read first saw it, fails the read; a fault of any other project doesn't.
     /// </para>
     /// </remarks>
     member _.ReadInOneTurn(scope: unit -> TurnScope<'Extra>, ct: CancellationToken) : Task<TurnRead<'Extra>> =
-        let same (a: TurnScope<'Extra>) (b: TurnScope<'Extra>) =
-            a.Name = b.Name
-            && a.Extra = b.Extra
-            && a.Projects.Length = b.Projects.Length
-            && Array.forall2
-                (fun (g: ProjectGraph, files: string list) (h: ProjectGraph, others: string list) -> obj.ReferenceEquals(g, h) && files = others)
-                a.Projects
-                b.Projects
-
         // Each project's faults when the read first saw it: a later one may have stranded the read, and fails it
         let faultsAt = Dictionary<ProjectGraph, int>(HashIdentity.Reference)
 
@@ -940,12 +930,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
                     p <- p + 1
 
-                let after = scope ()
-
-                if pending || after.Loading || not (same before after) then
-                    ValueNone
-                else
-                    ValueSome(TurnRead.Read(before.Extra, read))
+                if pending then ValueNone else ValueSome(TurnRead.Read(before.Extra, read))
 
         host.WhenSettled(step, ct, true)
 

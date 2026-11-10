@@ -32,10 +32,10 @@ open Rfs.Checker
 /// graph turn (ProjectGraph.ReadInOneTurn), with every file settled on its latest text: one state, across projects. A turn
 /// with any of them pending, or with the workspace loading, isn't answered from; the request waits for a later one, with
 /// no time limit, until a turn with everything settled or the client's cancel. So typing holds an answer up until it
-/// pauses. Once a project to read is disposed (a reload hides the project and those that reference it), the answer is
-/// Moved, never a mix or a partial list: its nodes never change again.
-/// The handler gives LSP's ContentModified, and Ionide's bundled client then shows no results and doesn't ask again: to
-/// the user it looks like no references.
+/// pauses. A reload under way is pending too, and the projects read are those of the turn, the asking file's as it is
+/// then: a request waiting through a reload answers from after it, never a mix. A project that is disposed and not
+/// loaded again (a scope that still names it) answers Moved: its nodes never change again. The handler gives LSP's
+/// ContentModified, and Ionide's bundled client then shows no results and doesn't ask again.
 /// </para>
 /// <para>
 /// Each file's uses are a lookup in its node's index (FileUses), built once per result and shared by every request. For a
@@ -157,7 +157,7 @@ module References =
                 |> Seq.distinct
                 |> Seq.length) > 1
 
-    let private everywhere (scope: Scope) (graph: ProjectGraph) (key: string) (landed: string option) (spelled: string option) (ct: CancellationToken) : Task<Answer> =
+    let private everywhere (scope: Scope) (graph: ProjectGraph) (path: string) (key: string) (landed: string option) (spelled: string option) (ct: CancellationToken) : Task<Answer> =
         task {
             let definersNow () =
                 match landed with
@@ -177,7 +177,8 @@ module References =
                         // No loaded project defines it: every project can use it
                         | [] -> scope.Projects()
                         | definers -> definers @ (definers |> List.collect scope.ReferencingProjects)
-                        |> fun found -> graph :: found
+                        // The asking file's project as it is now: a reload replaces the graph the request started on
+                        |> fun found -> (match scope.OwnersOf path with | g :: _ -> g | [] -> graph) :: found
                         |> List.distinct
 
                     { Loading = false
@@ -244,7 +245,7 @@ module References =
                 match! asked graph path line character ct with
                 | Nothing -> return Answer.Found []
                 | InFile uses -> return Answer.Found uses
-                | Keyed(key, landed, spelled) -> return! everywhere scope graph key landed spelled ct
+                | Keyed(key, landed, spelled) -> return! everywhere scope graph path key landed spelled ct
             with
             | :? OperationCanceledException when not ct.IsCancellationRequested -> return Answer.Moved
             // A file's #line directives stayed another parse's for as long as building its index waits for them
