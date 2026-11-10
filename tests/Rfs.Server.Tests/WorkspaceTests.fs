@@ -92,6 +92,40 @@ let private withWorkspace (loadTimeout: TimeSpan option) (body: Workspace -> Sen
             workspace.Dispose()
     }
 
+/// `path`'s graph, settled, held weakly. Not a task: a task's state machine would hold the graph as a local.
+[<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private settledWeakly (workspace: Workspace) (path: string) : WeakReference =
+    let graph = (workspace.ProjectOf path).Value
+    graph.AllDiagnostics().Wait(TimeSpan.FromSeconds 120.) |> ignore
+    WeakReference graph
+
+let private collected (weak: WeakReference) =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+
+    not weak.IsAlive
+
+/// Drops the graph's event log, which a Debug build of Ranvier (RANVIER_TRACE) keeps with every value its nodes
+/// published (as ReferencesIndexTests does). A no-op for an untraced Ranvier.
+let private dropTrace (host: GraphHost) : Task =
+    host.Read(fun () ->
+        let graph = host.Graph
+
+        let traceModule =
+            [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+            |> List.tryPick (fun name ->
+                match typeof<Ranvier.Graph>.Assembly.GetType name with
+                | null -> None
+                | t -> Option.ofObj (t.GetMethod "lastSeq") |> Option.map (fun m -> t, m))
+
+        match traceModule with
+        | Some(t, lastSeq) ->
+            let last = lastSeq.Invoke(null, [| box graph |])
+            t.GetMethod("checkpoint").Invoke(null, [| box graph; last; box "dropped" |]) |> ignore
+        | None -> ())
+
 let private initOptions (json: string) = JsonNode.Parse json
 
 let private content (reply: JsonNode) : JsonNode =
@@ -509,6 +543,26 @@ let tests =
                           finally
                               gate.Set()
                       })
+          }
+
+          // In a Debug build, Ranvier's event log holds the old graph through the entries collection's published Entry
+          // (Graph -> Owner -> TraceLog -> TraceEvent[] -> Entry -> ProjectGraph): dropped, nothing else may hold it
+          testTask "a reloaded project's old graph is collected once the reload settles" {
+              let dir = copyFixture "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let a = Path.Combine(dir, "A.fs")
+              let sent = Sent()
+              let host = GraphHost.Start "workspace-reload-gc"
+              use _ = disposing host
+              let workspace = new Workspace(host, sent.Client)
+              use _ = disposing workspace
+              let! _ = workspace.Load [ project ] |> within
+              let old = settledWeakly workspace a
+              do! workspace.Reload project |> within
+              let fresh = settledWeakly workspace a
+              Expect.isTrue fresh.IsAlive "the new graph is loaded"
+              do! dropTrace host
+              Expect.isTrue (collected old) "the old graph is collected"
           } ]
 
 /// Holds every check of the graph that a dependency computation leads to, until released
