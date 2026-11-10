@@ -408,16 +408,23 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                     | true, (text, map) -> seq { 0 .. text.Split('\n').Length - 1 } |> Seq.tryFind (fun l -> map l = Some line)
                     | _ -> Some line
 
-                // A range in a row the edits changed: a line of it with no new place, or lines moved by different amounts
+                // A range in a row the edits changed: a non-doc line of it with no new place, or lines moved by different amounts
                 let inEditedRow (r: range) =
                     match oldRows.TryGetValue(Path.GetFullPath r.FileName) with
                     | true, rows ->
+                        let fileLines = (state.TextOf r.FileName).Split('\n')
                         rows
                         |> Array.exists (fun row ->
                             row.StartLine <= r.StartLine
                             && r.StartLine <= row.EndLine
                             && (let shifts = [ for l in row.StartLine - 1 .. row.EndLine - 1 -> inverse r.FileName l |> Option.map (fun n -> n - l) ]
-                                shifts |> List.exists Option.isNone || (shifts |> List.distinct |> List.length) > 1))
+                                let diffShifts = (shifts |> List.choose id |> List.distinct |> List.length) > 1
+                                let nonDocEdited =
+                                    [ row.StartLine - 1 .. row.EndLine - 1 ]
+                                    |> List.exists (fun l ->
+                                        (inverse r.FileName l).IsNone
+                                        && not (fileLines[l].TrimStart().StartsWith("///")))
+                                diffShifts || nonDocEdited))
                     | _ -> false
 
                 let projectOf (f: string) = Path.GetFileName(Path.GetDirectoryName f)

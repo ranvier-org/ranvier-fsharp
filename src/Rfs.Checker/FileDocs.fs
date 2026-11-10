@@ -3,6 +3,7 @@ namespace Rfs.Checker
 open System.Collections.Generic
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
+open FSharp.Compiler.Text
 open FSharp.Compiler.Xml
 
 /// <summary>
@@ -83,7 +84,111 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
                 | SynMemberKind.PropertyGetSet -> "property " + name
                 | _ -> "member " + name
 
-        let bindingMember (typePath: string) (SynBinding(xmlDoc = doc; valData = SynValData(memberFlags = flags); headPat = pat)) =
+        let rec headPlaces (pat: SynPat) : range list =
+            match pat with
+            | SynPat.Named(ident = SynIdent(id, _)) -> [ id.idRange ]
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> [ (List.last ids).idRange ]
+            | SynPat.Typed(pat = p)
+            | SynPat.Paren(pat = p)
+            | SynPat.Attrib(pat = p) -> headPlaces p
+            | SynPat.Tuple(elementPats = ps) -> ps |> List.collect headPlaces
+            | SynPat.As(lhsPat = l; rhsPat = r) -> headPlaces l @ headPlaces r
+            | _ -> []
+
+        let addBindingPlaces (pat: SynPat) (doc: PreXmlDoc) =
+            for r in headPlaces pat do
+                add $"@%d{r.StartLine},%d{r.StartColumn}" doc
+
+        let rec walkBinding (SynBinding(xmlDoc = doc; headPat = pat; expr = expr)) =
+            addBindingPlaces pat doc
+            walkExpr expr
+
+        and walkExpr (expr: SynExpr) =
+            match expr with
+            | SynExpr.Paren(expr = e)
+            | SynExpr.Quote(quotedExpr = e)
+            | SynExpr.Typed(expr = e)
+            | SynExpr.ArrayOrListComputed(expr = e)
+            | SynExpr.ComputationExpr(expr = e)
+            | SynExpr.Do(expr = e)
+            | SynExpr.Assert(expr = e)
+            | SynExpr.AddressOf(expr = e)
+            | SynExpr.InferredDowncast(expr = e)
+            | SynExpr.InferredUpcast(expr = e)
+            | SynExpr.DotGet(expr = e)
+            | SynExpr.YieldOrReturn(expr = e)
+            | SynExpr.YieldOrReturnFrom(expr = e)
+            | SynExpr.DoBang(expr = e)
+            | SynExpr.Downcast(expr = e)
+            | SynExpr.Upcast(expr = e)
+            | SynExpr.TypeTest(expr = e)
+            | SynExpr.Lazy(expr = e)
+            | SynExpr.TraitCall(argExpr = e)
+            | SynExpr.IndexFromEnd(expr = e)
+            | SynExpr.Lambda(body = e) -> walkExpr e
+            | SynExpr.Tuple(exprs = es)
+            | SynExpr.ArrayOrList(exprs = es) -> es |> List.iter walkExpr
+            | SynExpr.Sequential(expr1 = e1; expr2 = e2)
+            | SynExpr.App(funcExpr = e1; argExpr = e2)
+            | SynExpr.TryFinally(tryExpr = e1; finallyExpr = e2)
+            | SynExpr.While(whileExpr = e1; doExpr = e2)
+            | SynExpr.DotSet(targetExpr = e1; rhsExpr = e2)
+            | SynExpr.Set(targetExpr = e1; rhsExpr = e2) ->
+                walkExpr e1
+                walkExpr e2
+            | SynExpr.IfThenElse(ifExpr = g; thenExpr = t; elseExpr = eOpt) ->
+                walkExpr g
+                walkExpr t
+                eOpt |> Option.iter walkExpr
+            | SynExpr.LetOrUse synLetOrUse ->
+                synLetOrUse.Bindings |> List.iter walkBinding
+                walkExpr synLetOrUse.Body
+            | SynExpr.Match(expr = e; clauses = cs)
+            | SynExpr.MatchBang(expr = e; clauses = cs) ->
+                walkExpr e
+                for SynMatchClause(whenExpr = wOpt; resultExpr = r) in cs do
+                    wOpt |> Option.iter walkExpr
+                    walkExpr r
+            | SynExpr.TryWith(tryExpr = t; withCases = cs) ->
+                walkExpr t
+                for SynMatchClause(whenExpr = wOpt; resultExpr = r) in cs do
+                    wOpt |> Option.iter walkExpr
+                    walkExpr r
+            | SynExpr.For(identBody = b; toBody = t) ->
+                walkExpr b
+                walkExpr t
+            | SynExpr.ForEach(enumExpr = e; bodyExpr = b) ->
+                walkExpr e
+                walkExpr b
+            | SynExpr.Record(copyInfo = copyOpt; recordFields = rfs) ->
+                copyOpt |> Option.iter (fst >> walkExpr)
+                for rf in rfs do
+                    match rf with
+                    | SynExprRecordFieldOrSpread.Field(SynExprRecordField(expr = eOpt), _) -> eOpt |> Option.iter walkExpr
+                    | SynExprRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
+            | SynExpr.AnonRecd(copyInfo = copyOpt; recordFields = rfs) ->
+                copyOpt |> Option.iter (fst >> walkExpr)
+                for rf in rfs do
+                    match rf with
+                    | SynExprAnonRecordFieldOrSpread.Field(SynExprAnonRecordField(expr = e), _) -> walkExpr e
+                    | SynExprAnonRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
+            | SynExpr.ObjExpr(bindings = bs; members = ms; argOptions = aOpt) ->
+                aOpt |> Option.iter (fst >> walkExpr)
+                bs |> List.iter walkBinding
+                ms |> List.iter (memberDefn "")
+            | SynExpr.DotIndexedGet(objectExpr = o; indexArgs = a) ->
+                walkExpr o
+                walkExpr a
+            | SynExpr.DotIndexedSet(objectExpr = o; indexArgs = a; valueExpr = v) ->
+                walkExpr o
+                walkExpr a
+                walkExpr v
+            | SynExpr.IndexRange(expr1 = e1; expr2 = e2) ->
+                e1 |> Option.iter walkExpr
+                e2 |> Option.iter walkExpr
+            | _ -> ()
+
+        and bindingMember (typePath: string) (SynBinding(xmlDoc = doc; valData = SynValData(memberFlags = flags); headPat = pat; expr = expr)) =
             match flags, namesOf pat with
             | Some flags, names ->
                 let name = match names with [] -> "" | ns -> List.last ns
@@ -95,22 +200,17 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
                     | _ -> flags
 
                 addMember typePath (tagOf flags name) doc
-
-                // And by where its name starts, for a declaration named by its place in the asking file's own check
-                match pat with
-                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
-                    let id = List.last ids
-                    add $"@%d{id.idRange.StartLine},%d{id.idRange.StartColumn}" doc
-                | _ -> ()
+                addBindingPlaces pat doc
+                walkExpr expr
             | None, _ -> ()
 
-        let fields (typePath: string) (fs: SynField list) =
+        and fields (typePath: string) (fs: SynField list) =
             for SynField(idOpt = id; xmlDoc = doc) in fs do
                 match id with
                 | Some id -> add ("F:" + typePath + "." + id.idText) doc
                 | None -> ()
 
-        let simple (typePath: string) (repr: SynTypeDefnSimpleRepr) =
+        and simple (typePath: string) (repr: SynTypeDefnSimpleRepr) =
             match repr with
             | SynTypeDefnSimpleRepr.Union(unionCases = cases) ->
                 for SynUnionCase(ident = SynIdent(id, _); xmlDoc = doc) in cases do
@@ -122,7 +222,7 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
                     add ("F:" + typePath + "." + id.idText) doc
             | _ -> ()
 
-        let rec memberDefn (typePath: string) (m: SynMemberDefn) =
+        and memberDefn (typePath: string) (m: SynMemberDefn) =
             match m with
             | SynMemberDefn.Member(memberDefn = b) -> bindingMember typePath b
             | SynMemberDefn.GetSetMember(get, set, _, _) ->
@@ -138,9 +238,10 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynMemberDefn.ValField(fieldInfo = f) -> fields typePath [ f ]
             // A class `let`: a value of the type, of a kind of its own, as a module of the type's name shares its path
             | SynMemberDefn.LetBindings(bindings = bs) ->
-                for SynBinding(xmlDoc = doc; headPat = pat) in bs do
+                for SynBinding(xmlDoc = doc; headPat = pat) as b in bs do
                     for name in namesOf pat do
                         add ("L:" + typePath + "." + name) doc
+                    walkBinding b
             | SynMemberDefn.NestedType(typeDefn = t) -> typeDefn typePath t
             | _ -> ()
 
@@ -174,9 +275,10 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
         let rec decl (path: string) (d: SynModuleDecl) =
             match d with
             | SynModuleDecl.Let(bindings = bs) ->
-                for SynBinding(xmlDoc = doc; headPat = pat) in bs do
+                for SynBinding(xmlDoc = doc; headPat = pat) as b in bs do
                     for name in namesOf pat do
                         add ("V:" + path + "." + name) doc
+                    walkBinding b
             | SynModuleDecl.Types(typeDefns = ts) -> ts |> List.iter (typeDefn path)
             | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(xmlDoc = doc) as info; decls = ds) ->
                 let inner = join path (List.last info.LongIdent).idText
@@ -249,11 +351,8 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
     static member CommentOf(docsOf: string -> FileDocs voption) : FSharpDocOwner -> XmlDoc voption =
         fun owner ->
             match docsOf owner.FileName with
-            // A place the parse has no member at: the check's doc. The fork gives `@l,c` only for a value a binding of the
-            // check makes, whose place is in this parse, and `@?` for an older one, whose row Hover checks again first. So
-            // this is `@?` from a row that still refers to an old value after that (none is known), or a binding FileDocs
-            // doesn't index. The latter's value is of its declaration's current check, which a `///` edit checks again
-            // (I8), so the check's doc is its comment.
+            // A place the parse has no member at: returns ValueNone. Any miss of a workspace owner is marked stale
+            // by Hover (StaleMark) rather than silently returning the check's doc, as doc edits check zero declarations.
             | ValueSome docs when owner.Path.StartsWith "@" && not (docs.Has owner.Path) -> ValueNone
             | ValueSome docs -> ValueSome(docs.Comment owner.Path)
             | ValueNone -> ValueNone

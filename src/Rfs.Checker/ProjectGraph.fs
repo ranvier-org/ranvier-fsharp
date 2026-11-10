@@ -797,7 +797,11 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                         |> Array.tryFind (fun (_, c) -> c.Decl.Range.StartLine <= line && line <= c.Decl.Range.EndLine)
                         |> function
                             | Some(_, c) -> ValueSome(struct (box c.Result, c.Decl.Range.StartLine))
-                            | None -> ValueNone
+                            | None ->
+                                if f.Checks.Length > 0 && line < (snd f.Checks[0]).Decl.Range.StartLine then
+                                    ValueSome(struct (box f.Start, 1))
+                                else
+                                    ValueNone
                     | ValueNone -> ValueNone
               At =
                 fun line column ->

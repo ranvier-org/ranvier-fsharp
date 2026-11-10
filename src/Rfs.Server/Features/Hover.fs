@@ -235,11 +235,34 @@ module Hover =
     let private partsAt (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
         check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
 
-    /// Whether a signature names an `@` owner: one kept by the published result, not by its row (signatureOf)
-    let private namesPlace ((_, sources): Signature) =
+    /// Whether a signature names an `@` owner from outside its declaration: one kept by the published result, not by its row
+    let private namesExternalPlace (path: string) (view: FileView) (line: int) ((_, sources): Signature) =
+        let myOwner =
+            match view.RowAt(line + 1) with
+            | ValueSome(struct (result, _)) -> ValueSome result
+            | ValueNone -> ValueNone
+
         sources
         |> List.exists (function
-            | Some s -> s.Owners @ s.InheritOwners |> List.exists (fun o -> o.Path.StartsWith "@")
+            | Some s ->
+                s.Owners @ s.InheritOwners
+                |> List.exists (fun o ->
+                    if not (String.Equals(o.FileName, path, StringComparison.OrdinalIgnoreCase)) then
+                        false
+                    elif o.Path = "@?" then
+                        true
+                    elif o.Path.StartsWith "@" then
+                        match o.Path.Substring(1).Split(',') with
+                        | [| lStr; _ |] ->
+                            match Int32.TryParse lStr with
+                            | true, defLine ->
+                                match view.RowAt defLine, myOwner with
+                                | ValueSome(struct (defOwner, _)), ValueSome owner -> not (obj.ReferenceEquals(defOwner, owner))
+                                | _ -> true
+                            | _ -> true
+                        | _ -> true
+                    else
+                        false)
             | None -> false)
 
     let private signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
@@ -280,10 +303,10 @@ module Hover =
             | ValueNone ->
                 let s = render view.Result.CheckResults
 
-                // An `@` owner is the place of an extension's value as the check has it now. A kept row's result can
+                // An `@` owner outside this row is the place of an extension's value as the check has it now. A kept row's result can
                 // outlive that: the row that makes the value can be checked again, or shifted, after it. So it is kept
-                // by the published result only.
-                if not (placed (fun p -> p.StartsWith "@") s) then
+                // by the published result only. Inner bindings (locals, class lets) are inside this row and kept with it.
+                if not (namesExternalPlace path view line s) then
                     cache.TryAdd(key, s) |> ignore
                     s
                 else
@@ -296,10 +319,14 @@ module Hover =
                     placedSignatures.GetValue(view.Identity, fun _ -> ConcurrentDictionary()).TryAdd(placedKey, s) |> ignore
                     s
 
-    /// The tooltip with each element's documentation made from the current comments of the declarations it is read
-    /// from, as `commentOf` gives them
-    let internal compose (commentOf: FSharpDocOwner -> FSharp.Compiler.Xml.XmlDoc voption) ((ToolTipText elements, sources): Signature) : ToolTipText =
+    /// Tooltip compose that checks whether any workspace owner was missing from docs, falling back to a stale check doc
+    let internal composeWithMiss
+        (isWorkspaceOwner: FSharpDocOwner -> bool)
+        (commentOf: FSharpDocOwner -> FSharp.Compiler.Xml.XmlDoc voption)
+        ((ToolTipText elements, sources): Signature)
+        : ToolTipText * bool =
         let mutable rest = sources
+        let mutable hasMiss = false
 
         let next () =
             match rest with
@@ -308,18 +335,45 @@ module Hover =
                 s
             | [] -> None
 
-        elements
-        |> List.map (function
-            | ToolTipElement.Group items ->
-                ToolTipElement.Group(
-                    items
-                    |> List.map (fun item ->
-                        match next () with
-                        | Some source -> { item with XmlDoc = source.Compose commentOf }
-                        | None -> item)
-                )
-            | other -> other)
-        |> ToolTipText
+        let composedElements =
+            elements
+            |> List.map (function
+                | ToolTipElement.Group items ->
+                    ToolTipElement.Group(
+                        items
+                        |> List.map (fun item ->
+                            match next () with
+                            | Some source ->
+                                let wsOwners = source.Owners @ source.InheritOwners |> List.filter isWorkspaceOwner
+                                if not wsOwners.IsEmpty then
+                                    match item.XmlDoc with
+                                    | FSharpXmlDoc.None
+                                    | FSharpXmlDoc.FromXmlFile _ -> ()
+                                    | _ ->
+                                        let missed =
+                                            wsOwners |> List.exists (fun o ->
+                                                if o.Path = "@?" then true
+                                                else
+                                                    match commentOf o with
+                                                    | ValueNone -> true
+                                                    | ValueSome _ -> false)
+                                        if missed then hasMiss <- true
+
+                                { item with XmlDoc = source.Compose commentOf }
+                            | None ->
+                                match item.XmlDoc with
+                                | FSharpXmlDoc.None
+                                | FSharpXmlDoc.FromXmlFile _ -> ()
+                                | _ -> hasMiss <- true
+                                item)
+                    )
+                | other -> other)
+        ToolTipText composedElements, hasMiss
+
+    /// The tooltip with each element's documentation made from the current comments of the declarations it is read
+    /// from, as `commentOf` gives them
+    let internal compose (commentOf: FSharpDocOwner -> FSharp.Compiler.Xml.XmlDoc voption) (signature: Signature) : ToolTipText =
+        fst (composeWithMiss (fun _ -> false) commentOf signature)
 
     /// The comments of a parse, once per parse: the asking file's docs come from the parse its published result is of,
     /// as the read gave it, so they need no graph turn
@@ -483,7 +537,7 @@ module Hover =
                                 // The answer's owner: its row's result, or the published result for a place outside every
                                 // row and for an extension's place, which is of the published result only (signatureOf)
                                 let owner =
-                                    match (if namesPlace s then ValueNone else view.RowAt(line + 1)) with
+                                    match (if namesExternalPlace path view line s then ValueNone else view.RowAt(line + 1)) with
                                     | ValueSome(struct (result, first)) -> struct (result, line + 1 - first)
                                     | ValueNone -> struct (view.Identity, line)
 
@@ -534,6 +588,7 @@ module Hover =
                             docs[path] <- docsOfParse parse
 
                         let comments = ResizeArray()
+                        let mutable hasMiss = false
 
                         let commentOf =
                             let of' =
@@ -547,7 +602,15 @@ module Hover =
                                 comments.Add((o.FileName, o.Path, linesOf c))
                                 c
 
-                        let answer = format (compose commentOf signature)
+                        let isWorkspaceOwner (o: FSharpDocOwner) =
+                            o.Path = "@?" || o.Path.StartsWith "@"
+                            || String.Equals(o.FileName, path, StringComparison.OrdinalIgnoreCase)
+                            || held |> Array.exists (fun (_, f) -> String.Equals(f, o.FileName, StringComparison.OrdinalIgnoreCase))
+
+                        let composed, hasMiss = composeWithMiss isWorkspaceOwner commentOf signature
+                        let answer =
+                            format composed
+                            |> Option.map (fun md -> if hasMiss then StaleMark + "\n\n" + md else md)
 
                         match answer, answers with
                         | Some markdown, ValueSome cache ->

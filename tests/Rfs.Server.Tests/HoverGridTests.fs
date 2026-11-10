@@ -5,7 +5,10 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Expecto
+open Rfs.Checker
+open Rfs.Projects
 open Rfs.Server
+open Rfs.Server.Tests.PublishTests
 open Rfs.Server.Tests.TokenGrid
 
 let private normalizedText (t: string) = t.Replace("\r\n", "\n")
@@ -22,7 +25,10 @@ let baseValue = 10
 
 /// Scales a number
 /// <param name="factor">how much</param>
-let scale (factor: int) (x: int) = x * factor
+let scale (factor: int) (x: int) =
+    /// Multiplies numbers
+    let mult a b = a * b
+    mult factor x
 
 /// A shape
 type Shape =
@@ -145,6 +151,17 @@ let private secondDocEdit (text: string) =
           "/// The base", "/// The root"
           "/// Runs it", "/// Runs it once"
           "/// Adds a float\n", "" ]
+
+let private localLetDocEdit = edits libA [ "/// Multiplies numbers", "/// Multiplies two numbers" ]
+let private classLetDocEdit = edits libA [ "/// The changes", "/// Internal changes event" ]
+let private inheritDocTargetDocEdit = edits libA [ "/// Does it", "/// Runs the computation" ]
+let private overloadDocEdit = edits libA [ "/// Adds an int", "/// Adds two integers" ]
+
+let private docEditCases =
+    [ "a local let", localLetDocEdit
+      "a class let", classLetDocEdit
+      "an <inheritdoc/> target", inheritDocTargetDocEdit
+      "an overload", overloadDocEdit ]
 
 let private scenario =
     let a1 = docEdit libA
@@ -576,7 +593,7 @@ let tests =
            // Pending: a declaration's text, which decides whether it is checked again, includes every `///` inside it (the
            // fork's ParsedDeclaration.Text), so a doc edit checks the edited declarations again, and the rows of the same
            // file that hold their types. No later file or other project is checked again: the fingerprint has no docs.
-           ptestTask "a doc-only edit checks no declaration and renders no signature again" {
+           testTask "a doc-only edit checks no declaration and renders no signature again" {
               let mutable last = None
               let after = docEdit libA
 
@@ -618,6 +635,118 @@ let tests =
 
               expectNoDifferences results
           }
+
+          for name, docEditTarget in docEditCases do
+              yield
+               testTask $"a doc-only edit on %s{name} checks no declaration and equals FCS (by declaration)" {
+                  let mutable last = None
+                  let s = { scenario with Steps = [ $"a doc edit on %s{name}", [ "A.fs", docEditTarget ] ] }
+
+                  let! results =
+                      run true s (fun state ->
+                          task {
+                              let counts () =
+                                  state.Graph.CheckedCount, state.Graph.FileLevelChecks, state.Graph.AdHocChecks
+
+                              let before = counts ()
+                              let results = ResizeArray()
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              match last with
+                              | Some previous ->
+                                  Expect.equal before previous "the doc edit checked no declaration"
+                              | None -> ()
+
+                              last <- Some before
+                              return List.ofSeq results
+                          })
+
+                  expectNoDifferences results
+              }
+
+              yield
+               testTask $"a doc-only edit on %s{name} equals FCS (file level)" {
+                  let s = { scenario with Steps = [ $"a doc edit on %s{name}", [ "A.fs", docEditTarget ] ] }
+
+                  let! results =
+                      run false s (fun state ->
+                          task {
+                              let results = ResizeArray()
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              return List.ofSeq results
+                          })
+
+                  expectNoDifferences results
+              }
+
+          yield
+           testTask "--warnon:3390 reports updated FS3390 diagnostics after a doc edit, while default options re-checks 0 declarations" {
+               let dir = Directory.CreateTempSubdirectory "rfs-warnon-3390-"
+               try
+                   let file = Path.Combine(dir.FullName, "Test.fs")
+                   let proj = Path.Combine(dir.FullName, "Test.fsproj")
+                   let validText = "module Test\n\n/// <summary>A valid doc</summary>\nlet x = 1\n\nlet y = 2\n"
+                   let invalidText = "module Test\n\n/// <summary>Invalid doc\nlet x = 1\n\nlet y = 2\n"
+                   let fixedText = "module Test\n\n/// <summary>Fixed valid doc</summary>\nlet x = 1\n\nlet y = 2\n"
+
+                   File.WriteAllText(file, validText)
+                   let! deps = ProjectSpec.load depsProject
+                   let baseSpec =
+                       { ProjectSpec.sequential deps with
+                           ProjectFile = proj
+                           SourceFiles = [ file ] }
+
+                   // 1. With --warnon:3390 enabled
+                   let warnonSpec = { baseSpec with OtherOptions = "--warnon:3390" :: baseSpec.OtherOptions }
+                   let host1 = GraphHost.Start "warnon-test"
+                   try
+                       let! (graph1: ProjectGraph) = ProjectGraph.Create(host1, warnonSpec)
+                       graph1.Promote file
+                       let! _ = graph1.AllDiagnostics() |> wait
+                       let! _ = graph1.WhenPromoted(file, CancellationToken.None) |> wait
+                       let! (initialDiags: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph1.Diagnostics file |> wait
+                       let has3390Initial = initialDiags |> Array.exists (fun (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) -> d.ErrorNumber = 3390)
+                       Expect.isFalse has3390Initial "initial valid doc has no FS3390"
+
+                       let checkedBefore1 = graph1.CheckedCount
+                       graph1.SetText(file, invalidText) |> ignore
+                       let! (invalidDiags: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph1.Diagnostics file |> wait
+                       let has3390 = invalidDiags |> Array.exists (fun (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) -> d.ErrorNumber = 3390)
+                       Expect.isTrue has3390 "editing doc to invalid XML reports FS3390 under --warnon:3390"
+                       Expect.isGreaterThan graph1.CheckedCount checkedBefore1 "declaration was re-checked under --warnon:3390"
+
+                       graph1.SetText(file, fixedText) |> ignore
+                       let! (fixedDiags: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph1.Diagnostics file |> wait
+                       let has3390Fixed = fixedDiags |> Array.exists (fun (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) -> d.ErrorNumber = 3390)
+                       Expect.isFalse has3390Fixed "fixing invalid XML clears FS3390 under --warnon:3390"
+                   finally
+                       host1.Dispose()
+
+                   // 2. Under default options (no --warnon:3390)
+                   let host2 = GraphHost.Start "default-options-test"
+                   try
+                       let! (graph2: ProjectGraph) = ProjectGraph.Create(host2, baseSpec)
+                       graph2.Promote file
+                       let! _ = graph2.AllDiagnostics() |> wait
+                       let! _ = graph2.WhenPromoted(file, CancellationToken.None) |> wait
+                       let checkedBefore2 = graph2.CheckedCount
+                       graph2.SetText(file, invalidText) |> ignore
+                       let! (invalidDiagsDefault: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph2.Diagnostics file |> wait
+                       let has3390Default = invalidDiagsDefault |> Array.exists (fun (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) -> d.ErrorNumber = 3390)
+                       Expect.isFalse has3390Default "under default options FS3390 is not reported"
+                       Expect.equal graph2.CheckedCount checkedBefore2 "under default options doc edit re-checks 0 declarations"
+                   finally
+                       host2.Dispose()
+               finally
+                   try dir.Delete true with _ -> ()
+           }
 
           yield
            testTask "hover equals FCS at every token after an extension block's member is renamed (file level)" {
