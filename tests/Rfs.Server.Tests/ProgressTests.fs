@@ -91,9 +91,32 @@ let private load (r: Run) : Task =
 /// Waits for the events to end with an end, then for a quiet that would let any further one through
 let private settledEvents (r: Run) =
     task {
-        do! eventually "the progress to end" (fun () -> r.Seen <> [] && List.last r.Seen = "end")
+        let deadline = DateTime.UtcNow.AddSeconds 60.
+
+        while not (r.Seen <> [] && List.last r.Seen = "end") do
+            if DateTime.UtcNow > deadline then
+                let! status = r.Server.ProgressStatus()
+                failtest $"timed out waiting for the progress to end: seen %A{r.Seen}, status %A{status}"
+
+            do! Task.Delay 25
+
         do! Task.Delay 500
         return r.Seen
+    }
+
+/// Waits until nothing is pending and no progress is shown: a load may have been too short to show one
+let private quiet (r: Run) =
+    task {
+        let mutable settled = false
+
+        while not settled do
+            let! status = r.Server.ProgressStatus() |> within
+            settled <- status = Some ProgressStatus.Settled && (r.Seen = [] || List.last r.Seen = "end")
+
+            if not settled then
+                do! Task.Delay 25
+
+        do! Task.Delay 500
     }
 
 let private settledStatus (r: Run) =
@@ -121,7 +144,7 @@ let tests =
           testTask "a check under way shows Checking, and ends when it settles" {
               use! r = start true
               do! load r
-              let! _ = settledEvents r
+              do! quiet r
               do! r.Lsp.DidOpen(a, File.ReadAllText a)
               do! r.Server.Publisher.Flushed()
               do! Task.Delay 500
@@ -175,7 +198,7 @@ let tests =
           testTask "a failed restart is shown, naming the project, until a reload succeeds" {
               use! r = start true
               do! load r
-              let! _ = settledEvents r
+              do! quiet r
               let before = r.Seen.Length
               let graph = r.Server.Workspace.Projects.Head
               graph.FailRestart(InvalidOperationException "an injected restart fault")
