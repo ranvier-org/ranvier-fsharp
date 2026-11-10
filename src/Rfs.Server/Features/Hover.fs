@@ -223,12 +223,35 @@ module Hover =
 
         let cache = signatures.GetValue(owner, fun _ -> ConcurrentDictionary())
 
-        cache.GetOrAdd(
-            struct (row, endColumn, lineStr, String.Join("\n", names)),
-            fun _ ->
-                rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
-                view.Result.CheckResults.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
-        )
+        let render (check: FSharpCheckFileResults) =
+            rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
+            check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+
+        let placed (predicate: string -> bool) ((_, sources): Signature) =
+            sources
+            |> List.exists (function
+                | Some s -> s.Owners @ s.InheritOwners |> List.exists (fun o -> predicate o.Path)
+                | None -> false)
+
+        let key = struct (row, endColumn, lineStr, String.Join("\n", names))
+
+        let signature =
+            match cache.TryGetValue key with
+            | true, s -> s
+            | _ ->
+                let s = render view.Result.CheckResults
+
+                // An `@` owner is the place of an extension's value as the check has it now. A kept row's result can
+                // outlive that: the row that makes the value can be checked again, or shifted, after it. So it isn't kept.
+                if not (placed (fun p -> p.StartsWith "@") s) then
+                    cache.TryAdd(key, s) |> ignore
+
+                s
+
+        // `@?` is a value a kept row still refers to after the row that made it was checked again: no key names it in the
+        // parse. Checked again in the current environment (RowView.at), as any query reading its names would be, the row
+        // refers to the current value, which a binding of the check makes and whose place is in the parse.
+        if placed (fun p -> p = "@?") signature then render (view.At (line + 1) endColumn) else signature
 
     /// The tooltip with each element's documentation made from the current comments of the declarations it is read
     /// from, as `commentOf` gives them
@@ -255,6 +278,13 @@ module Hover =
             | other -> other)
         |> ToolTipText
 
+    /// The comments of a parse, once per parse: the asking file's docs come from the parse its published result is of,
+    /// as the read gave it, so they need no graph turn
+    let private parsedDocs = ConditionalWeakTable<FSharpParseFileResults, FileDocs>()
+
+    let private docsOfParse (parse: FSharpParseFileResults) =
+        parsedDocs.GetValue(parse, fun p -> FileDocs.OfParse p.ParseTree)
+
     /// Runs between a hover's signature and its docs, with the file. For tests.
     let mutable internal afterSignature: string -> Task = fun _ -> Task.CompletedTask
 
@@ -276,13 +306,13 @@ module Hover =
                     graph.ReadFile(
                         path,
                         (fun view -> lookupOf view.Text line character),
-                        (fun view lookup -> lookup |> Option.map (fun l -> signatureOf path view line l, view.Identity)),
+                        (fun view lookup -> lookup |> Option.map (fun l -> signatureOf path view line l, view.Identity, view.Parse)),
                         ct
                     )
 
                 match signature with
                 | None -> return None
-                | Some(((_, sources) as signature), identity) ->
+                | Some(((_, sources) as signature), identity, parse) ->
                     let held =
                         sources
                         |> List.choose id
@@ -290,6 +320,8 @@ module Hover =
                         |> List.map _.FileName
                         |> List.filter (fun f -> f <> "")
                         |> List.distinctBy (fun f -> f.ToUpperInvariant())
+                        // The asking file's are of the parse its result is of, read with it
+                        |> List.filter (fun f -> not (String.Equals(f, path, StringComparison.OrdinalIgnoreCase)))
                         |> List.choose (fun file ->
                             owners file
                             |> List.tryFind (fun g -> g.Holds file && g.SharesHost graph)
@@ -302,6 +334,11 @@ module Hover =
                     // them reads the file again
                     // With no file of the workspace to read, every doc is the check's: no turn
                     let! read = if held.Length = 0 then Task.FromResult(ValueSome [||]) else graph.DocsInTurn(path, identity, held, ct)
+                    let own =
+                        sources
+                        |> List.exists (function
+                            | Some s -> s.Owners @ s.InheritOwners |> List.exists (fun o -> String.Equals(o.FileName, path, StringComparison.OrdinalIgnoreCase))
+                            | None -> false)
 
                     match read with
                     | ValueNone -> return! attempt ()
@@ -310,6 +347,9 @@ module Hover =
 
                         for (_, file), d in Array.zip held read do
                             docs[file] <- d
+
+                        if own then
+                            docs[path] <- docsOfParse parse
 
                         let commentOf =
                             FileDocs.CommentOf(fun file ->

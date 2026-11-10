@@ -249,7 +249,11 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
     static member CommentOf(docsOf: string -> FileDocs voption) : FSharpDocOwner -> XmlDoc voption =
         fun owner ->
             match docsOf owner.FileName with
-            // A place the parse has no member at: the doc the check has, never none
+            // A place the parse has no member at: the check's doc. The fork gives `@l,c` only for a value a binding of the
+            // check makes, whose place is in this parse, and `@?` for an older one, whose row Hover checks again first. So
+            // this is `@?` from a row that still refers to an old value after that (none is known), or a binding FileDocs
+            // doesn't index. The latter's value is of its declaration's current check, which a `///` edit checks again
+            // (I8), so the check's doc is its comment.
             | ValueSome docs when owner.Path.StartsWith "@" && not (docs.Has owner.Path) -> ValueNone
             | ValueSome docs -> ValueSome(docs.Comment owner.Path)
             | ValueNone -> ValueNone

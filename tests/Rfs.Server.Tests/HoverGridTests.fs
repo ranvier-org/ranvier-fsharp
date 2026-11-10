@@ -306,6 +306,121 @@ let private collideScenario, renameScenario =
                   "(\"a\".Foo \"b\").Length", "0"
                   "open Ext\n", "    type System.String with\n        /// third block's Foo\n        member s.Foo(x: float) = s.Length + int x\n\nopen Ext\n" ] ] ] }
 
+/// Two extension members of `String` in one block, used in a row after it and in a later file. The shapes below each
+/// edit the block so that its print is the same: the row using it is kept and still refers to the block's old values.
+let private keptUse =
+    normalizedText
+        """module Lib.C
+
+type System.String with
+    /// A doc
+    member s.A() = 1
+    /// B doc
+    member s.B() = 2
+
+let u = "x".A() + "x".B()
+let w = 1
+"""
+
+let private keptUseLater =
+    normalizedText
+        """module Lib.D
+
+open Lib.C
+
+let v = "y".A() + "y".B()
+"""
+
+let private keptUseScenarios =
+    let colMove = edits keptUse [ "member s.B() = 2", "member this.B() = 2" ]
+    let colThenDoc = edits colMove [ "/// B doc", "/// B doc edited" ]
+
+    let wrongBefore =
+        normalizedText
+            """module Lib.C
+
+type System.String with
+    member s.A() = 1
+    /// B doc
+    member s.B() = 2
+
+
+let u = "x".A() + "x".B()
+let w = 1
+"""
+
+    // A gains two doc lines and B loses its doc, and a blank line goes: A's name now starts where B's did
+    let wrongAfter =
+        normalizedText
+            """module Lib.C
+
+type System.String with
+    /// A doc
+    /// A more
+    member s.A() = 1
+    member s.B() = 2
+
+let u = "x".A() + "x".B()
+let w = 1
+"""
+
+    let overloads =
+        normalizedText
+            """module Lib.C
+
+type System.String with
+    /// Foo of int
+    member s.Foo(x: int) = x
+    /// Foo of string
+    member s.Foo(x: string) = x
+
+let u = "x".Foo(1) + "x".Foo("y").Length
+let w = 1
+"""
+
+    let overloadsLater = "module Lib.D\n\nopen Lib.C\n\nlet v = \"y\".Foo(2) + \"y\".Foo(\"z\").Length\n"
+    let insertAbove = edits keptUse [ "type System.String with", "\ntype System.String with" ]
+    let files = [ "C.fs", keptUse; "D.fs", keptUseLater ]
+
+    [ { Name = "doc lines moved from B to A, the line count kept"
+        Files = [ "C.fs", wrongBefore; "D.fs", keptUseLater ]
+        Steps = [ "docs moved", [ "C.fs", wrongAfter ] ] }
+      { Name = "B's name moved, then its doc edited"
+        Files = files
+        Steps =
+          [ "B's name moved", [ "C.fs", colMove ]
+            "then B's doc edited", [ "C.fs", colThenDoc ]
+            "then A's doc edited", [ "C.fs", edits colThenDoc [ "/// A doc", "/// A doc edited" ] ] ] }
+      { Name = "two extension overloads swapped with their docs"
+        Files = [ "C.fs", overloads; "D.fs", overloadsLater ]
+        Steps =
+          [ "swap",
+            [ "C.fs",
+              edits
+                  overloads
+                  [ "/// Foo of int\n    member s.Foo(x: int) = x\n    /// Foo of string\n    member s.Foo(x: string) = x",
+                    "/// Foo of string\n    member s.Foo(x: string) = x\n    /// Foo of int\n    member s.Foo(x: int) = x" ] ] ] }
+      // The first overload's doc grows by two lines, so the second's old name starts where the first's new one does
+      { Name = "an extension overload's doc grown onto the next one's place"
+        Files = [ "C.fs", overloads; "D.fs", overloadsLater ]
+        Steps = [ "two doc lines on Foo of int", [ "C.fs", edits overloads [ "/// Foo of int\n", "/// Foo of int\n    /// more\n    /// more again\n" ] ] ] }
+      { Name = "A's doc out and an undocumented C in, the line count kept"
+        Files = files
+        Steps =
+          [ "A's doc out, C in",
+            [ "C.fs", edits keptUse [ "    /// A doc\n", ""; "    member s.B() = 2\n", "    member s.B() = 2\n    member s.C() = 3\n" ] ] ] }
+      { Name = "A's doc out and a documented C in, the use row shifted"
+        Files = files
+        Steps =
+          [ "A's doc out, documented C in",
+            [ "C.fs", edits keptUse [ "    /// A doc\n", ""; "    member s.B() = 2\n", "    member s.B() = 2\n    /// C doc\n    member s.C() = 3\n" ] ] ] }
+      { Name = "two doc lines added to A"
+        Files = files
+        Steps = [ "two doc lines on A", [ "C.fs", edits keptUse [ "    /// A doc\n", "    /// A doc\n    /// more\n    /// more2\n" ] ] ] }
+      { Name = "a line inserted above the block, then a doc edit"
+        Files = files
+        Steps = [ "line above the block", [ "C.fs", insertAbove ]; "then B's doc edited", [ "C.fs", edits insertAbove [ "/// B doc", "/// B doc edited" ] ] ] } ]
+
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
 /// Each token's hover against InteractiveChecker's tooltip for the same texts: the differences, and how many tokens
@@ -343,6 +458,24 @@ let tests =
     <| testList
         "HoverGrid"
         [ for promote in [ true; false ] do
+              for shape in keptUseScenarios do
+                  yield
+                   testTask $"""hover equals FCS at every token when a row using an extension is kept: %s{shape.Name} (%s{if promote then "by declaration" else "file level"})""" {
+                      let! results =
+                          run promote shape (fun state ->
+                              task {
+                                  let results = ResizeArray()
+
+                                  for file in state.Implementations do
+                                      let! r = compareFile state state.Graph file state.Reference
+                                      results.Add r
+
+                                  return List.ofSeq results
+                              })
+
+                      expectNoDifferences results
+                  }
+
               yield
                testTask $"""hover equals FCS at every token where owners' names collide (%s{if promote then "by declaration" else "file level"})""" {
                   let! results =
