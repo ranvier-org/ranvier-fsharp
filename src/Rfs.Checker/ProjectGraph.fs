@@ -1248,6 +1248,122 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         host.WhenSettled(step, ct, true)
 
+    /// Graph thread, inside one turn: each of `paths` (files of this project) with its latest parsed TextView, or
+    /// ValueNone while any posted text or parse is pending. Never waits on typecheck.
+    member internal _.LatestParsesOfInTurn(paths: string list) : (string * TextView)[] voption =
+        let read = ResizeArray<string * TextView>()
+        let mutable pending = false
+        let mutable rest = paths
+
+        while not pending && not rest.IsEmpty do
+            let path = rest.Head
+            rest <- rest.Tail
+            let i = indexOf path
+            let text = files[i].Text.Text.Value
+
+            if text.Version <> Volatile.Read &requested[i] then
+                pending <- true
+            else
+                match files[i].Text.Parsed.TryValue with
+                | Ready p when p.Version = text.Version ->
+                    read.Add(path, { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version })
+                | Failed e -> raise (InvalidOperationException($"%s{path} failed to parse", e))
+                | _ -> pending <- true
+
+        if pending then ValueNone else ValueSome(read.ToArray())
+
+    /// Latest text and parse for an `.fs` or `.fsi` file once parsed, never waiting on typecheck.
+    member _.LatestParse(file: string, ct: CancellationToken) : Task<TextView> =
+        let i = indexOf file
+
+        let body (flight: CancellationToken) =
+            let text = files[i].Text.Text.Value
+            let p = files[i].Text.Parsed.Value
+
+            if text.Version <> Volatile.Read &requested[i] || p.Version <> text.Version then
+                Request.waitForNextTurn flight
+            else
+                Task.FromResult { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
+    /// Settled `.fsi` signature file read: text/parse view, FileSignature, and FileUses in one consistent state.
+    member _.ReadSignature(file: string, ct: CancellationToken) : Task<struct (TextView * FileSignature * FileUses)> =
+        let i = indexOf file
+
+        if not (isSignatureFile files[i]) then
+            invalidArg (nameof file) $"%s{file} is not a signature file"
+
+        let body (flight: CancellationToken) =
+            let p = files[i].Text.Parsed.Value
+
+            let settled =
+                try
+                    readSettled i (fun f version ->
+                        if p.Version <> version then
+                            ValueNone
+                        else
+                            (f :?> ISignatureFile).Uses version
+                            |> ValueOption.map (fun struct (sigResult, uses) ->
+                                let view: TextView = { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
+                                struct (view, sigResult, uses)))
+                with NotReadyException _ ->
+                    ValueNone
+
+            match settled with
+            | ValueSome found -> Task.FromResult found
+            | ValueNone -> Request.waitForNextTurn flight
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
+    /// Latest parsed TextViews across workspace graphs on the same GraphHost in one turn, never waiting on typecheck.
+    member _.LatestParsesInOneTurn
+        (scope: unit -> struct (bool * (ProjectGraph * string list)[]), ct: CancellationToken)
+        : Task<(ProjectGraph * (string * TextView)[])[] voption> =
+        let faultsAt = Dictionary<ProjectGraph, int>(HashIdentity.Reference)
+
+        let step () : (ProjectGraph * (string * TextView)[])[] voption voption =
+            let struct (loading, projects) = scope ()
+
+            for g, _ in projects do
+                match faultsAt.TryGetValue g with
+                | true, n when g.FaultCount > n ->
+                    raise (GraphFailedException($"work of %s{g.Spec.ProjectFile}", InvalidOperationException "a project the read reads failed"))
+                | true, _ -> ()
+                | _ -> faultsAt[g] <- g.FaultCount
+
+            if projects |> Array.exists (fun (g, _) -> g.IsDisposed) then
+                ValueSome ValueNone
+            elif loading then
+                ValueNone
+            else
+                for g, _ in projects do
+                    if not (obj.ReferenceEquals(g.Host, host)) then
+                        invalidOp $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
+
+                let read = Array.zeroCreate projects.Length
+                let mutable pending = false
+                let mutable p = 0
+
+                while not pending && p < read.Length do
+                    let g, paths = projects[p]
+
+                    match g.LatestParsesOfInTurn paths with
+                    | ValueSome r -> read[p] <- (g, r)
+                    | ValueNone -> pending <- true
+
+                    p <- p + 1
+
+                if pending then ValueNone else ValueSome(ValueSome read)
+
+        host.WhenSettled(step, ct, true)
+
     /// How many indexes of a file's uses were built.
     member _.UsesBuilt: int64 = project.UsesBuilt
 

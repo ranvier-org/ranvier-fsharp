@@ -6,7 +6,10 @@ open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
+open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
+open FSharp.Compiler.Syntax
+open FSharp.Compiler.SyntaxTrivia
 open FSharp.Compiler.Text
 
 module internal ReadSupport =
@@ -105,6 +108,23 @@ module internal DefinitionSites =
 
         d
 
+[<Struct; NoComparison; NoEquality>]
+type CallableDecl =
+    { Key: string
+      Name: string
+      Glyph: FSharpGlyph
+      Range: range
+      SelectionRange: range }
+
+[<Struct; NoComparison; NoEquality>]
+type TypeRelationEntry =
+    { Key: string
+      Name: string
+      Glyph: FSharpGlyph
+      Range: range
+      SelectionRange: range
+      SuperKeys: string[] }
+
 /// <summary>
 /// Every symbol use of one check of a file, by key, and its definitions by raw key. Immutable and free of typed-tree
 /// objects, so it needs no lock and keeps no check alive.
@@ -116,7 +136,11 @@ type FileUses
         source: WeakReference,
         byKey: Dictionary<string, KeyUses>,
         definitions: Dictionary<string, DefinitionSite[]>,
-        conforming: Dictionary<string, DefinitionSite[]>
+        conforming: Dictionary<string, DefinitionSite[]>,
+        implementations: Dictionary<string, range[]>,
+        typesByKey: Dictionary<string, TypeRelationEntry>,
+        subtypesBySuper: Dictionary<string, TypeRelationEntry[]>,
+        callables: CallableDecl[]
     ) =
     static let nothing = { Hits = [||]; Definitions = [||] }
 
@@ -133,6 +157,39 @@ type FileUses
         match byKey.TryGetValue key with
         | true, uses -> uses
         | _ -> nothing
+
+    /// Concrete member or type implementation ranges in this file for an interface entity key or abstract slot key.
+    member _.ImplementationsOf(targetKey: string) : range[] =
+        match implementations.TryGetValue(DefinitionSites.withoutSetter targetKey) with
+        | true, ranges -> ranges
+        | _ -> [||]
+
+    /// Declared types in this file whose immediate base class or interfaces include `superKey`.
+    member _.SubtypesOf(superKey: string) : TypeRelationEntry[] =
+        match subtypesBySuper.TryGetValue superKey with
+        | true, entries -> entries
+        | _ -> [||]
+
+    /// Declared type entry in this file by its SymbolKey, including its immediate SuperKeys.
+    member _.TypeOf(key: string) : TypeRelationEntry voption =
+        match typesByKey.TryGetValue key with
+        | true, entry -> ValueSome entry
+        | _ -> ValueNone
+
+    /// Innermost callable declaration whose range encloses `pos`.
+    member _.EnclosingCallable(pos: pos) : CallableDecl voption =
+        let mutable found = ValueNone
+        let mutable i = 0
+
+        while found.IsNone && i < callables.Length do
+            let c = callables[i]
+
+            if Position.posGeq pos c.Range.Start && Position.posGeq c.Range.End pos then
+                found <- ValueSome c
+
+            i <- i + 1
+
+        found
 
     /// How many keys it holds
     member _.Keys = byKey.Count
@@ -173,6 +230,362 @@ type FileUses
                     raw <- raw + 8L + (8L + rangeBytes) + 8L + (if isNull site.Key then 0L else text site.Key)
 
         struct (keyed, raw)
+
+module private AstIndex =
+    [<Struct>]
+    type RangeKey = RangeKey of int * int * int * int
+
+    let inline rangeKey (r: range) : RangeKey =
+        RangeKey(r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
+
+    type Info =
+        { TypeRanges: Dictionary<RangeKey, range>
+          AugmentationIdentRanges: HashSet<RangeKey>
+          ObjExprTypeRanges: HashSet<RangeKey>
+          CallableRanges: Dictionary<RangeKey, range> }
+
+    let rec private typeHeadIdents (ty: SynType) : Ident list =
+        match ty with
+        | SynType.LongIdent(SynLongIdent(lid, _, _)) -> lid
+        | SynType.App(typeName = inner) -> typeHeadIdents inner
+        | SynType.LongIdentApp(longDotId = SynLongIdent(lid, _, _)) -> lid
+        | SynType.Paren(innerType = inner)
+        | SynType.WithGlobalConstraints(typeName = inner)
+        | SynType.HashConstraint(innerType = inner)
+        | SynType.WithNull(innerType = inner) -> typeHeadIdents inner
+        | _ -> []
+
+    let rec private headPatIdentRanges (pat: SynPat) : range list =
+        match pat with
+        | SynPat.Named(ident = SynIdent(id, _)) -> [ id.idRange ]
+        | SynPat.LongIdent(longDotId = SynLongIdent(lid, _, _)) ->
+            match List.tryLast lid with
+            | Some id -> [ id.idRange ]
+            | None -> []
+        | SynPat.InstanceMember(memberId = id) -> [ id.idRange ]
+        | SynPat.Typed(pat = inner)
+        | SynPat.Attrib(pat = inner)
+        | SynPat.Paren(pat = inner)
+        | SynPat.FromParseError(pat = inner) -> headPatIdentRanges inner
+        | SynPat.As(lhsPat = l; rhsPat = r) -> headPatIdentRanges l @ headPatIdentRanges r
+        | SynPat.Tuple(elementPats = ps)
+        | SynPat.Ands(pats = ps)
+        | SynPat.ArrayOrList(elementPats = ps) -> ps |> List.collect headPatIdentRanges
+        | _ -> []
+
+    let rec private hasFunctionPat (pat: SynPat) : bool =
+        match pat with
+        | SynPat.LongIdent(argPats = argPats) -> not argPats.Patterns.IsEmpty
+        | SynPat.Typed(pat = inner)
+        | SynPat.Attrib(pat = inner)
+        | SynPat.Paren(pat = inner)
+        | SynPat.FromParseError(pat = inner) -> hasFunctionPat inner
+        | SynPat.As(lhsPat = l; rhsPat = r) -> hasFunctionPat l || hasFunctionPat r
+        | _ -> false
+
+    let rec private isLambdaExpr (e: SynExpr) : bool =
+        match e with
+        | SynExpr.Lambda _
+        | SynExpr.MatchLambda _
+        | SynExpr.DotLambda _ -> true
+        | SynExpr.Typed(expr = inner)
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.DebugPoint(innerExpr = inner) -> isLambdaExpr inner
+        | _ -> false
+
+    let build (parseTree: ParsedInput option) : Info =
+        let typeRanges = Dictionary<RangeKey, range>()
+        let augmentations = HashSet<RangeKey>()
+        let objExprTypes = HashSet<RangeKey>()
+        let callableRanges = Dictionary<RangeKey, range>()
+
+        let recordObjType (newRange: range) (ty: SynType) =
+            let hasNew = not (Range.equals newRange Range.range0)
+
+            if hasNew then
+                objExprTypes.Add(rangeKey newRange) |> ignore
+
+            let rec loop (t: SynType) =
+                objExprTypes.Add(rangeKey t.Range) |> ignore
+
+                if hasNew then
+                    objExprTypes.Add(rangeKey (Range.unionRanges newRange t.Range)) |> ignore
+
+                match t with
+                | SynType.LongIdent(SynLongIdent(lid, _, _)) ->
+                    for id in lid do
+                        objExprTypes.Add(rangeKey id.idRange) |> ignore
+
+                        if hasNew then
+                            objExprTypes.Add(rangeKey (Range.unionRanges newRange id.idRange)) |> ignore
+                | SynType.App(typeName = inner) -> loop inner
+                | SynType.LongIdentApp(typeName = inner; longDotId = SynLongIdent(lid, _, _)) ->
+                    loop inner
+
+                    for id in lid do
+                        objExprTypes.Add(rangeKey id.idRange) |> ignore
+                | SynType.Paren(innerType = inner)
+                | SynType.WithGlobalConstraints(typeName = inner)
+                | SynType.HashConstraint(innerType = inner)
+                | SynType.WithNull(innerType = inner) -> loop inner
+                | _ -> ()
+
+            loop ty
+
+        let recordTypeHeader (info: SynComponentInfo) (isAugmentation: bool) (fullRange: range) =
+            let (SynComponentInfo(synType = synTyOpt; range = infoRange)) = info
+
+            let ids =
+                match synTyOpt with
+                | Some ty -> typeHeadIdents ty
+                | None -> []
+
+            if isAugmentation then
+                augmentations.Add(rangeKey infoRange) |> ignore
+
+                for id in ids do
+                    augmentations.Add(rangeKey id.idRange) |> ignore
+            else
+                match List.tryLast ids with
+                | Some id -> typeRanges[rangeKey id.idRange] <- fullRange
+                | None -> typeRanges[rangeKey infoRange] <- fullRange
+
+        let rec walkExpr (expr: SynExpr) =
+            match expr with
+            | SynExpr.Paren(expr = e)
+            | SynExpr.Quote(quotedExpr = e)
+            | SynExpr.Typed(expr = e)
+            | SynExpr.New(expr = e)
+            | SynExpr.ArrayOrListComputed(expr = e)
+            | SynExpr.ComputationExpr(expr = e)
+            | SynExpr.Do(expr = e)
+            | SynExpr.Assert(expr = e)
+            | SynExpr.Lazy(expr = e)
+            | SynExpr.TypeApp(expr = e)
+            | SynExpr.LongIdentSet(expr = e)
+            | SynExpr.DotGet(expr = e)
+            | SynExpr.DotLambda(expr = e)
+            | SynExpr.TypeTest(expr = e)
+            | SynExpr.Upcast(expr = e)
+            | SynExpr.Downcast(expr = e)
+            | SynExpr.InferredUpcast(expr = e)
+            | SynExpr.InferredDowncast(expr = e)
+            | SynExpr.AddressOf(expr = e)
+            | SynExpr.TraitCall(argExpr = e)
+            | SynExpr.YieldOrReturn(expr = e)
+            | SynExpr.YieldOrReturnFrom(expr = e)
+            | SynExpr.DoBang(expr = e)
+            | SynExpr.Fixed(expr = e)
+            | SynExpr.FromParseError(expr = e)
+            | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = e)
+            | SynExpr.IndexFromEnd(expr = e)
+            | SynExpr.DebugPoint(innerExpr = e) -> walkExpr e
+            | SynExpr.Tuple(exprs = es)
+            | SynExpr.ArrayOrList(exprs = es) -> es |> List.iter walkExpr
+            | SynExpr.Record(copyInfo = copyOpt; recordFields = fields) ->
+                copyOpt |> Option.iter (fst >> walkExpr)
+
+                for f in fields do
+                    match f with
+                    | SynExprRecordFieldOrSpread.Field(SynExprRecordField(expr = eo), _) -> eo |> Option.iter walkExpr
+                    | SynExprRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
+            | SynExpr.AnonRecd(copyInfo = copyOpt; recordFields = fields) ->
+                copyOpt |> Option.iter (fst >> walkExpr)
+
+                for f in fields do
+                    match f with
+                    | SynExprAnonRecordFieldOrSpread.Field(SynExprAnonRecordField(expr = e), _) -> walkExpr e
+                    | SynExprAnonRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
+            | SynExpr.ObjExpr(objType = objTy; argOptions = argOpts; bindings = bindings; members = members; extraImpls = extras; newExprRange = newExprRange) ->
+                recordObjType newExprRange objTy
+
+                match argOpts with
+                | Some(argExpr, _) ->
+                    if not (Range.equals newExprRange Range.range0) then
+                        objExprTypes.Add(rangeKey (Range.unionRanges newExprRange argExpr.Range)) |> ignore
+
+                    walkExpr argExpr
+                | None -> ()
+
+                bindings |> List.iter (walkBinding true)
+                members |> List.iter walkMemberDefn
+
+                for SynInterfaceImpl(interfaceTy = ifcTy; bindings = ibs; members = ims) in extras do
+                    recordObjType Range.range0 ifcTy
+                    ibs |> List.iter (walkBinding true)
+                    ims |> List.iter walkMemberDefn
+            | SynExpr.While(whileExpr = e1; doExpr = e2)
+            | SynExpr.WhileBang(whileExpr = e1; doExpr = e2)
+            | SynExpr.Sequential(expr1 = e1; expr2 = e2)
+            | SynExpr.SequentialOrImplicitYield(expr1 = e1; expr2 = e2)
+            | SynExpr.App(funcExpr = e1; argExpr = e2)
+            | SynExpr.TryFinally(tryExpr = e1; finallyExpr = e2)
+            | SynExpr.DotSet(targetExpr = e1; rhsExpr = e2)
+            | SynExpr.Set(targetExpr = e1; rhsExpr = e2)
+            | SynExpr.DotIndexedGet(objectExpr = e1; indexArgs = e2)
+            | SynExpr.NamedIndexedPropertySet(expr1 = e1; expr2 = e2)
+            | SynExpr.JoinIn(lhsExpr = e1; rhsExpr = e2)
+            | SynExpr.Dynamic(funcExpr = e1; argExpr = e2)
+            | SynExpr.ForEach(enumExpr = e1; bodyExpr = e2) ->
+                walkExpr e1
+                walkExpr e2
+            | SynExpr.For(identBody = e1; toBody = e2; doBody = e3)
+            | SynExpr.DotIndexedSet(objectExpr = e1; indexArgs = e2; valueExpr = e3)
+            | SynExpr.DotNamedIndexedPropertySet(targetExpr = e1; argExpr = e2; rhsExpr = e3) ->
+                walkExpr e1
+                walkExpr e2
+                walkExpr e3
+            | SynExpr.IfThenElse(ifExpr = e1; thenExpr = e2; elseExpr = e3Opt) ->
+                walkExpr e1
+                walkExpr e2
+                e3Opt |> Option.iter walkExpr
+            | SynExpr.IndexRange(expr1 = e1Opt; expr2 = e2Opt) ->
+                e1Opt |> Option.iter walkExpr
+                e2Opt |> Option.iter walkExpr
+            | SynExpr.Lambda(body = body) -> walkExpr body
+            | SynExpr.MatchLambda(matchClauses = clauses) -> clauses |> List.iter walkClause
+            | SynExpr.Match(expr = e; clauses = clauses)
+            | SynExpr.MatchBang(expr = e; clauses = clauses)
+            | SynExpr.TryWith(tryExpr = e; withCases = clauses) ->
+                walkExpr e
+                clauses |> List.iter walkClause
+            | SynExpr.LetOrUse({ Bindings = bs; Body = body }) ->
+                bs |> List.iter (walkBinding false)
+                walkExpr body
+            | SynExpr.InterpolatedString(contents = parts) ->
+                for p in parts do
+                    match p with
+                    | SynInterpolatedStringPart.FillExpr(fillExpr = e) -> walkExpr e
+                    | SynInterpolatedStringPart.String _ -> ()
+            | SynExpr.LibraryOnlyStaticOptimization(expr = e1; optimizedExpr = e2) ->
+                walkExpr e1
+                walkExpr e2
+            | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = e) -> walkExpr e
+            | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = e1; rhsExpr = e2) ->
+                walkExpr e1
+                walkExpr e2
+            | SynExpr.LibraryOnlyILAssembly(args = es) -> es |> List.iter walkExpr
+            | _ -> ()
+
+        and walkClause (SynMatchClause(whenExpr = wOpt; resultExpr = res)) =
+            wOpt |> Option.iter walkExpr
+            walkExpr res
+
+        and walkBinding (isTopOrMember: bool) (b: SynBinding) =
+            let (SynBinding(kind = kind; valData = SynValData(memberFlags = memberFlags); headPat = headPat; expr = expr)) = b
+
+            let isCallable =
+                match kind with
+                | SynBindingKind.Normal -> isTopOrMember || memberFlags.IsSome || hasFunctionPat headPat || isLambdaExpr expr
+                | _ -> false
+
+            if isCallable then
+                let kw = b.Trivia.LeadingKeyword.Range
+                let fullRange = if Range.equals kw Range.range0 then b.RangeOfBindingWithRhs else Range.unionRanges kw b.RangeOfBindingWithRhs
+
+                for idRange in headPatIdentRanges headPat do
+                    callableRanges[rangeKey idRange] <- fullRange
+
+            walkExpr expr
+
+        and walkMemberDefn (m: SynMemberDefn) =
+            match m with
+            | SynMemberDefn.Member(memberDefn = b) -> walkBinding true b
+            | SynMemberDefn.GetSetMember(memberDefnForGet = gOpt; memberDefnForSet = sOpt) ->
+                gOpt |> Option.iter (walkBinding true)
+                sOpt |> Option.iter (walkBinding true)
+            | SynMemberDefn.LetBindings(bindings = bs) -> bs |> List.iter (walkBinding true)
+            | SynMemberDefn.AutoProperty(ident = id; synExpr = expr; range = r) ->
+                callableRanges[rangeKey id.idRange] <- r
+                walkExpr expr
+            | SynMemberDefn.AbstractSlot(slotSig = SynValSig(ident = SynIdent(id, _)); range = r) ->
+                callableRanges[rangeKey id.idRange] <- r
+            | SynMemberDefn.Interface(members = msOpt) -> msOpt |> Option.iter (List.iter walkMemberDefn)
+            | SynMemberDefn.ImplicitInherit(inheritArgs = e) -> walkExpr e
+            | SynMemberDefn.NestedType(typeDefn = td) -> walkTypeDefn td
+            | _ -> ()
+
+        and walkTypeDefn (SynTypeDefn(typeInfo = info; typeRepr = repr; members = members; implicitConstructor = implicitCtor; range = fullRange)) =
+            let isAugmentation =
+                match repr with
+                | SynTypeDefnRepr.ObjectModel(kind = SynTypeDefnKind.Augmentation _) -> true
+                | _ -> false
+
+            recordTypeHeader info isAugmentation fullRange
+
+            match implicitCtor, info with
+            | Some(SynMemberDefn.ImplicitCtor(range = ctorRange)), SynComponentInfo(synType = Some ty) when not isAugmentation ->
+                match List.tryLast (typeHeadIdents ty) with
+                | Some id -> callableRanges[rangeKey id.idRange] <- Range.unionRanges id.idRange ctorRange
+                | None -> ()
+            | _ -> ()
+
+            match repr with
+            | SynTypeDefnRepr.ObjectModel(members = ms) -> ms |> List.iter walkMemberDefn
+            | SynTypeDefnRepr.Simple _
+            | SynTypeDefnRepr.Exception _ -> ()
+
+            members |> List.iter walkMemberDefn
+
+        let rec walkModuleDecl (d: SynModuleDecl) =
+            match d with
+            | SynModuleDecl.NestedModule(decls = ds) -> ds |> List.iter walkModuleDecl
+            | SynModuleDecl.NamespaceFragment(SynModuleOrNamespace(decls = ds)) -> ds |> List.iter walkModuleDecl
+            | SynModuleDecl.Let(bindings = bs) -> bs |> List.iter (walkBinding true)
+            | SynModuleDecl.Expr(expr = e) -> walkExpr e
+            | SynModuleDecl.Types(typeDefns = tds) -> tds |> List.iter walkTypeDefn
+            | SynModuleDecl.Exception(exnDefn = SynExceptionDefn(exnRepr = SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(id, _))); members = ms; range = fullRange)) ->
+                typeRanges[rangeKey id.idRange] <- fullRange
+                ms |> List.iter walkMemberDefn
+            | _ -> ()
+
+        let rec walkMemberSig (ms: SynMemberSig) =
+            match ms with
+            | SynMemberSig.Member(memberSig = SynValSig(ident = SynIdent(id, _)); range = r) ->
+                callableRanges[rangeKey id.idRange] <- r
+            | SynMemberSig.NestedType(nestedType = td) -> walkTypeDefnSig td
+            | _ -> ()
+
+        and walkTypeDefnSig (SynTypeDefnSig(typeInfo = info; typeRepr = repr; members = ms; range = fullRange)) =
+            let isAugmentation =
+                match repr with
+                | SynTypeDefnSigRepr.ObjectModel(kind = SynTypeDefnKind.Augmentation _) -> true
+                | _ -> false
+
+            recordTypeHeader info isAugmentation fullRange
+
+            match repr with
+            | SynTypeDefnSigRepr.ObjectModel(memberSigs = sigs) -> sigs |> List.iter walkMemberSig
+            | SynTypeDefnSigRepr.Simple _
+            | SynTypeDefnSigRepr.Exception _ -> ()
+
+            ms |> List.iter walkMemberSig
+
+        let rec walkSigDecl (d: SynModuleSigDecl) =
+            match d with
+            | SynModuleSigDecl.NestedModule(moduleDecls = ds) -> ds |> List.iter walkSigDecl
+            | SynModuleSigDecl.NamespaceFragment(SynModuleOrNamespaceSig(decls = ds)) -> ds |> List.iter walkSigDecl
+            | SynModuleSigDecl.Val(valSig = SynValSig(ident = SynIdent(id, _)); range = r) ->
+                callableRanges[rangeKey id.idRange] <- r
+            | SynModuleSigDecl.Types(types = tds) -> tds |> List.iter walkTypeDefnSig
+            | SynModuleSigDecl.Exception(exnSig = SynExceptionSig(exnRepr = SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(id, _))); members = ms; range = fullRange)) ->
+                typeRanges[rangeKey id.idRange] <- fullRange
+                ms |> List.iter walkMemberSig
+            | _ -> ()
+
+        match parseTree with
+        | Some(ParsedInput.ImplFile(ParsedImplFileInput(contents = modules))) ->
+            for SynModuleOrNamespace(decls = ds) in modules do
+                ds |> List.iter walkModuleDecl
+        | Some(ParsedInput.SigFile(ParsedSigFileInput(contents = modules))) ->
+            for SynModuleOrNamespaceSig(decls = ds) in modules do
+                ds |> List.iter walkSigDecl
+        | None -> ()
+
+        { TypeRanges = typeRanges
+          AugmentationIdentRanges = augmentations
+          ObjExprTypeRanges = objExprTypes
+          CallableRanges = callableRanges }
 
 
 /// Symbol keys as references count them, and the index of a file's uses by them.
@@ -279,10 +692,227 @@ module SymbolUses =
 
         name |> Option.filter plainIdentifier
 
+    let private isTrivialSuper (e: FSharpEntity) =
+        match e.TryFullName with
+        | Some("System.Object" | "System.ValueType" | "System.Enum") -> true
+        | _ -> false
+
+    let private entityGlyphOf (e: FSharpEntity) : FSharpGlyph =
+        try
+            if e.IsInterface then FSharpGlyph.Interface
+            elif e.IsEnum then FSharpGlyph.Enum
+            elif e.IsDelegate then FSharpGlyph.Delegate
+            elif e.IsFSharpExceptionDeclaration then FSharpGlyph.Exception
+            elif e.IsValueType then FSharpGlyph.Struct
+            elif e.IsFSharpUnion then FSharpGlyph.Union
+            elif e.IsFSharpRecord then FSharpGlyph.Type
+            else FSharpGlyph.Class
+        with _ ->
+            FSharpGlyph.Class
+
+    let private callableGlyphOf (v: FSharpMemberOrFunctionOrValue) : FSharpGlyph =
+        try
+            if v.IsConstructor then FSharpGlyph.Method
+            elif v.IsEvent then FSharpGlyph.Event
+            elif v.IsProperty || v.IsPropertyGetterMethod || v.IsPropertySetterMethod then FSharpGlyph.Property
+            elif v.IsExtensionMember then FSharpGlyph.ExtensionMethod
+            elif v.IsOverrideOrExplicitInterfaceImplementation then FSharpGlyph.OverridenMethod
+            elif v.IsMember || v.FullType.IsFunctionType then FSharpGlyph.Method
+            else FSharpGlyph.Field
+        with _ ->
+            FSharpGlyph.Method
+
+    let private callableNameOf (v: FSharpMemberOrFunctionOrValue) : string =
+        try
+            let raw = v.DisplayNameCore
+
+            if (v.IsPropertyGetterMethod || v.IsPropertySetterMethod) && (raw.StartsWith("get_", StringComparison.Ordinal) || raw.StartsWith("set_", StringComparison.Ordinal)) then
+                raw.Substring 4
+            else
+                raw
+        with _ ->
+            v.LogicalName
+
+    let private callableKeyOf (r: range) (v: FSharpMemberOrFunctionOrValue) : string =
+        let own =
+            if v.IsConstructor then
+                DeclarationChecker.SymbolKey v
+            else
+                keyOf v |> Option.map DefinitionSites.withoutSetter
+
+        match own with
+        | Some k -> k
+        | None ->
+            let asm = try v.Assembly.SimpleName with _ -> "local"
+            $"%s{asm}|local|%s{r.FileName}|%d{r.StartLine}:%d{r.StartColumn}|%s{v.LogicalName}"
+
+    let private superKeysOf (e: FSharpEntity) : string[] =
+        let acc = ResizeArray<string>()
+
+        try
+            match e.BaseType with
+            | Some b when b.HasTypeDefinition && not (isTrivialSuper b.TypeDefinition) ->
+                keyOf b.TypeDefinition |> Option.iter acc.Add
+            | _ -> ()
+
+            for ifc in e.DeclaredInterfaces do
+                if ifc.HasTypeDefinition then
+                    keyOf ifc.TypeDefinition |> Option.iter acc.Add
+        with _ ->
+            ()
+
+        acc |> Seq.distinct |> Seq.toArray
+
+    let private buildRelations
+        (hasParseTree: bool)
+        (ast: AstIndex.Info)
+        (defs: seq<struct (range * FSharpSymbol)>)
+        (extraImpls: seq<struct (string * range)>)
+        =
+        let implBuilders = Dictionary<string, ResizeArray<range>>()
+        let implSeen = Dictionary<string, HashSet<AstIndex.RangeKey>>()
+
+        let addImpl (rawKey: string) (r: range) =
+            let k = DefinitionSites.withoutSetter rawKey
+            let rk = AstIndex.rangeKey r
+
+            let seen =
+                match implSeen.TryGetValue k with
+                | true, s -> s
+                | _ ->
+                    let s = HashSet<AstIndex.RangeKey>()
+                    implSeen[k] <- s
+                    s
+
+            if seen.Add rk then
+                match implBuilders.TryGetValue k with
+                | true, l -> l.Add r
+                | _ ->
+                    let l = ResizeArray<range>()
+                    l.Add r
+                    implBuilders[k] <- l
+
+        for struct (k, r) in extraImpls do
+            addImpl k r
+
+        let typesByKey = Dictionary<string, TypeRelationEntry>()
+        let subtypesBuilders = Dictionary<string, ResizeArray<TypeRelationEntry>>()
+        let callableList = ResizeArray<CallableDecl>()
+        let callableSeen = HashSet<struct (string * AstIndex.RangeKey)>()
+
+        for struct (r, symbol) in defs do
+            let rk = AstIndex.rangeKey r
+
+            match symbol with
+            | :? FSharpEntity as e ->
+                let isRealType =
+                    try
+                        not e.IsNamespace && not e.IsFSharpModule && not e.IsFSharpAbbreviation
+                    with _ ->
+                        false
+
+                if isRealType && not (ast.AugmentationIdentRanges.Contains rk) then
+                    match keyOf e with
+                    | Some typeKey when not (typesByKey.ContainsKey typeKey) ->
+                        let supers = superKeysOf e
+
+                        let fullRange =
+                            match ast.TypeRanges.TryGetValue rk with
+                            | true, fr -> fr
+                            | _ -> r
+
+                        let name = try e.DisplayNameCore with _ -> e.LogicalName
+
+                        let entry: TypeRelationEntry =
+                            { Key = typeKey
+                              Name = name
+                              Glyph = entityGlyphOf e
+                              Range = fullRange
+                              SelectionRange = r
+                              SuperKeys = supers }
+
+                        typesByKey[typeKey] <- entry
+
+                        for superKey in supers do
+                            addImpl superKey r
+
+                            match subtypesBuilders.TryGetValue superKey with
+                            | true, l -> l.Add entry
+                            | _ ->
+                                let l = ResizeArray<TypeRelationEntry>()
+                                l.Add entry
+                                subtypesBuilders[superKey] <- l
+                    | _ -> ()
+
+            | :? FSharpMemberOrFunctionOrValue as v ->
+                let isGenerated = try v.IsCompilerGenerated with _ -> true
+
+                if not isGenerated then
+                    // Record callable declaration for EnclosingCallable
+                    let callableRangeOpt =
+                        match ast.CallableRanges.TryGetValue rk with
+                        | true, fullRange -> ValueSome fullRange
+                        | _ when not hasParseTree && (try v.IsModuleValueOrMember with _ -> false) -> ValueSome r
+                        | _ -> ValueNone
+
+                    match callableRangeOpt with
+                    | ValueSome fullRange ->
+                        let cKey = callableKeyOf r v
+                        let cRangeKey = AstIndex.rangeKey fullRange
+
+                        if callableSeen.Add(struct (cKey, cRangeKey)) then
+                            callableList.Add
+                                { Key = cKey
+                                  Name = callableNameOf v
+                                  Glyph = callableGlyphOf v
+                                  Range = fullRange
+                                  SelectionRange = r }
+                    | ValueNone -> ()
+
+            | _ -> ()
+
+        let implementations = Dictionary<string, range[]>(implBuilders.Count)
+
+        for KeyValue(k, l) in implBuilders do
+            implementations[k] <- l.ToArray()
+
+        let subtypesBySuper = Dictionary<string, TypeRelationEntry[]>(subtypesBuilders.Count)
+
+        for KeyValue(k, l) in subtypesBuilders do
+            subtypesBySuper[k] <- l.ToArray()
+
+        let callables = callableList.ToArray()
+
+        let inline comparePos (p1: pos) (p2: pos) =
+            let c = compare p1.Line p2.Line
+            if c <> 0 then c else compare p1.Column p2.Column
+
+        Array.sortInPlaceWith
+            (fun (a: CallableDecl) (b: CallableDecl) ->
+                let aLines = a.Range.EndLine - a.Range.StartLine
+                let bLines = b.Range.EndLine - b.Range.StartLine
+
+                if aLines <> bLines then
+                    compare aLines bLines
+                else
+                    let cStart = comparePos b.Range.Start a.Range.Start
+
+                    if cStart <> 0 then
+                        cStart
+                    else
+                        comparePos a.Range.End b.Range.End)
+            callables
+
+        implementations, typesByKey, subtypesBySuper, callables
+
     let private build
         (source: obj)
         (definitionSites: Dictionary<string, DefinitionSite[]>)
         (conforming: Dictionary<string, DefinitionSite[]>)
+        (implementations: Dictionary<string, range[]>)
+        (typesByKey: Dictionary<string, TypeRelationEntry>)
+        (subtypesBySuper: Dictionary<string, TypeRelationEntry[]>)
+        (callables: CallableDecl[])
         (uses: seq<struct (string * range * bool * range voption)>)
         =
         let hits = Dictionary<string, List<struct (range * bool)>>()
@@ -310,7 +940,7 @@ module SymbolUses =
                     | true, d -> d.ToArray()
                     | _ -> [||] }
 
-        FileUses(WeakReference source, byKey, definitionSites, conforming)
+        FileUses(WeakReference source, byKey, definitionSites, conforming, implementations, typesByKey, subtypesBySuper, callables)
 
     let private noSites = Dictionary<string, DefinitionSite[]>()
 
@@ -332,13 +962,39 @@ module SymbolUses =
               | Some key -> DefinitionSites.siteOf key symbol
               | None -> () ]
 
-    /// Indexes an implementation file's check.
-    let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
+    /// Indexes an implementation file's check, using `parseTree` when provided for declaration body ranges and object expressions.
+    let internal ofCheckWithParse
+        (source: obj)
+        (parseTree: ParsedInput option)
+        (check: FSharpCheckFileResults)
+        (ct: CancellationToken)
+        : FileUses =
         let keys = keysIn check ct
         let all = check.GetAllUsesOfAllSymbolsInFile ct |> Seq.toArray
+        let ast = AstIndex.build parseTree
 
         let definitions =
             all |> Seq.filter _.IsFromDefinition |> Seq.map _.Symbol |> sitesOf |> DefinitionSites.group DefinitionSites.withoutSetter false
+
+        let extraImpls =
+            seq {
+                for u in all do
+                    if u.IsFromDispatchSlotImplementation then
+                        match keys u with
+                        | Some k -> yield struct (k, u.Range)
+                        | None -> ()
+                    elif not u.IsFromDefinition && ast.ObjExprTypeRanges.Contains(AstIndex.rangeKey u.Range) then
+                        match keyOf u.Symbol with
+                        | Some k -> yield struct (k, u.Range)
+                        | None -> ()
+            }
+
+        let defPairs =
+            all
+            |> Seq.choose (fun u -> if u.IsFromDefinition then Some(struct (u.Range, u.Symbol)) else None)
+
+        let implementations, typesByKey, subtypesBySuper, callables =
+            buildRelations parseTree.IsSome ast defPairs extraImpls
 
         all
         |> Seq.choose (fun u ->
@@ -353,11 +1009,19 @@ module SymbolUses =
                         ValueNone
 
                 struct (key, u.Range, u.IsFromDefinition, location)))
-        |> build source definitions noSites
+        |> build source definitions noSites implementations typesByKey subtypesBySuper callables
 
-    /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
-    /// no locations to tell apart in the uses.
-    let internal ofSignature (source: obj) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
+    /// Indexes an implementation file's check.
+    let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
+        ofCheckWithParse source None check ct
+
+    /// Indexes what a signature file's check resolved, using `parseTree` when provided for full declaration ranges.
+    let internal ofSignatureWithParse
+        (source: obj)
+        (parseTree: ParsedInput option)
+        (uses: (struct (range * bool * FSharpSymbol))[])
+        (ct: CancellationToken)
+        : FileUses =
         // What SignatureLocation walks is the file's own module type. A module's enclosing namespaces are in it, with no
         // definition use; a `type System.String with` augmentation's use is a definition of what another file defines.
         let enclosing (symbol: FSharpSymbol) : FSharpSymbol seq =
@@ -397,6 +1061,15 @@ module SymbolUses =
                     DeclarationChecker.SymbolKey symbol |> Option.map (fun k -> r, v.LogicalName.Split('|'), k)
                 | _ -> None)
 
+        let ast = AstIndex.build parseTree
+
+        let defPairs =
+            uses
+            |> Seq.choose (fun (struct (r, definition, symbol)) -> if definition then Some(struct (r, symbol)) else None)
+
+        let implementations, typesByKey, subtypesBySuper, callables =
+            buildRelations parseTree.IsSome ast defPairs Seq.empty
+
         uses
         |> Seq.choose (fun (struct (r, definition, symbol)) ->
             ct.ThrowIfCancellationRequested()
@@ -412,4 +1085,9 @@ module SymbolUses =
                 | _ -> keyOf symbol
 
             own |> Option.map (fun key -> struct (key, r, definition, ValueNone)))
-        |> build source noSites conforming
+        |> build source noSites conforming implementations typesByKey subtypesBySuper callables
+
+    /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
+    /// no locations to tell apart in the uses.
+    let internal ofSignature (source: obj) (uses: (struct (range * bool * FSharpSymbol))[]) (ct: CancellationToken) : FileUses =
+        ofSignatureWithParse source None uses ct

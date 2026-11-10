@@ -6,6 +6,7 @@ open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
+open FSharp.Compiler.Syntax
 open Ranvier
 
 /// How far promoting an implementation file has got for its current state.
@@ -416,20 +417,21 @@ module internal WholeFile =
 
         /// The published result and the lock it is read under, with readableAt's guards. Nothing of the declaration state
         /// besides: what an index's flight reads, its node keeps until it runs again, and release doesn't run it.
-        let resultAt (version: int64) : struct (FileResult * AsyncReaderWriterLock voption) voption =
+        let resultAt (version: int64) : struct (FileResult * ParsedInput * AsyncReaderWriterLock voption) voption =
             match current version with
-            | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map (fun f -> struct (f.FileResult, ValueSome f.Start.Lock))
-            | ValueSome(Kept k) -> keptAt version k |> ValueOption.map (fun r -> struct (r, ValueSome k.Lock))
-            | ValueSome Whole -> settledAt project file whole version |> ValueOption.map (fun (_, r) -> struct (r, ValueNone))
+            | ValueSome(ByDeclaration(_, f)) ->
+                finishedAt version f |> ValueOption.map (fun f -> struct (f.FileResult, f.Parsed.Parse.ParseTree, ValueSome f.Start.Lock))
+            | ValueSome(Kept k) -> keptAt version k |> ValueOption.map (fun r -> struct (r, k.Parsed.Parse.ParseTree, ValueSome k.Lock))
+            | ValueSome Whole -> settledAt project file whole version |> ValueOption.map (fun (key, r) -> struct (r, key.Parsed.Parse.ParseTree, ValueNone))
             | ValueNone -> ValueNone
 
         let uses =
             usesNode
                 (fun () ->
                     let version = file.Text.Value.Version
-                    resultAt version |> ValueOption.map (fun struct (r, l) -> struct (version, r, l)))
-                (fun (struct (_, r, _)) -> box r)
-                (fun (struct (version, result, lock)) ct ->
+                    resultAt version |> ValueOption.map (fun struct (r, pt, l) -> struct (version, r, pt, l)))
+                (fun (struct (_, r, _, _)) -> box r)
+                (fun (struct (version, result, parseTree, lock)) ct ->
                     // Building a whole-checked result's check results refuses while the file's #line directives are
                     // another parse's, as a check does, and CheckResultsNotKept builds again at each read: tried again for
                     // as long as a check is, waiting without a thread. The hook is inside, as that build is.
@@ -446,7 +448,7 @@ module internal WholeFile =
                                         let attempt =
                                             try
                                                 project.FlightHook "uses" path ct
-                                                ValueSome(SymbolUses.ofCheck (box result) result.CheckResultsNotKept ct)
+                                                ValueSome(SymbolUses.ofCheckWithParse (box result) (Some parseTree) result.CheckResultsNotKept ct)
                                             with :? SupersededLineDirectivesException when clock.Elapsed < Setup.DirectiveWait ->
                                                 ValueNone
 
@@ -478,7 +480,7 @@ module internal WholeFile =
                                 graph.DispatchAsync(
                                     Func<bool>(fun () ->
                                         match (try resultAt version with NotReadyException _ -> ValueNone) with
-                                        | ValueSome(struct (now, _)) -> obj.ReferenceEquals(now, result)
+                                        | ValueSome(struct (now, _, _)) -> obj.ReferenceEquals(now, result)
                                         | ValueNone -> false)
                                 )
 
@@ -747,20 +749,24 @@ module internal WholeFile =
                 FileSig.Next(previous, s, key.Before))
 
         let isCurrent = currentOf project signature (createMemo (fun _ -> fst result.Value))
-        let latestCheck (version: int64) = settledAt project file result version |> ValueOption.map snd
+
+        let latestCheckWithParse (version: int64) =
+            settledAt project file result version |> ValueOption.map (fun (key, s) -> struct (key.Parsed.Parse.ParseTree, s))
+
+        let latestCheck (version: int64) = latestCheckWithParse version |> ValueOption.map (fun struct (_, s) -> s)
 
         let uses =
             usesNode
                 (fun () ->
                     let version = file.Text.Value.Version
-                    latestCheck version |> ValueOption.map (fun s -> struct (version, s)))
-                (fun (struct (_, s)) -> box s)
-                (fun (struct (version, s)) ct ->
+                    latestCheckWithParse version |> ValueOption.map (fun struct (pt, s) -> struct (version, pt, s)))
+                (fun (struct (_, _, s)) -> box s)
+                (fun (struct (_, parseTree, s)) ct ->
                     let context = project.Context
 
                     Task.Run<FileUses voption>(
                         (fun () ->
-                            let u = SymbolUses.ofSignature (box s) (DeclarationChecker.SignatureUses(context, s)) ct
+                            let u = SymbolUses.ofSignatureWithParse (box s) (Some parseTree) (DeclarationChecker.SignatureUses(context, s)) ct
                             project.CountUsesBuilt()
                             ValueSome u),
                         ct

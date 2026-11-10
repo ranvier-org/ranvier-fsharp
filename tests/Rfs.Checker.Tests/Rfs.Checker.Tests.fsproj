@@ -17,6 +17,7 @@
     <Compile Include="SchemeTests.fs" />
     <Compile Include="OracleFuzzTests.fs" />
     <Compile Include="CrossProjectGraphTests.fs" />
+    <Compile Include="ParityPrimitivesTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
