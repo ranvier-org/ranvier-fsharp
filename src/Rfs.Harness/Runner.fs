@@ -206,6 +206,8 @@ module Runner =
         | Open f
         | Save f
         | Edit(f, _, _, _)
+        | Fire(f, _)
+        | Settle f
         | Hover(f, _)
         | Completion(f, _)
         | Definition(f, _)
@@ -261,6 +263,10 @@ module Runner =
                         | Some(_, list) -> Some list
                         | None -> entries |> Seq.tryFindBack (fun (v, _) -> v.IsNone) |> Option.map snd)
                 | _ -> None
+            let arrivals = ConcurrentQueue<string * int option * int64>()
+
+            use arrivalSubscription = subscribe client.Diagnostics (fun (at, file, version, _) -> arrivals.Enqueue((file, version, at)))
+            let fired = Dictionary<string, int * int64>()
             let results = List<StepResult>()
 
             let record name latency (watch: Watch option) outcome =
@@ -497,6 +503,48 @@ module Runner =
                             let! r = awaitPublish name [ path ] (Some version) (fun () -> client.DidChange(path, version, forward))
                             let! _ = checkOracle r path version
                             ()
+                | Fire(file, edit) ->
+                    let path = fullPath file
+
+                    if not (opened.Contains path) then
+                        record $"fire %s{file}" 0. None (Error(0., $"%s{file} was never opened")) |> ignore
+                    else
+                        let version = versions[path] + 1
+                        versions[path] <- version
+                        let name = $"fire %s{file} %s{describe edit.Range.Start}-%s{describe edit.Range.End}"
+                        let sentAt = Stopwatch.GetTimestamp()
+
+                        try
+                            do! client.DidChange(path, version, edit)
+                            fired[path] <- (version, sentAt)
+                            record name (Stopwatch.GetElapsedTime(sentAt).TotalMilliseconds) None (Ok 0.) |> ignore
+                        with e ->
+                            record name 0. None (Error(0., e.Message)) |> ignore
+                | Settle file ->
+                    let path = fullPath file
+
+                    match fired.TryGetValue path with
+                    | false, _ -> record $"settle %s{file}" 0. None (Error(0., $"nothing was fired at %s{file}")) |> ignore
+                    | true, (version, sentAt) ->
+                        let answers () =
+                            arrivals
+                            |> Seq.filter (fun (f, v, at) -> f = path && at >= sentAt && (v = Some version || v.IsNone))
+                            |> Seq.sortBy (fun (_, _, at) -> at)
+                            |> Seq.tryHead
+
+                        let mutable found = answers ()
+
+                        while found.IsNone && Stopwatch.GetElapsedTime(sentAt).TotalMilliseconds < options.StepTimeout.TotalMilliseconds do
+                            do! Task.Delay 5
+                            found <- answers ()
+
+                        match found with
+                        | Some(_, _, at) ->
+                            do! Task.Delay options.Quiet
+                            // the latency is from the fire to the publish, not this step's own wait
+                            record $"settle %s{file}" (Stopwatch.GetElapsedTime(sentAt, at).TotalMilliseconds) None (Ok 0.) |> ignore
+                        | None ->
+                            record $"settle %s{file}" 0. None (Error(0., $"no publish for version %d{version} of %s{file}")) |> ignore
                 | Hover(file, p) -> let! _ = request $"hover %s{file} %s{describe p}" "textDocument/hover" file p [] in ()
                 | Completion(file, p) ->
                     let! _ = request $"completion %s{file} %s{describe p}" "textDocument/completion" file p []

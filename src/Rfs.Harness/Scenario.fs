@@ -14,6 +14,10 @@ type EditMode =
 type Step =
     | Open of file: string
     | Edit of file: string * Edit * repeat: int * mode: EditMode
+    /// Sends one edit and carries on at once, without waiting for the server to publish for it.
+    | Fire of file: string * Edit
+    /// Waits for the server to publish for the newest version a Fire sent, then for the quiet window.
+    | Settle of file: string
     | Save of string
     | Hover of string * Position
     | Completion of string * Position
@@ -123,6 +127,8 @@ module Scenario =
                     fail "'repeat' must be at least 1"
 
                 Edit(str "file" value, editOf value, repeat, mode value)
+            | "fire" -> Fire(str "file" value, editOf value)
+            | "settle" -> Settle(asString value)
             | "hover" -> located Hover value
             | "completion" -> located Completion value
             | "definition" -> located Definition value
@@ -135,6 +141,8 @@ module Scenario =
         | Open file
         | Save file
         | Edit(file, _, _, _)
+        | Fire(file, _)
+        | Settle file
         | Hover(file, _)
         | Completion(file, _)
         | Definition(file, _)
@@ -143,13 +151,15 @@ module Scenario =
 
     let private positionsOf step =
         match step with
-        | Edit(file, edit, _, _) -> [ file, edit.Range.Start; file, edit.Range.End ]
+        | Edit(file, edit, _, _)
+        | Fire(file, edit) -> [ file, edit.Range.Start; file, edit.Range.End ]
         | Hover(file, p)
         | Completion(file, p)
         | Definition(file, p)
         | References(file, p) -> [ file, p ]
         | Open _
         | Save _
+        | Settle _
         | OpenMany _ -> []
 
     /// A column may sit at the end of its line but not inside its terminator, as in Document.apply.

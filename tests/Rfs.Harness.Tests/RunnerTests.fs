@@ -120,6 +120,27 @@ let tests =
               Expect.equal step.Publishes 2 "both publishes counted"
           }
 
+          test "fire does not wait for the publish and settle waits for the fired version" {
+              let result, _, _ =
+                  withRun
+                      options
+                      (fun _ -> [ Open "A.fs"; Fire("A.fs", insert "0"); Hover("A.fs", { Line = 1; Character = 4 }); Settle "A.fs" ])
+                      (fun server path ->
+                          task {
+                              server.OnRequest("textDocument/hover", fun _ -> JsonValue.Create "answer" :> JsonNode)
+                              do! afterOpen server path
+                              let! _ = waitChange server 1
+                              do! Task.Delay 150
+                              do! publish server path (Some 1)
+                          })
+                      None
+
+              Expect.isNone result.Steps[1].Error "fire recorded"
+              Expect.isLessThan result.Steps[1].LatencyMs 100. "fire returned before the publish"
+              Expect.isNone result.Steps[3].Error "settle found the publish"
+              Expect.isGreaterThan result.Steps[3].LatencyMs 140. "settle is measured from the fire"
+          }
+
           test "latency without versions ends at the first publish" {
               let result, _, _ =
                   withRun

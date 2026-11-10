@@ -94,6 +94,21 @@ let tests =
                   | other -> failtestf "unexpected %A" other)
           }
 
+          test "fire and settle parse" {
+              withCorpus files (fun root ->
+                  let json =
+                      scenarioJson
+                          """ { "fire": { "file": "src/A.fs",
+                                          "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                                          "text": "x" } },
+                              { "settle": "src/A.fs" } """
+
+                  match load root json with
+                  | Ok { Steps = [ Step.Fire("src/A.fs", edit); Step.Settle "src/A.fs" ] } ->
+                      Expect.equal edit.Text "x" "the edit"
+                  | other -> failtestf "unexpected %A" other)
+          }
+
           test "rejects position past end of line" {
               withCorpus files (fun root ->
                   // Line 1 is "let x = 1" (9 chars) before its CRLF.
