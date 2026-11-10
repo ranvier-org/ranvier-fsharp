@@ -659,19 +659,21 @@ let tests =
               let at = position (s.Lsp.Text aFile) "baseValue" 0 1
               let! (expected: References.Answer) = References.find (scopeOf s) graph aFile (fst at) (snd at) CancellationToken.None
               let mutable asks = 0
+              let loading = ref true
 
-              // Loading at the first turn, and not after: the scope is asked once a turn
+              // Loading until the test ends it: every turn until then is pending, whatever wakes it
               let started =
                   { scopeOf s with
                       IsLoading =
                           fun () ->
                               asks <- asks + 1
-                              asks = 1 }
+                              loading.Value }
 
               let pending = References.find started graph aFile (fst at) (snd at) CancellationToken.None
               do! whenAsked "the turn that saw the load" (fun () -> asks >= 1)
               do! Task.Delay 300
               Expect.isFalse pending.IsCompleted "the loading turn isn't answered from"
+              loading.Value <- false
               // The scope is a stub, so no node the read tracks changes: a graph item wakes the step to ask again
               let! _ = graph.Mode aFile
               let! (loadEnded: References.Answer) = pending |> within
