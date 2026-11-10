@@ -76,10 +76,16 @@ type private Shape =
     { Name: string
       Files: (string * string) list
       Edit: (string * (string * string) list) list
-      /// Refusals that must occur, by declaration
+      /// Refusals that must occur, and whether some answer must come from the last state (false: none may), for
+      /// references by declaration
       Refusals: Refusal list
-      /// Whether some references answer must come from the last state (false: none may)
       Answers: bool
+      /// The same for definition by declaration, and for each feature at file level
+      Definition: Refusal list * bool
+      FileReferences: Refusal list * bool
+      FileDefinition: Refusal list * bool
+      /// Some references answer must hold uses in both projects
+      CrossesProjects: bool
       /// When given, App.fs in a project referencing these files, which the edits never touch
       App: string option }
 
@@ -89,6 +95,10 @@ let private shape name files edit refusals answers =
       Edit = edit
       Refusals = refusals
       Answers = answers
+      Definition = refusals, answers
+      FileReferences = [ Refusal.CheckedWhole ], false
+      FileDefinition = [ Refusal.CheckedWhole ], false
+      CrossesProjects = false
       App = None }
 
 let private libA =
@@ -128,6 +138,7 @@ let private rows =
             "/// Scales a number", "/// Scales any number" ] ]
         [ Refusal.Edited; Refusal.NewRow; Refusal.Gap ]
         true
+    |> fun s -> { s with FileReferences = [ Refusal.CheckedWhole ], true; FileDefinition = [ Refusal.CheckedWhole ], true }
 
 let private multiText =
     n
@@ -175,6 +186,7 @@ let private ifAbove =
         [ "I.fs", [ "let second = ", "#if DEBUG\n#endif\nlet second = " ] ]
         [ Refusal.Directives ]
         false
+    |> fun s -> { s with Definition = [ Refusal.Directives ], true }
 
 let private ordinalText =
     n
@@ -199,7 +211,8 @@ let private ordinals =
 
 let private lineDirective =
     let text = n "module Lib.L\n\nlet one = 1\n\nlet two = one + 1\n\nlet three = two + one\n"
-    shape "#line above" [ "L.fs", text ] [ "L.fs", [ "let two = ", "# 40 \"elsewhere.fs\"\nlet two = " ] ] [ Refusal.Directives ] false
+    { shape "#line above" [ "L.fs", text ] [ "L.fs", [ "let two = ", "# 40 \"elsewhere.fs\"\nlet two = " ] ] [ Refusal.Directives ] false with
+        Definition = [ Refusal.Directives ], true }
 
 let private nestedRec =
     let text = n "module Lib.Q\n\nlet zero = 0\n\nmodule rec Inner =\n    let a = b + 1\n    let b = zero\n\nlet last = Inner.a + zero\n"
@@ -217,6 +230,7 @@ let private signature =
         [ "U.fs", [ "let three = ", "let extra = 0\n\nlet three = " ] ]
         [ Refusal.NewRow ]
         true
+    |> fun s -> { s with FileReferences = [ Refusal.CheckedWhole ], true; FileDefinition = [ Refusal.CheckedWhole ], true }
 
 /// A signature file edited: every answer with a use in it waits
 let private signatureEdited =
@@ -226,6 +240,7 @@ let private signatureEdited =
         [ "S.fsi", [ "/// One", "/// The one" ] ]
         [ Refusal.Edited ]
         false
+    |> fun s -> { s with FileReferences = [ Refusal.Edited ], false; FileDefinition = [ Refusal.Edited ], false }
 
 let private appText = n "module App.Main\n\nopen Lib.A\n\nlet fromApp = scale 5 kept\n\nlet again = kept + baseValue\n"
 
@@ -237,9 +252,33 @@ let private otherProject =
           [ "A.fs", [ "let kept =", "let added = baseValue\n\nlet kept =" ] ]
           [ Refusal.NewRow ]
           true with
-        App = Some appText }
+        App = Some appText
+        CrossesProjects = true }
 
-let private shapes = [ rows; lineAbove; ifAbove; ordinals; lineDirective; nestedRec; signature; signatureEdited; otherProject ]
+let private editedMultiText =
+    n
+        """module Lib.W
+
+let first = 1
+
+let multi =
+    let inner = first + 2
+    let other = inner * first
+    inner + other
+
+let last = multi + 1
+"""
+
+/// A multi-line row edited on one line: a use on its other lines, unchanged, refuses with the row
+let private editedMultiRow =
+    shape
+        "a multi-line row edited on one line"
+        [ "W.fs", editedMultiText ]
+        [ "W.fs", [ "let other = inner * first", "let other = inner * first * 1" ] ]
+        [ Refusal.Edited ]
+        true
+
+let private shapes = [ rows; lineAbove; ifAbove; ordinals; lineDirective; nestedRec; signature; signatureEdited; otherProject; editedMultiRow ]
 
 let private hold (graphs: ProjectGraph list) =
     let gate = new ManualResetEventSlim(false)
@@ -257,6 +296,8 @@ type private Counts =
       Refused: Map<Refusal, int>
       /// Old answers that differ from FCS by a ReferencesGrid or DefinitionGrid limit: compared with Ranvier's own
       Limits: int
+      /// References answers holding uses in more than one project
+      Crossing: int
       Failures: string list }
 
 let private showRange (r: range) = $"%s{Path.GetFileName r.FileName} %d{r.StartLine},%d{r.StartColumn}-%d{r.EndLine},%d{r.EndColumn}"
@@ -283,6 +324,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
         let mutable cases = 0
         let mutable answered = 0
         let mutable limits = 0
+        let mutable crossing = 0
         let countRefusal r = refused[r] <- (match refused.TryGetValue r with | true, k -> k + 1 | _ -> 1)
 
         let atState (state: State) (graphs: ProjectGraph list) (asking: (ProjectGraph * string) list) (check: string -> Task<FSharpCheckFileResults>) =
@@ -342,6 +384,13 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                 | FindDeclResult.DeclFound r -> Some r
                                 | _ -> None
 
+                // Each file's rows before the edit, by its parse then
+                let oldRows = Dictionary<string, RowShape[]>(StringComparer.OrdinalIgnoreCase)
+
+                for graph, file in asking do
+                    let! latest = graph.LatestText(file, [||], (fun () -> false), CancellationToken.None) |> wait
+                    oldRows[file] <- (PositionMap.shapeOf latest.View.Text latest.View.Parse true).Rows
+
                 let gate = hold graphs
                 let edited = Dictionary<string, string * (int -> int option)>(StringComparer.OrdinalIgnoreCase)
                 let fileOf (name: string) = everyFile |> List.find (fun f -> Path.GetFileName f = name)
@@ -357,6 +406,20 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                     match edited.TryGetValue(Path.GetFullPath file) with
                     | true, (text, map) -> seq { 0 .. text.Split('\n').Length - 1 } |> Seq.tryFind (fun l -> map l = Some line)
                     | _ -> Some line
+
+                // A range in a row the edits changed: a line of it with no new place, or lines moved by different amounts
+                let inEditedRow (r: range) =
+                    match oldRows.TryGetValue(Path.GetFullPath r.FileName) with
+                    | true, rows ->
+                        rows
+                        |> Array.exists (fun row ->
+                            row.StartLine <= r.StartLine
+                            && r.StartLine <= row.EndLine
+                            && (let shifts = [ for l in row.StartLine - 1 .. row.EndLine - 1 -> inverse r.FileName l |> Option.map (fun n -> n - l) ]
+                                shifts |> List.exists Option.isNone || (shifts |> List.distinct |> List.length) > 1))
+                    | _ -> false
+
+                let projectOf (f: string) = Path.GetFileName(Path.GetDirectoryName f)
 
                 try
                     for graph, file in asking do
@@ -387,6 +450,33 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                             | Some Refusal.Reloading -> countRefusal Refusal.Reloading
                             | other -> failures.Add $"%s{where} while busy: %A{other}"
 
+                            // A reload that starts between the two turns: busy only from the second read on
+                            let laterBusy () =
+                                let reads = ref 0
+                                fun () -> (reads.Value <- reads.Value + 1; reads.Value > 1)
+
+                            let probe (busy: unit -> bool) (pending: unit -> bool) =
+                                task {
+                                    match feature with
+                                    | References ->
+                                        match! References.fromLastState uses shapes busy pending graph file t.Line t.Character CancellationToken.None |> wait with
+                                        | LastState.Outcome.Answered _ -> return "answered"
+                                        | LastState.Outcome.Settled -> return "settled"
+                                        | LastState.Outcome.Refused r -> return $"%A{r}"
+                                    | Definition ->
+                                        match! Definition.fromLastState definitions shapes busy pending graph file t.Line t.Character CancellationToken.None |> wait with
+                                        | LastState.Outcome.Answered _ -> return "answered"
+                                        | LastState.Outcome.Settled -> return "settled"
+                                        | LastState.Outcome.Refused r -> return $"%A{r}"
+                                }
+
+                            let! notPending = probe (fun () -> false) (fun () -> false)
+
+                            if notPending <> "settled" then
+                                failures.Add $"%s{where} with nothing pending: %s{notPending}"
+
+                            let! reloadBetween = probe (laterBusy ()) (fun () -> true)
+
                             let mapAll (rs: range list) = rs |> List.map (expectedAt inverse)
 
                             match feature with
@@ -398,6 +488,12 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                 | LastState.Outcome.Answered(References.Answer.Found ours) ->
                                     answered <- answered + 1
 
+                                    if reloadBetween <> "Reloading" then
+                                        failures.Add $"%s{where}: a reload starting after the first turn gives %s{reloadBetween}"
+
+                                    if (ours |> List.map (fun (struct (r, _)) -> projectOf r.FileName) |> List.distinct |> List.length) > 1 then
+                                        crossing <- crossing + 1
+
                                     match old () with
                                     | None -> failures.Add $"%s{where}: answered, but the edit changed the cursor's line"
                                     | Some at when not (oldUses.ContainsKey at) -> failures.Add $"%s{where}: answered, but nothing was answered at the old place"
@@ -405,7 +501,9 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                         let before = oldUses[at]
                                         let moved = before |> List.map (fun (struct (r, _)) -> r) |> mapAll
 
-                                        if moved |> List.exists Option.isNone then
+                                        if before |> List.exists (fun (struct (r, _)) -> inEditedRow r) then
+                                            failures.Add $"%s{where}: answered, but a use is in a row the edit changed"
+                                        elif moved |> List.exists Option.isNone then
                                             failures.Add $"%s{where}: answered, but the edit changed the line of a use"
                                         else
                                             let expected = List.map2 (fun (struct (_, d)) (m: range option) -> struct (m.Value, d)) before moved |> usesSet
@@ -413,16 +511,21 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                             if usesSet ours <> expected then
                                                 failures.Add $"%s{where}: ours %A{usesSet ours}, the old answer moved %A{expected}"
 
-                                            // The old answer against FCS on the old text
+                                            // The old answer against FCS on the old text: the References grid allows none here
                                             match fcsUses.TryGetValue at with
                                             | true, fcs when fcs = usesSet before -> ()
-                                            | _ -> limits <- limits + 1
+                                            | _ ->
+                                                limits <- limits + 1
+                                                failures.Add $"%s{where}: the old answer differs from FCS"
                             | Definition ->
                                 match! Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) graph file t.Line t.Character CancellationToken.None |> wait with
                                 | LastState.Outcome.Refused r -> countRefusal r
                                 | LastState.Outcome.Settled -> failures.Add $"%s{where}: settled while pending"
                                 | LastState.Outcome.Answered ours ->
                                     answered <- answered + 1
+
+                                    if reloadBetween <> "Reloading" then
+                                        failures.Add $"%s{where}: a reload starting after the first turn gives %s{reloadBetween}"
 
                                     match old () with
                                     | None -> failures.Add $"%s{where}: answered, but the edit changed the cursor's line"
@@ -431,6 +534,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                         let before = oldDefinitions[at]
 
                                         match before |> Option.map (expectedAt inverse) with
+                                        | _ when before |> Option.exists inEditedRow -> failures.Add $"%s{where}: answered, but the definition is in a row the edit changed"
                                         | Some None -> failures.Add $"%s{where}: answered, but the edit changed the definition's line"
                                         | moved ->
                                             let expected = moved |> Option.flatten |> Option.map showRange
@@ -438,8 +542,15 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                             if (ours |> Option.map showRange) <> expected then
                                                 failures.Add $"%s{where}: ours %A{ours |> Option.map showRange}, the old answer moved %A{expected}"
 
+                                            // The Definition grid's limits: nothing where FCS answers, or a signature location
                                             match fcsDefinitions.TryGetValue at with
                                             | true, fcs when (fcs |> Option.map showRange) = (before |> Option.map showRange) -> ()
+                                            | true, fcs ->
+                                                limits <- limits + 1
+                                                let inSignature (r: range option) = r |> Option.exists (fun r -> r.FileName.EndsWith ".fsi")
+
+                                                if not (before.IsNone || inSignature before || inSignature fcs) then
+                                                    failures.Add $"%s{where}: the old answer %A{before |> Option.map showRange} differs from FCS %A{fcs |> Option.map showRange} by no Definition grid limit"
                                             | _ -> limits <- limits + 1
                 finally
                     gate.Set()
@@ -465,26 +576,169 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
               Answered = answered
               Refused = refused |> Seq.map (fun (KeyValue(k, v)) -> k, v) |> Map.ofSeq
               Limits = limits
+              Crossing = crossing
               Failures = List.ofSeq failures }
     }
 
 let private expectGrid (promote: bool) (feature: Feature) (shape: Shape) (c: Counts) =
     let refusals = c.Refused |> Map.toList |> List.map (fun (r, k) -> $"%A{r} %d{k}") |> String.concat ", "
     let mode = if promote then "by declaration" else "file level"
-    printfn "last-state %A grid, %s (%s): %d cases, %d answered (%d old answers at a limit), refused: %s" feature shape.Name mode c.Cases c.Answered c.Limits refusals
+    printfn "last-state %A grid, %s (%s): %d cases, %d answered (%d old answers at a limit, %d crossing projects), refused: %s" feature shape.Name mode c.Cases c.Answered c.Limits c.Crossing refusals
     let shown = c.Failures |> List.truncate 12 |> String.concat "\n  "
     Expect.isTrue c.Failures.IsEmpty $"%d{c.Failures.Length} of %d{c.Cases} failed:\n  %s{shown}"
     Expect.isGreaterThan c.Cases 0 "cases"
     Expect.equal (c.Refused.TryFind Refusal.Reloading) (Some c.Cases) "every case refuses while busy"
 
-    if feature = References && promote then
-        for r in shape.Refusals do
-            Expect.isTrue (c.Refused.ContainsKey r) $"%s{shape.Name} refuses with %A{r} somewhere"
+    let refusalsExpected, answers =
+        match feature, promote with
+        | References, true -> shape.Refusals, shape.Answers
+        | Definition, true -> shape.Definition
+        | References, false -> shape.FileReferences
+        | Definition, false -> shape.FileDefinition
 
-        if shape.Answers then
-            Expect.isGreaterThan c.Answered 0 $"%s{shape.Name}: some token answers from the last state"
-        else
-            Expect.equal c.Answered 0 $"%s{shape.Name}: nothing answers from the last state"
+    for r in refusalsExpected do
+        Expect.isTrue (c.Refused.ContainsKey r) $"%s{shape.Name} (%s{mode}) refuses with %A{r} somewhere"
+
+    if answers then
+        Expect.isGreaterThan c.Answered 0 $"%s{shape.Name} (%s{mode}): some token answers from the last state"
+    else
+        Expect.equal c.Answered 0 $"%s{shape.Name} (%s{mode}): nothing answers from the last state"
+
+    if feature = References && shape.CrossesProjects then
+        Expect.isGreaterThan c.Crossing 0 $"%s{shape.Name}: some answer holds uses in both projects"
+
+
+/// The 0-based line and character of the first `needle` in the text
+let private find (text: string) (needle: string) =
+    let index = text.IndexOf(needle, StringComparison.Ordinal)
+    let before = text.Substring(0, index)
+    before.Split('\n').Length - 1, index - (before.LastIndexOf '\n' + 1)
+
+let private fileNamed (state: State) (name: string) = state.Files |> List.find (fun f -> Path.GetFileName f = name)
+
+let private scopeOf (graphs: ProjectGraph list) (owners: string -> ProjectGraph list) (filesOf: ProjectGraph -> string list) : References.Scope =
+    { OwnersOf = owners
+      ReferencingProjects = fun g -> graphs |> List.filter (fun o -> not (obj.ReferenceEquals(o, g)) && o.References |> List.exists (fun r -> obj.ReferenceEquals(r, g)))
+      Projects = fun () -> graphs
+      FilesOf = filesOf
+      IsLoading = fun () -> false }
+
+let private shadowA = n "module Lib.A\n\nlet scale x = x * 2\n"
+let private shadowB = n "module Lib.B\n\nlet other = 1\n"
+let private shadowC = n "module Lib.C\n\nopen Lib.A\nopen Lib.B\n\nlet used = scale 3\n\nlet extra = 1\n"
+
+let private extraTests =
+    [ testTask "a definition held from before a later state was published refuses: B shadows A's scale and settles" {
+          let! results =
+              run true { Name = "shadowing"; Files = [ "A.fs", shadowA; "B.fs", shadowB; "C.fs", shadowC ]; Steps = [] } (fun state ->
+                  task {
+                      let shapes = Hover.LastAnswers()
+                      let definitions = Definition.LastAnswers()
+                      let c = fileNamed state "C.fs"
+                      let b = fileNamed state "B.fs"
+                      let line, character = find shadowC "scale 3"
+                      let! first = Definition.answer definitions shapes (fun () -> false) (fun () -> false) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      Expect.equal (first |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "A.fs") "scale is A's"
+                      // B gains a scale that C's `open Lib.B` makes the one meant, and the state settles with no request
+                      state.Graph.SetText(b, shadowB + "\nlet scale x = x + 1\n") |> ignore
+                      let! _ = state.Graph.AllDiagnostics() |> wait
+                      let gate = hold [ state.Graph ]
+                      // C pends on B, its own text the same
+                      state.Graph.SetText(b, shadowB + "\nlet scale x = x + 1\n\nlet more = 2\n") |> ignore
+
+                      try
+                          let! last = Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) state.Graph c line character CancellationToken.None |> wait
+
+                          match last with
+                          | LastState.Outcome.Answered found -> failtest $"answered %A{found |> Option.map (fun r -> r.FileName)} from the state before the last"
+                          | LastState.Outcome.Refused Refusal.Moved -> ()
+                          | other -> failtest $"B published since: the held answer isn't the last state: %A{other}"
+                      finally
+                          gate.Set()
+
+                      let! settled = Definition.answer definitions shapes (fun () -> false) (fun () -> false) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      Expect.equal (settled |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "B.fs") "settled, scale is B's"
+                      return [ () ]
+                  })
+
+          Expect.equal (List.length results) 1 "ran"
+      }
+
+      testTask "references held from before a restart refuse once it has published" {
+          let app = n "module App.Main\n\nlet fromApp = 1\n\nlet again = fromApp + 1\n"
+
+          let! results =
+              runReferencing { Name = "restart"; Files = [ "A.fs", libA ]; Steps = [] } app (fun state appGraph appFile ->
+                  task {
+                      let shapes = Hover.LastAnswers()
+                      let uses = References.LastAnswers()
+                      let graphs = [ state.Graph; appGraph ]
+                      let scope = scopeOf graphs state.OwnersOf (fun g -> if obj.ReferenceEquals(g, appGraph) then [ appFile ] else state.Files)
+                      let line, character = find app "fromApp + 1"
+                      let! first = References.answer uses shapes (fun () -> false) (fun () -> false) scope appGraph appFile line character CancellationToken.None |> wait
+                      Expect.equal (match first with References.Answer.Found u -> u.Length | _ -> 0) 2 "fromApp's two uses"
+                      let before = appGraph.Restarts
+                      let a = state.Files.Head
+                      // Lib's signature changes: App starts again on it, at the same texts, and settles
+                      state.Graph.SetText(a, libA + "\nlet added = 0\n") |> ignore
+                      let! _ = state.Graph.AllDiagnostics() |> wait
+                      let! _ = appGraph.AllDiagnostics() |> wait
+                      Expect.isGreaterThan appGraph.Restarts before "App restarted"
+                      let gate = hold graphs
+                      state.Graph.SetText(a, libA + "\nlet added = 1\n") |> ignore
+
+                      try
+                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) appGraph appFile line character CancellationToken.None |> wait
+
+                          match last with
+                          | LastState.Outcome.Answered _ -> failtest "answered from the state before the restart"
+                          | LastState.Outcome.Refused Refusal.Moved -> ()
+                          | other -> failtest $"App restarted since: the held answer isn't the last state: %A{other}"
+                      finally
+                          gate.Set()
+
+                      return [ () ]
+                  })
+
+          Expect.equal (List.length results) 1 "ran"
+      }
+
+      testTask "a range whose two ends map through different rows refuses" {
+          let text = n "module Lib.R\n\nlet first = 1\n\nlet second = first\n"
+
+          let! results =
+              run true { Name = "across rows"; Files = [ "R.fs", text ]; Steps = [] } (fun state ->
+                  task {
+                      let shapes = Hover.LastAnswers()
+                      let uses = References.LastAnswers()
+                      let r = state.Files.Head
+                      let scope = scopeOf [ state.Graph ] state.OwnersOf (fun _ -> state.Files)
+                      let line, character = find text "first = 1"
+                      let! _ = References.answer uses shapes (fun () -> false) (fun () -> false) scope state.Graph r line character CancellationToken.None |> wait
+                      let! latest = state.Graph.LatestText(r, [||], (fun () -> false), CancellationToken.None) |> wait
+                      let key = LastState.keyOf r latest.View.Version line (Hover.lookupOf text line character).Value
+                      let held = (uses.Find(state.Graph, key)).Value
+                      // From `first` in its row to the end of `second`'s: no use is so, but each end alone maps
+                      let across = Range.mkRange r (Position.mkPos 3 4) (Position.mkPos 5 18)
+                      uses.Add(key, { held with Answer = References.Answer.Found [ struct (across, false) ] })
+                      let gate = hold [ state.Graph ]
+                      state.Graph.SetText(r, text.Replace("let first = 1\n", "let extra = 0\nlet first = 1\n")) |> ignore
+
+                      try
+                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) state.Graph r (line + 1) character CancellationToken.None |> wait
+
+                          match last with
+                          | LastState.Outcome.Answered a -> failtest $"answered %A{a}"
+                          | LastState.Outcome.Refused Refusal.Edited -> ()
+                          | other -> failtest $"two rows: refused: %A{other}"
+                      finally
+                          gate.Set()
+
+                      return [ () ]
+                  })
+
+          Expect.equal (List.length results) 1 "ran"
+      } ]
 
 [<Tests>]
 let tests =
@@ -501,4 +755,6 @@ let tests =
                           testTask $"%A{feature} from the last state at every token after an edit: %s{shape.Name} (%s{mode})" {
                               let! c = grid promote feature shape
                               expectGrid promote feature shape c
-                          } ]
+                          }
+
+          yield! extraTests ]

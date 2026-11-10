@@ -187,7 +187,7 @@ module Hover =
             |> Option.map (fun (names, endColumn) -> lines[line].TrimEnd '\r', names, endColumn)
 
     /// lookupOf in a shape, from the state its line starts in: the text is lexed once per shape
-    let private lookupIn (shape: FileShape) (line: int) (character: int) : (string * string list * int) option =
+    let internal lookupIn (shape: FileShape) (line: int) (character: int) : (string * string list * int) option =
         if line < 0 || line >= shape.Lines.Length then
             None
         else

@@ -57,6 +57,8 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     let mutable closed = false
     let mutable period: Period option = None
     let mutable timer: Timer = null
+    // 1 once a period's begin is written to the client, until its end is about to be: the mark is on screen
+    let mutable showing = 0
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -76,7 +78,9 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     let beginPeriod (p: Period) : Task =
         if p.State = Creating then
             p.State <- Begun
-            progress p (JObject(JProperty("kind", "begin"), JProperty("title", Progress.Title), JProperty("message", p.Message)))
+
+            (progress p (JObject(JProperty("kind", "begin"), JProperty("title", Progress.Title), JProperty("message", p.Message))))
+                .ContinueWith(fun (sent: Task) -> if sent.IsCompletedSuccessfully && p.State = Begun then Interlocked.Exchange(&showing, 1) |> ignore)
         else
             Task.CompletedTask
 
@@ -127,6 +131,7 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
                 Notify(fun () ->
                     let was = p.State
                     p.State <- Ended
+                    Interlocked.Exchange(&showing, 0) |> ignore
 
                     if was = Begun then
                         progress p (JObject(JProperty("kind", "end")))
@@ -192,14 +197,18 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     /// The title of every period; its message says what is pending
     static member Title: string = "F#"
 
-    /// How long something must have been pending before the progress begins, or says something else
-    static member BeginHold: TimeSpan = TimeSpan.FromMilliseconds 100.
+    /// How long something must have been pending before the progress begins, or says something else. Settable for tests.
+    static member val BeginHold: TimeSpan = TimeSpan.FromMilliseconds 100. with get, set
 
     /// How long everything must have settled before the progress ends
     static member EndHold: TimeSpan = TimeSpan.FromMilliseconds 100.
 
     /// How long the client may take to answer a create before its period is given up
     static member CreateTimeout: TimeSpan = TimeSpan.FromSeconds 10.
+
+    /// Whether a period's begin has reached the client and its end hasn't been sent: what marks an answer from the last
+    /// state. Any thread.
+    member _.ShowingNow() : bool = Volatile.Read &showing = 1
 
     /// What the progress follows now. For tests.
     member _.Status() : Task<ProgressStatus> = host.Read(fun () -> status.Value)

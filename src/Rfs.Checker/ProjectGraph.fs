@@ -120,7 +120,11 @@ type FileView =
       /// declaration's result is kept. None outside every declaration, and for a file checked whole.
       RowAt: int -> struct (obj * int) voption
       /// Whether the result is a whole check's (CheckFile), not a finish of declaration results
-      Whole: bool }
+      Whole: bool
+      /// The text version of this file and of each file before it, in the turn that read the result: what it is of
+      Inputs: int64[]
+      /// The graph's generation in that turn (ProjectGraph.Restarts)
+      Generation: int64 }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
     /// checked by declaration, a kept declaration holds the names as they were when it was checked: when an earlier result
@@ -138,6 +142,8 @@ type LatestText =
       Published: PublishedState voption
       /// What the caller's `busy` read in the same turn, such as a reload under way
       Busy: bool
+      /// What the caller's `pending` read in the same turn
+      Pending: bool
       /// The latest `///` comments of each file asked for, ValueNone while its parse is pending
       Docs: FileDocs voption[] }
 
@@ -156,7 +162,8 @@ type FileNow =
 /// Files read in one graph turn against text versions they had (ProjectGraph.FilesNow)
 [<NoEquality; NoComparison>]
 type FilesNow =
-    { Files: FileNow[]
+    { /// For each graph asked, its generation in the turn and its files, in the order asked
+      Graphs: struct (int64 * FileNow[])[]
       /// What the caller's `busy` and `pending` read in the same turn
       Busy: bool
       Pending: bool }
@@ -251,6 +258,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     let mutable linkOwner: Owner = Unchecked.defaultof<_>
     let dependents = ResizeArray<ProjectGraph>()
     let mutable disposed = 0
+    // Restarts made, on the graph thread: every result after one is new, at the same text versions
+    let mutable restarts = 0L
     let mutable afterSettle: unit -> Task = fun () -> Task.CompletedTask
     // Graph thread: runs after each file a read in one turn reads. For tests
     let mutable turnFileHook: TurnFile -> unit = ignore
@@ -619,6 +628,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             let newOwner, nodes = runWithOwner linkOwner (fun () -> ProjectNodes.build project texts wanted)
             owner <- newOwner
             files <- nodes
+            restarts <- restarts + 1L
             seen <- next
             filesNow.Value <- nodes
 
@@ -762,8 +772,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         let readable () = readSettled i (fun f version -> (f :?> IReadableFile).Readable version)
 
-        let view (r: Readable) (checks: CancellationToken) =
-            { Result = r.Result
+        let view (r: Readable) (inputs: int64[]) (generation: int64) (checks: CancellationToken) =
+            { Inputs = inputs
+              Generation = generation
+              Result = r.Result
               Parse = r.Parsed.Parse
               Text = r.Parsed.Text
               Version = r.Parsed.Version
@@ -791,11 +803,14 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             | ValueNone -> Request.waitForNextTurn flight
             | ValueSome r ->
                 let hook = afterSettle
+                // In the turn readSettled applied them in: file i's result is of these texts
+                let inputs = Array.init (i + 1) (fun j -> files[j].Text.Text.Value.Version)
+                let generation = restarts
 
                 Task.Run<'T>(fun () ->
                     task {
                         do! hook ()
-                        let v = view r flight
+                        let v = view r inputs generation flight
                         let prepared = prepare ({ Parse = v.Parse; Text = v.Text; Version = v.Version }: TextView)
 
                         let answer () = ValueSome(read v prepared)
@@ -841,12 +856,20 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// </remarks>
     member this.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
         task {
-            let! struct (found, _) = this.CurrentLocationAt(asking, landed, key, ct)
+            let! struct (found, _, _, _) = this.CurrentLocationAt(asking, landed, key, ct)
             return found
         }
 
-    /// CurrentLocation, with the text version of the range's file in the turn that read it (0 for no range)
-    member _.CurrentLocationAt(asking: string, landed: string, key: string, ct: CancellationToken) : Task<struct (FSharp.Compiler.Text.range option * int64)> =
+    /// <summary>
+    /// CurrentLocation, with what it was read from in its turn: the version readSettled gave for the range's file (0 for
+    /// no range), the text version of every file up to the last one read, and the graph's generation.
+    /// </summary>
+    member _.CurrentLocationAt
+        (asking: string, landed: string, key: string, ct: CancellationToken)
+        : Task<struct (FSharp.Compiler.Text.range option * int64 * int64[] * int64)> =
+        // What each read of this body's run read: the file's index and the version readSettled gave
+        let reads = ResizeArray<struct (int * int64)>()
+
         let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
         let isSignature (file: string) = file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
         let signature = Path.ChangeExtension(landed, ".fsi")
@@ -856,11 +879,22 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             String.Equals(Path.GetFullPath x, Path.GetFullPath y, StringComparison.OrdinalIgnoreCase)
 
         let inImplementation (file: string) =
-            readSettled (indexOf file) (fun f version -> (f :?> IReadableFile).Uses version |> ValueOption.map (fun struct (u, _) -> u.DefinitionOf key))
+            let i = indexOf file
+
+            readSettled i (fun f version ->
+                (f :?> IReadableFile).Uses version
+                |> ValueOption.map (fun struct (u, _) ->
+                    reads.Add(struct (i, version))
+                    u.DefinitionOf key))
 
         let inSignature (file: string) (conformed: bool) =
-            readSettled (indexOf file) (fun f version ->
-                (f :?> ISignatureFile).Uses version |> ValueOption.map (fun struct (_, u) -> u.SignatureDefinitionOf(key, conformed)))
+            let i = indexOf file
+
+            readSettled i (fun f version ->
+                (f :?> ISignatureFile).Uses version
+                |> ValueOption.map (fun struct (_, u) ->
+                    reads.Add(struct (i, version))
+                    u.SignatureDefinitionOf(key, conformed)))
 
         let answer () : FSharp.Compiler.Text.range option voption =
             if isSignature landed && holds signature && not (sameFile asking implementation) then
@@ -884,9 +918,24 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 ValueSome None
 
         let body (flight: CancellationToken) =
+            reads.Clear()
+
             match answer () with
-            | ValueSome(Some r) when holds r.FileName -> Task.FromResult(struct (Some r, Volatile.Read &requested[indexOf r.FileName]))
-            | ValueSome found -> Task.FromResult(struct (found, 0L))
+            | ValueSome found ->
+                let last = if reads.Count = 0 then -1 else reads |> Seq.map (fun (struct (i, _)) -> i) |> Seq.max
+                let inputs = Array.init (last + 1) (fun j -> files[j].Text.Text.Value.Version)
+
+                let version =
+                    match found with
+                    | Some r when holds r.FileName ->
+                        let i = indexOf r.FileName
+
+                        match reads |> Seq.tryFind (fun (struct (j, _)) -> j = i) with
+                        | Some(struct (_, v)) -> v
+                        | None -> 0L
+                    | _ -> 0L
+
+                Task.FromResult(struct (found, version, inputs, restarts))
             | ValueNone -> Request.waitForNextTurn flight
 
         task {
@@ -900,7 +949,11 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// on this one's host, and its file), ValueNone for one whose parse is pending, its last published result, and
     /// `busy`, a tracked read of the host's graph. Never waits for a check.
     /// </summary>
-    member _.LatestText(file: string, docsOf: (ProjectGraph * string)[], busy: unit -> bool, ct: CancellationToken) : Task<LatestText> =
+    member this.LatestText(file: string, docsOf: (ProjectGraph * string)[], busy: unit -> bool, ct: CancellationToken) : Task<LatestText> =
+        this.LatestText(file, docsOf, busy, (fun () -> false), ct)
+
+    /// LatestText, with `pending`, another tracked read of the host's graph, read in the same turn
+    member _.LatestText(file: string, docsOf: (ProjectGraph * string)[], busy: unit -> bool, pending: unit -> bool, ct: CancellationToken) : Task<LatestText> =
         let i = indexOf file
 
         if isSignatureFile files[i] then
@@ -923,6 +976,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                       Settled = settled
                       Published = (files[i] :?> IReadableFile).LastPublished()
                       Busy = busy ()
+                      Pending = pending ()
                       Docs = docsOf |> Array.map (fun (g: ProjectGraph, f) -> g.DocsNow f) }
 
         task {
@@ -931,23 +985,26 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         }
 
     /// <summary>
-    /// A request node: each of `files` (a graph on this one's host, a file of it and a text version it had) as it stands,
-    /// read in one graph turn with `busy` and `pending`, tracked reads of the host's graph. A changed implementation file
-    /// gives its latest text once parsed, and its last published result. Never waits for a check.
+    /// A request node: each of `graphs` (on this one's host) with its files and the text versions they had, read in one
+    /// graph turn with the graph's generation, `busy` and `pending` (tracked reads of the host's graph). A changed
+    /// implementation file gives its latest text once parsed, and its last published result. Never waits for a check.
     /// </summary>
-    member _.FilesNow(files: struct (ProjectGraph * string * int64)[], busy: unit -> bool, pending: unit -> bool, ct: CancellationToken) : Task<FilesNow> =
-        for struct (g, _, _) in files do
+    member _.FilesNow
+        (graphs: struct (ProjectGraph * struct (string * int64)[])[], busy: unit -> bool, pending: unit -> bool, ct: CancellationToken)
+        : Task<FilesNow> =
+        for struct (g, _) in graphs do
             if not (obj.ReferenceEquals(g.Host, host)) then
-                invalidArg (nameof files) $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
+                invalidArg (nameof graphs) $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
 
         let body (flight: CancellationToken) =
-            let read = files |> Array.map (fun struct (g, f, version) -> g.FileNow(f, version))
+            let read =
+                graphs |> Array.map (fun struct (g, fs) -> struct (g.Restarts, fs |> Array.map (fun struct (f, version) -> g.FileNow(f, version))))
 
-            if read |> Array.exists ValueOption.isNone then
+            if read |> Array.exists (fun struct (_, fs) -> fs |> Array.exists ValueOption.isNone) then
                 Request.waitForNextTurn flight
             else
                 Task.FromResult
-                    { Files = read |> Array.map _.Value
+                    { Graphs = read |> Array.map (fun struct (g, fs) -> struct (g, fs |> Array.map _.Value))
                       Busy = busy ()
                       Pending = pending () }
 
@@ -956,23 +1013,31 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             return! Request.run host body linked.Token
         }
 
-    /// Graph thread, inside one turn: the file against `version`, or ValueNone while a newer text's parse is pending
+    /// The project's source files, in order: what FileView.Inputs and CurrentLocationAt's versions are of
+    member _.FilesOf: string[] = files |> Array.map _.Path
+
+    /// Graph thread: how many times the project's nodes were made again (a restart). Results after one are new at the
+    /// same text versions.
+    member _.Restarts: int64 = restarts
+
+    /// Graph thread, inside one turn: the file against `version`, or ValueNone while a newer text is posted but not
+    /// applied, or its parse is pending
     member internal _.FileNow(file: string, version: int64) : FileNow voption =
         if Volatile.Read &disposed <> 0 then
             ValueSome FileNow.Gone
         else
             match byPath.TryGetValue(Path.GetFullPath file) with
             | false, _ -> ValueSome FileNow.Gone
-            | true, _ ->
-                let i = indexOf file
+            | true, i ->
                 let text = files[i].Text.Text.Value
 
-                if text.Version = version then ValueSome FileNow.Same
+                if text.Version <> Volatile.Read &requested[i] then ValueNone
+                elif text.Version = version then ValueSome FileNow.Same
                 elif isSignatureFile files[i] then ValueSome FileNow.SignatureChanged
                 else
                     let p = files[i].Text.Parsed.Value
 
-                    if text.Version <> Volatile.Read &requested[i] || p.Version <> text.Version then
+                    if p.Version <> text.Version then
                         ValueNone
                     else
                         ValueSome(FileNow.Changed({ Parse = p.Parse; Text = p.Text; Version = p.Version }, (files[i] :?> IReadableFile).LastPublished()))

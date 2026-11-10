@@ -157,8 +157,10 @@ module References =
                 |> Seq.distinct
                 |> Seq.length) > 1
 
-    /// The answer, and each file the turn read at its version (empty for Moved)
+    /// The answer and, when `record`, each graph the turn read with its generation and every file at its version (empty
+    /// for Moved)
     let private everywhere
+        (record: bool)
         (scope: Scope)
         (graph: ProjectGraph)
         (path: string)
@@ -166,7 +168,7 @@ module References =
         (landed: string option)
         (spelled: string option)
         (ct: CancellationToken)
-        : Task<struct (Answer * LastState.FileAt[])> =
+        : Task<struct (Answer * (ProjectGraph * int64 * struct (string * int64)[]) list)> =
         task {
             let definersNow () =
                 match landed with
@@ -175,9 +177,9 @@ module References =
 
             // Asked again at each turn the read tries, on the graph thread: the answer is the projects' at that turn
             // The definers are the scope's Extra: the answer reads them, so they must be the agreeing turn's
-            let turnScope () : TurnScope<ProjectGraph list> =
+            let turnScope () : TurnScope<ProjectGraph list * (ProjectGraph * int64) list> =
                 if scope.IsLoading() then
-                    { Loading = true; Projects = [||]; Name = None; Extra = [] }
+                    { Loading = true; Projects = [||]; Name = None; Extra = [], [] }
                 else
                     let definers = definersNow ()
 
@@ -194,20 +196,27 @@ module References =
                       Projects = [| for p in projects -> p, scope.FilesOf p |]
                       // FSharp.Core's are reached from no text as well (SymbolUses.spelledName)
                       Name = if definers.IsEmpty then None else spelled
-                      Extra = definers }
+                      // Each project's generation in the same turn, for an answer from the last state
+                      Extra = definers, (if record then [ for p in projects -> p, p.Restarts ] else []) }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
-            | TurnRead.Gone -> return struct (Answer.Moved, [||])
-            | TurnRead.Read(definers, projects) ->
+            | TurnRead.Gone -> return struct (Answer.Moved, [])
+            | TurnRead.Read((definers, generations), projects) ->
                 let files = projects |> Seq.collect snd |> List.ofSeq
 
                 let read =
-                    [| for g, turnFiles in projects do
-                           for f in turnFiles do
-                               match f with
-                               | TurnFile.Indexed(p, v, _)
-                               | TurnFile.Signature(p, v, _)
-                               | TurnFile.Skipped(p, v) -> LastState.fileAt g p v |]
+                    [ if record then
+                          for g, turnFiles in projects do
+                              let generation = generations |> List.find (fun (o, _) -> obj.ReferenceEquals(o, g)) |> snd
+
+                              yield
+                                  g,
+                                  generation,
+                                  [| for f in turnFiles do
+                                         match f with
+                                         | TurnFile.Indexed(p, v, _)
+                                         | TurnFile.Signature(p, v, _)
+                                         | TurnFile.Skipped(p, v) -> struct (p, v) |] ]
 
                 let found =
 
@@ -260,29 +269,31 @@ module References =
         }
 
     /// Every use of the symbol at the position, and the turn's files when the answer can be given again from them
-    let private findIn (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
+    let private findIn (record: bool) (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
         task {
             try
                 match! asked graph path line character ct with
                 | struct (Nothing, _, _) -> return struct (Answer.Found [], ValueNone)
                 | struct (InFile uses, _, _) -> return struct (Answer.Found uses, ValueNone)
                 | struct (Keyed(key, landed, spelled), version, lookup) ->
-                    let! struct (found, read) = everywhere scope graph path key landed spelled ct
+                    let! struct (found, read) = everywhere record scope graph path key landed spelled ct
 
-                    // The asking file in the turn must be at the text the symbol was asked of
+                    // The asking file in the turn must be at the text the symbol was asked of, in the asking graph
                     let asking =
                         read
-                        |> Array.tryFindIndex (fun f ->
-                            String.Equals(Path.GetFullPath f.Path, Path.GetFullPath path, StringComparison.OrdinalIgnoreCase)
-                            && (match f.Graph.TryGetTarget() with
-                                | true, g -> obj.ReferenceEquals(g, graph)
-                                | _ -> false))
+                        |> List.tryFind (fun (g, _, files) ->
+                            obj.ReferenceEquals(g, graph)
+                            && files
+                               |> Array.exists (fun (struct (f, v)) ->
+                                   v = version && String.Equals(Path.GetFullPath f, Path.GetFullPath path, StringComparison.OrdinalIgnoreCase)))
 
                     match found, asking, lookup with
-                    | Answer.Found _, Some i, Some lookup when read[i].Version = version ->
-                        let files = Array.append [| read[i] |] (read |> Array.removeAt i)
-                        let entry: LastState.Entry<Answer> = { Files = files; Answer = found }
-                        return struct (found, ValueSome(struct (LastState.keyOf path version line lookup, entry)))
+                    | Answer.Found _, Some first, Some lookup ->
+                        match LastState.merge (first :: read) with
+                        | Some graphs ->
+                            let entry: LastState.Entry<Answer> = { Graphs = graphs; Answer = found }
+                            return struct (found, ValueSome(struct (LastState.keyOf path version line lookup, entry)))
+                        | None -> return struct (found, ValueNone)
                     | _ -> return struct (found, ValueNone)
             with
             | :? OperationCanceledException when not ct.IsCancellationRequested -> return struct (Answer.Moved, ValueNone)
@@ -293,7 +304,7 @@ module References =
     /// Every use of the symbol at the position.
     let find (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<Answer> =
         task {
-            let! struct (found, _) = findIn scope graph path line character ct
+            let! struct (found, _) = findIn false scope graph path line character ct
             return found
         }
 
@@ -347,7 +358,7 @@ module References =
         LastState.race
             (fun ct ->
                 task {
-                    let! struct (found, entry) = findIn scope graph path line character ct
+                    let! struct (found, entry) = findIn true scope graph path line character ct
 
                     match entry with
                     | ValueSome(struct (key, e)) -> answers.Add(key, e)

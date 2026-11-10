@@ -88,25 +88,31 @@ module Definition =
     let private atIn (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
         task {
             // Only the check is asked under the lock
-            let! struct (found, version, lookup) =
+            let! struct (found, view, lookup) =
                 graph.ReadFile(
                     path,
                     (fun view -> Hover.lookupOf view.Text line character),
                     (fun view lookup ->
+                        let inputs = struct (view.Version, view.Inputs, view.Generation)
+
                         match lookup with
-                        | Some l -> struct (find view.Result.CheckResults line l, view.Version, lookup)
-                        | None -> struct (Nowhere, view.Version, lookup)),
+                        | Some l -> struct (find view.Result.CheckResults line l, inputs, lookup)
+                        | None -> struct (Nowhere, inputs, lookup)),
                     ct
                 )
 
-            let asking = LastState.fileAt graph path version
+            let struct (version, inputs, generation) = view
+            let files = graph.FilesOf
 
-            let entry (files: LastState.FileAt list) (answer: range option) =
-                match lookup with
-                | Some l ->
-                    let e: LastState.Entry<range option> = { Files = Array.ofList (asking :: files); Answer = answer }
+            // The asking file's result is of its text and of every file above it, at these versions
+            let asking = graph, generation, Array.init inputs.Length (fun j -> struct (files[j], inputs[j]))
+
+            let entry (parts: (ProjectGraph * int64 * struct (string * int64)[]) list) (answer: range option) =
+                match lookup, LastState.merge (asking :: parts) with
+                | Some l, Some graphs ->
+                    let e: LastState.Entry<range option> = { Graphs = graphs; Answer = answer }
                     ValueSome(struct (LastState.keyOf path version line l, e))
-                | None -> ValueNone
+                | _ -> ValueNone
 
             match found with
             | Nowhere -> return struct (None, entry [] None)
@@ -125,12 +131,15 @@ module Definition =
                 // A file two projects hold: only the one whose assembly the key names defines it
                 for owner in owners do
                     if answer.IsNone then
-                        let! struct (current, at) = owner.CurrentLocationAt((if asSignature then landed else path), landed, key, ct)
+                        let! struct (current, at, read, generation) = owner.CurrentLocationAt((if asSignature then landed else path), landed, key, ct)
                         answer <- current
 
                         match current with
-                        | Some r -> from <- [ LastState.fileAt owner r.FileName at ]
-                        | None -> ()
+                        | Some r when at <> 0L ->
+                            let ownerFiles = owner.FilesOf
+                            // The range's file at the version its index was read at, and every file up to the last read
+                            from <- [ owner, generation, Array.init read.Length (fun j -> struct (ownerFiles[j], read[j])) ]
+                        | _ -> from <- []
 
                 // Nothing found in a project read: which files decided that, no turn here says
                 return struct (answer, (if answer.IsSome || owners.IsEmpty then entry from answer else ValueNone))

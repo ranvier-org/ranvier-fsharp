@@ -29,6 +29,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     // The references and definitions given on settled states, for answers from the last state marked by the progress
     let lastUses = References.LastAnswers()
     let lastDefinitions = Definition.LastAnswers()
+    // Each open file's shape being made for its latest parse, so the last-state path doesn't lex
+    let preparing = System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.OrdinalIgnoreCase)
     let notices = new RestartNotices(host, workspace, publisher, client)
 
     do
@@ -213,6 +215,31 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     /// How many references and definitions were answered from the last state. For tests.
     member internal _.LastStateAnswers: int64 = lastUses.Answered + lastDefinitions.Answered
 
+    /// Graph thread, read in a request's turn: a check is pending and the progress that marks a last-state answer has
+    /// begun on the client
+    member private _.MarkShown() : bool =
+        match progress with
+        | Some p -> p.ShowingNow() && publisher.CheckingNow()
+        | None -> false
+
+    /// After a change: the shape of the file's next parse, made once it lands
+    member private _.Prepare(path: string) : unit =
+        if canShowProgress then
+            let cts = new CancellationTokenSource()
+
+            preparing.AddOrUpdate(
+                path,
+                cts,
+                fun _ (previous: CancellationTokenSource) ->
+                    previous.Cancel()
+                    cts
+            )
+            |> ignore
+
+            for graph in workspace.OwnersOf path do
+                if not (path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)) then
+                    LastState.prepare lastAnswers graph path cts.Token |> ignore
+
     /// What the progress says now, or None when the client did not declare the capability. For tests.
     member internal _.ProgressStatus() : Task<ProgressStatus option> =
         match progress with
@@ -341,7 +368,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
             ignoreNotification
 
-        member _.TextDocumentDidChange(p: DidChangeTextDocumentParams) =
+        member this.TextDocumentDidChange(p: DidChangeTextDocumentParams) =
             try
                 let apply (text: string) (change: TextDocumentContentChangeEvent) =
                     match change with
@@ -355,7 +382,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     | U2.C2 whole -> whole.Text
 
                 let version = p.TextDocument.Version
-                publisher.Change(Paths.ofUri p.TextDocument.Uri, version, (fun text -> p.ContentChanges |> Array.fold apply text))
+                let path = Paths.ofUri p.TextDocument.Uri
+                publisher.Change(path, version, (fun text -> p.ContentChanges |> Array.fold apply text))
+                this.Prepare path
             with ex ->
                 eprintfn "[ranvierautocomplete] didChange failed: %O" ex
 
@@ -420,14 +449,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 })
 
         member _.TextDocumentDeclaration(_) = notImplemented
-        member _.TextDocumentDefinition(p: DefinitionParams) =
+        member this.TextDocumentDefinition(p: DefinitionParams) =
             reading "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
                     let line, character = int p.Position.Line, int p.Position.Character
 
                     let! found =
                         if canShowProgress then
-                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow publisher.CheckingNow workspace.OwnersOf graph path line character ct
+                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown workspace.OwnersOf graph path line character ct
                         else
                             Definition.at workspace.OwnersOf graph path line character ct
 
@@ -473,7 +502,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentPrepareRename(_) = notImplemented
         member _.TextDocumentPrepareTypeHierarchy(_) = notImplemented
         member _.TextDocumentRangeFormatting(_) = notImplemented
-        member _.TextDocumentReferences(p: ReferenceParams) =
+        member this.TextDocumentReferences(p: ReferenceParams) =
             async {
                 // Read on the graph thread, tracked, in the turn that reads the files
                 let scope: References.Scope =
@@ -492,7 +521,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                             let! found =
                                 if canShowProgress then
-                                    References.answer lastUses lastAnswers workspace.LoadingNow publisher.CheckingNow scope graph path line character ct
+                                    References.answer lastUses lastAnswers workspace.LoadingNow this.MarkShown scope graph path line character ct
                                 else
                                     References.find scope graph path line character ct
 

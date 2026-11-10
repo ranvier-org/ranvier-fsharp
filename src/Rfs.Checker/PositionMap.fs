@@ -1,6 +1,7 @@
 namespace Rfs.Checker
 
 open System
+open System.Collections.Generic
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Syntax
@@ -25,6 +26,16 @@ type RowShape =
         && a.Within = b.Within
         && a.StartColumn = b.StartColumn
 
+/// The `#if` family and line directives of a text, read once: what position safety compares above a line
+[<NoEquality; NoComparison>]
+type Directives =
+    { /// Each `#if`, `#else`, `#elif` and `#endif` line, trimmed, in order
+      Conditionals: string[]
+      /// For each 0-based line, how many of Conditionals are above it
+      Above: int[]
+      /// For each 0-based line, whether a line directive (`#line`, `# n`) is above it
+      LineAbove: bool[] }
+
 /// A file's text with its rows, as position safety reads it. No compiler object: it outlives the result it is of.
 [<NoEquality; NoComparison>]
 type FileShape =
@@ -35,7 +46,8 @@ type FileShape =
       /// A `rec` module or namespace anywhere in the parse
       Recursive: bool
       /// The lexer state each line starts in, lexed once from the top as Hover's tokenizer carries it
-      States: Lazy<FSharpTokenizerLexState[]> }
+      States: Lazy<FSharpTokenizerLexState[]>
+      Directives: Lazy<Directives> }
 
 /// A file's last published result as the graph has it (ProjectGraph.LatestText): what an answer from the last state is
 /// mapped against. Read it within a request and drop it: it holds the result.
@@ -72,6 +84,11 @@ type Refusal =
     | DocsChanged
     /// The text or the published result changed between the reads of one answer
     | Moved
+
+/// Where positions of an old text are in a new one (PositionMap.forward): the 0-based new line and the index of the
+/// old row the position is in (-1 for identical texts), or why there is no such place. Made once per pair of parses.
+[<NoEquality; NoComparison>]
+type ForwardMap = { At: int -> int -> Result<struct (int * int), Refusal> }
 
 /// A position of the old text
 [<Struct>]
@@ -140,6 +157,39 @@ module PositionMap =
 
         states
 
+    let private isLineDirective (t: string) =
+        t.StartsWith "#line"
+        || (t.StartsWith "#"
+            && (let rest = t.Substring(1).TrimStart() in rest.Length > 0 && Char.IsDigit rest[0]))
+
+    let private isConditional (trimmed: string) =
+        trimmed.StartsWith "#if" || trimmed.StartsWith "#else" || trimmed.StartsWith "#elif" || trimmed.StartsWith "#endif"
+
+    /// Each line's directives above it, in one pass
+    let private directivesOf (lines: string[]) : Directives =
+        let conditionals = ResizeArray<string>()
+        let above = Array.zeroCreate lines.Length
+        let lineAbove = Array.zeroCreate lines.Length
+        let mutable seenLine = false
+
+        for i in 0 .. lines.Length - 1 do
+            above[i] <- conditionals.Count
+            lineAbove[i] <- seenLine
+            let t = lines[i]
+
+            // Only a line whose first non-blank character is `#` can be a directive: most lines are never trimmed
+            let first = t |> Seq.tryFind (fun c -> not (Char.IsWhiteSpace c))
+
+            if first = Some '#' then
+                let t = t.Trim()
+
+                if isLineDirective t then seenLine <- true
+                elif isConditional t then conditionals.Add t
+
+        { Conditionals = conditionals.ToArray()
+          Above = above
+          LineAbove = lineAbove }
+
     let private make (text: string) (rows: RowShape[]) (recursive: bool) =
         let lines = split text
 
@@ -147,7 +197,8 @@ module PositionMap =
           Lines = lines
           Rows = rows
           Recursive = recursive
-          States = lazy (lexStates lines) }
+          States = lazy (lexStates lines)
+          Directives = lazy (directivesOf lines) }
 
     /// The shape of a parse made by DeclarationChecker.Parse. `byDeclaration` false gives no rows.
     let shapeOf (text: string) (parse: FSharpParseFileResults) (byDeclaration: bool) : FileShape =
@@ -171,26 +222,23 @@ module PositionMap =
     /// The text alone, for a text whose rows are never read
     let textOnly (text: string) : FileShape = make text [||] false
 
-    let private isLineDirective (t: string) =
-        t.StartsWith "#line"
-        || (t.StartsWith "#"
-            && (let rest = t.Substring(1).TrimStart() in rest.Length > 0 && Char.IsDigit rest[0]))
+    /// Whether the `#if` family directives above the two lines are the same list, and no line directive is above either
+    let private sameDirectives (a: Directives) (lineA: int) (b: Directives) (lineB: int) =
+        let at (d: Directives) (line: int) = if line < d.Above.Length then d.Above[line] else d.Conditionals.Length
+        let lineAt (d: Directives) (line: int) = if line < d.LineAbove.Length then d.LineAbove[line] else false
+        let n = at a lineA
 
-    let private isConditional (trimmed: string) =
-        [ "#if"; "#else"; "#elif"; "#endif" ] |> List.exists (fun d -> trimmed.StartsWith d)
+        not (lineAt a lineA)
+        && not (lineAt b lineB)
+        && n = at b lineB
+        && (let mutable same = true in
+            let mutable i = 0 in
 
-    /// The `#if` family directives above the 0-based line, and whether a line directive is among the lines above it
-    let private directivesAbove (lines: string[]) (line: int) =
-        let found = ResizeArray<string>()
-        let mutable lineDirective = false
+            while same && i < n do
+                same <- String.Equals(a.Conditionals[i], b.Conditionals[i], StringComparison.Ordinal)
+                i <- i + 1
 
-        for i in 0 .. min (line - 1) (lines.Length - 1) do
-            let t = lines[i].Trim()
-
-            if isLineDirective t then lineDirective <- true
-            elif isConditional t then found.Add t
-
-        List.ofSeq found, lineDirective
+            same)
 
     let private rowAt (rows: RowShape[]) (line: int) (character: int) =
         // 1-based line. Rows don't overlap: a nested module's header ends at its `=`.
@@ -245,12 +293,9 @@ module PositionMap =
                     else
                         let oldLine = line - (row.StartLine - was.StartLine)
 
-                        let directivesNow, lineNow = directivesAbove current.Lines line
-                        let directivesThen, lineThen = directivesAbove old.Lines oldLine
-
                         if oldLine < 0 || oldLine >= old.Lines.Length then
                             Error Refusal.Edited
-                        elif lineNow || lineThen || directivesNow <> directivesThen then
+                        elif not (sameDirectives current.Directives.Value line old.Directives.Value oldLine) then
                             Error Refusal.Directives
                         elif not (String.Equals(current.Lines[line], old.Lines[oldLine], StringComparison.Ordinal)) then
                             Error Refusal.Edited
@@ -264,28 +309,128 @@ module PositionMap =
                                 Ok { OldLine = oldLine; OldCharacter = character }
 
     /// <summary>
-    /// Where the 0-based position of `old` is in `current`: the line moved by its row's shift, and `map` must give it
-    /// back exactly, so every refusal of `map` holds here too. A position outside every row of `old` is Gap, and a row
-    /// with no unchanged counterpart in `current` is Edited.
+    /// Where positions of `old` are in `current`, made once for the pair: each old row's counterpart by key and its shift,
+    /// with every rule of `map` checked for the row and, once per line, for the line, so that a position this gives
+    /// back maps to exactly its old place through `map`. A position is then a binary search over the old rows.
     /// </summary>
-    let mapForward (old: FileShape) (current: FileShape) (line: int) (character: int) : Result<int, Refusal> =
+    /// <remarks>
+    /// A position outside every old row is Gap; a row with no unchanged counterpart is Edited (or OrdinalMoved). A
+    /// range is assumed to lie in one row: a caller mapping both ends must require the same row index for each.
+    /// </remarks>
+    let forward (old: FileShape) (current: FileShape) : ForwardMap =
         if String.Equals(old.Text, current.Text, StringComparison.Ordinal) then
-            Ok line
+            { At = fun line _ -> Ok(struct (line, -1)) }
         elif old.Rows.Length = 0 || current.Rows.Length = 0 then
-            Error Refusal.CheckedWhole
+            { At = fun _ _ -> Error Refusal.CheckedWhole }
+        elif old.Recursive || current.Recursive then
+            { At = fun _ _ -> Error Refusal.Recursive }
         else
-            match rowAt old.Rows (line + 1) character with
-            | None -> Error Refusal.Gap
-            | Some was ->
-                match find current.Rows was.Key with
-                | None -> Error Refusal.Edited
-                | Some row ->
-                    let newLine = line + (row.StartLine - was.StartLine)
+            let rows = old.Rows |> Array.sortBy (fun r -> struct (r.StartLine, r.StartColumn))
+            let byKey (rs: RowShape[]) = rs |> Seq.map (fun r -> KeyValuePair(r.Key, r)) |> Dictionary<DeclarationKey, RowShape>
+            let oldByKey = byKey old.Rows
+            let currentByKey = byKey current.Rows
 
-                    if newLine < 0 || newLine >= current.Lines.Length then
-                        Error Refusal.Edited
+            let groups (rs: RowShape[]) =
+                rs
+                |> Array.groupBy (fun r -> r.Key.ModulePath, r.Key.Name, r.Key.Kind)
+                |> Array.map (fun (k, g) -> k, g |> Array.sortBy _.Key.Ordinal)
+                |> dict
+
+            let oldGroups = groups old.Rows
+            let currentGroups = groups current.Rows
+
+            let groupOf (g: IDictionary<_, RowShape[]>) k =
+                match g.TryGetValue k with
+                | true, rs -> rs
+                | _ -> [||]
+
+            let rec headersSame (within: DeclarationKey option) =
+                match within with
+                | None -> true
+                | Some k ->
+                    match currentByKey.TryGetValue k, oldByKey.TryGetValue k with
+                    | (true, a), (true, b) when a.SameAs b -> headersSame a.Within
+                    | _ -> false
+
+            // Each old row: its shift, or why none of its positions map
+            let rowShift =
+                rows
+                |> Array.map (fun was ->
+                    let k = (was.Key.ModulePath, was.Key.Name, was.Key.Kind)
+                    let now = groupOf currentGroups k
+                    let before = groupOf oldGroups k
+
+                    let ordinalsMoved =
+                        (now.Length > 1 || before.Length > 1)
+                        && (now.Length <> before.Length || Array.exists2 (fun (a: RowShape) b -> not (a.SameAs b)) now before)
+
+                    match currentByKey.TryGetValue was.Key with
+                    | _ when ordinalsMoved -> Error Refusal.OrdinalMoved
+                    | false, _ -> Error Refusal.Edited
+                    | true, row when not (row.SameAs was) || not (headersSame row.Within) -> Error Refusal.Edited
+                    | true, row -> Ok(row.StartLine - was.StartLine))
+
+            let oldDirectives = lazy old.Directives.Value
+            let currentDirectives = lazy current.Directives.Value
+
+            // Each old line's new line, made when first asked
+            let lines: Result<int, Refusal> voption[] = Array.zeroCreate old.Lines.Length
+
+            let lineAt (line: int) (shift: int) =
+              lock lines (fun () ->
+                match lines[line] with
+                | ValueSome r -> r
+                | ValueNone ->
+                    let newLine = line + shift
+
+                    let r =
+                        if newLine < 0 || newLine >= current.Lines.Length then
+                            Error Refusal.Edited
+                        elif not (sameDirectives currentDirectives.Value newLine oldDirectives.Value line) then
+                            Error Refusal.Directives
+                        elif not (String.Equals(current.Lines[newLine], old.Lines[line], StringComparison.Ordinal)) then
+                            Error Refusal.Edited
+                        else
+                            let a = current.States.Value[newLine]
+                            let b = old.States.Value[line]
+
+                            if a.PosBits <> b.PosBits || a.OtherBits <> b.OtherBits then Error Refusal.LexerState else Ok newLine
+
+                    lines[line] <- ValueSome r
+                    r)
+
+            // The last row starting at or before the position, as rows don't overlap
+            let rowOf (line: int) (character: int) =
+                let oneBased = line + 1
+                let mutable lo = 0
+                let mutable hi = rows.Length - 1
+                let mutable found = -1
+
+                while lo <= hi do
+                    let mid = (lo + hi) / 2
+                    let r = rows[mid]
+
+                    if r.StartLine < oneBased || (r.StartLine = oneBased && r.StartColumn <= character) then
+                        found <- mid
+                        lo <- mid + 1
                     else
-                        match map old current newLine character with
-                        | Ok at when at.OldLine = line && at.OldCharacter = character -> Ok newLine
-                        | Ok _ -> Error Refusal.Edited
-                        | Error refusal -> Error refusal
+                        hi <- mid - 1
+
+                if found >= 0 then
+                    let r = rows[found]
+
+                    if oneBased < r.EndLine || (oneBased = r.EndLine && character <= r.EndColumn) then found else -1
+                else
+                    -1
+
+            { At =
+                fun line character ->
+                    if line < 0 || line >= old.Lines.Length then
+                        Error Refusal.Gap
+                    else
+                        match rowOf line character with
+                        | -1 -> Error Refusal.Gap
+                        | i ->
+                            match rowShift[i] with
+                            | Error refusal -> Error refusal
+                            | Ok shift -> lineAt line shift |> Result.map (fun l -> struct (l, i)) }

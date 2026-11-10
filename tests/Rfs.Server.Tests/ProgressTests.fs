@@ -559,4 +559,35 @@ let tests =
 
           testTask "without the capability references during a held check wait" {
               do! referencesDuringHeldCheck false
+          }
+
+          testTask "a check that settles inside the progress's begin hold gives no answer from the last state" {
+              let hold = Progress.BeginHold
+              Progress.BeginHold <- TimeSpan.FromSeconds 30.
+
+              try
+                  use! r = start true
+                  do! load r
+                  do! r.Lsp.DidOpen(a, File.ReadAllText a)
+                  do! r.Server.Publisher.Flushed()
+                  let! settled = referencesAt r a 4 4 |> within
+                  let graph = (r.Server.Workspace.ProjectOf a).Value
+                  let gate, armed = holdChecks graph
+
+                  try
+                      do! r.Lsp.DidChange(a, 1, editAt 17 33 34 "3")
+                      let asked = referencesAt r a 4 4
+                      let! _ = Task.WhenAny(asked, Task.Delay 2000)
+                      Expect.isFalse asked.IsCompleted "pending, but the progress hasn't begun: it waits"
+                      Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state before the begin"
+                  finally
+                      armed.Value <- false
+                      gate.Set()
+
+                  let! after = referencesAt r a 4 4 |> within
+                  Expect.equal after settled "settled inside the hold: the settled answer"
+                  Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state"
+                  Expect.isFalse (r.Seen |> List.exists (fun e -> e.StartsWith "begin")) "no begin was sent"
+              finally
+                  Progress.BeginHold <- hold
           } ]
