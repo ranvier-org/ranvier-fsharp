@@ -74,19 +74,21 @@ let rec private checkWith (temp: string) (visited: System.Collections.Generic.Di
 
     let referenced =
         [ for r, resolved in (if overrides.IsEmpty then [] else List.zip spec.ReferencedProjects spec.ReferencedFrameworks) do
-              let compiled =
+              // A project reached before (through another reference) had its diagnostics given by that path already:
+              // they are given once, as a build reports each project once
+              let compiled, first =
                   match visited.TryGetValue r with
-                  | true, known -> known
-                  | _ when not (isFSharpProject r) || resolved = "?" -> None
+                  | true, known -> known, false
+                  | _ when not (isFSharpProject r) || resolved = "?" -> None, false
                   | _ ->
                       let answer = compileIfOverridden temp visited r resolved overrides
                       visited[r] <- answer
-                      answer
+                      answer, true
 
               match compiled with
               | Some(dll, diagnostics) ->
                   let target = (ProjectSpec.loadFor r resolved).GetAwaiter().GetResult()
-                  yield ProjectSpec.referencePath spec target, dll, diagnostics
+                  yield ProjectSpec.referencePath spec target, dll, (if first then diagnostics else [])
               | None -> () ]
 
     let substituted =
