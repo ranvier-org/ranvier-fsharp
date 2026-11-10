@@ -41,17 +41,22 @@ type private Found =
           Current = false }
 
 module internal GraphTurn =
-    /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush. Graph
-    /// thread. A Post from the graph thread runs at once, inside the flush. A settle step that is done at once is removed
-    /// before the host faults parked waits, so a fault elsewhere never reaches it.
+    /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush: a settle
+    /// step, which the host runs after the pump. Graph thread. A Post from the graph thread runs at once, inside the
+    /// flush. Registered during a pump, the step is done in that pump's settle steps; registered during them (by work
+    /// another step did), in the next pump's. Either way it is made apart, so no fault of the host ends it unrun.
     let afterPump (host: GraphHost) (work: unit -> unit) : unit =
-        host.WhenSettled(fun () ->
-            try
-                work ()
-            with ex ->
-                eprintfn "[ranvierautocomplete] work after a pump failed: %O" ex
+        host.WhenSettled(
+            (fun () ->
+                try
+                    work ()
+                with ex ->
+                    eprintfn "[ranvierautocomplete] work after a pump failed: %O" ex
 
-            ValueSome())
+                ValueSome()),
+            CancellationToken.None,
+            true
+        )
         |> ignore
 
 /// <summary>
@@ -77,7 +82,7 @@ module internal GraphTurn =
 /// with it what it reported. After a load, a closed row follows its owners, or goes with them.
 /// </para>
 /// <para>
-/// A check or graph that fails, for a row's file, publishes nothing new for it and is logged. What it reported to
+/// A check or graph that fails, for a row's file, publishes nothing new for it and is logged once. What it reported to
 /// other files goes from their lists (its own last list stays): a fault leaves no finding that will never be replaced.
 /// It touches no other row: no row waits on the shared host, so nothing a fault aborts there reaches it.
 /// </para>
@@ -93,6 +98,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let mutable onClose: string -> unit = ignore
     let mutable diskPasses = 0
+    let nothing = Found.None
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -215,17 +221,20 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         found.Groups
         |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t path) && (documents.TryFind t).IsSome)
 
-    /// A row's value: what its file's check found, kept from the last settled check while the next one is pending. A
-    /// failed check keeps only the file's own group: what it reported to other files could never be replaced.
+    /// A row's value: what its file's check found, kept from the last settled check while the next one is pending, as
+    /// the same object, so a pending row's re-runs change nothing downstream. A failed check keeps only the file's own
+    /// group: what it reported to other files could never be replaced.
     let finding (item: unit -> Row) : unit -> Found =
-        let mutable last = Found.None
+        let mutable last = nothing
+        let mutable failing = false
 
         fun () ->
             let r = item ()
 
             match r.Owners with
             | [] ->
-                last <- Found.None
+                failing <- false
+                last <- nothing
                 last
             | g :: _ ->
                 let settled =
@@ -234,22 +243,30 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                     with
                     | NotReadyException _ -> ValueNone
                     | ex ->
-                        faulted.Add r.Path |> ignore
-                        log $"%s{r.Path}: no diagnostics to publish, its check failed: %O{ex}"
-                        let own = Dictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
+                        if not failing then
+                            failing <- true
+                            faulted.Add r.Path |> ignore
+                            log $"%s{r.Path}: no diagnostics to publish, its check failed: %O{ex}"
+                            let own = Dictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
 
-                        match last.Groups.TryGetValue r.Path with
-                        | true, l -> own[r.Path] <- l
-                        | _ -> ()
+                            match last.Groups.TryGetValue r.Path with
+                            | true, l -> own[r.Path] <- l
+                            | _ -> ()
 
-                        last <- { Groups = own; Current = false }
+                            last <- { Groups = own; Current = false }
+
                         ValueNone
 
                 match settled with
                 | ValueSome(struct (_, diagnostics)) ->
+                    failing <- false
                     last <- { Groups = groupsOf r.Path diagnostics; Current = true }
                     last
-                | ValueNone -> { last with Current = false }
+                | ValueNone ->
+                    if last.Current then
+                        last <- { last with Current = false }
+
+                    last
 
     /// The effect of one row, over the row's own value. Graph thread.
     let publishing (item: unit -> Row) (own: Memo<Found>) : unit =
@@ -370,7 +387,18 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
             | true, (_ :: _ as owners) -> closedRow path "" owners
             | _ -> ()
 
+    let sameOwners (a: ProjectGraph list) (b: ProjectGraph list) =
+        a.Length = b.Length && List.forall2 (fun x y -> obj.ReferenceEquals(x, y)) a b
+
     let loadedNow (graph: ProjectGraph) =
+        // First every other row's owners as they are now, so no row reads a replaced graph's findings once this one's
+        // rows can settle: a file the reload dropped finds nothing from here on (N-1)
+        for r in rows.Value |> Map.values |> Seq.toArray do
+            let owners = workspace.OwnersOf r.Path
+
+            if not (owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph))) && not (sameOwners owners r.Owners) then
+                setRow { r with Owners = owners }
+
         for doc in documents.All do
             match workspace.OwnersOf doc.Path with
             | owners when owners |> List.exists (fun g -> obj.ReferenceEquals(g, graph)) ->
@@ -391,7 +419,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
             if not r.Open then
                 match workspace.OwnersOf r.Path with
                 | [] -> dropRow r.Path
-                | owners when not (owners.Length = r.Owners.Length && List.forall2 (fun a b -> obj.ReferenceEquals(a, b)) owners r.Owners) ->
+                | owners when not (sameOwners owners r.Owners) ->
                     setRow { r with Owners = owners; Epoch = nextEpoch () }
                 | _ -> ()
 

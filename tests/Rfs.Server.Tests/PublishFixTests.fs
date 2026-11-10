@@ -555,6 +555,7 @@ let rowTests =
               do! dropTrace s.Server.Host
               Expect.isTrue (collected old) "the replaced graph is collected"
           }
+
           testTask "an open file's diagnostics in another open file go when a reload drops it" {
               let! (s, aFile, cFile, project, message) = foreignSession false
               use _ = disposing s
@@ -711,6 +712,27 @@ let workspaceGraphTests =
               second.FailRestart(InvalidOperationException "an injected restart fault")
               do! eventually "X's fault" (fun () -> s.Server.Publisher.Faulted x |> fun t -> t.Result)
               do! eventually "S without X's error" (fun () -> not (lastOf s shared |> List.exists foreign))
+          }
+
+          testTask "during a reload a file is never sent another file's findings from the old graph" {
+              let! (s, aFile, cFile, project, message) = foreignSession false
+              use _ = disposing s
+              let release = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              s.Server.Workspace.BeforeLoadEnd(fun () -> release.Task)
+              dropFromProject project "C.fs"
+              let before = (publishesOf s aFile).Length
+              let reload = s.Server.Workspace.Reload project
+              // A settles on the new graph, and is sent again, before the reload ends
+              do! eventually "A's list on the new graph" (fun () -> (publishesOf s aFile).Length > before)
+              do! s.Server.Publisher.Flushed()
+              let sent = publishesOf s aFile |> Array.skip before
+
+              for _, _, list in sent do
+                  Expect.isFalse (list |> List.exists (fun d -> d.Message = message)) "A is never sent C's old-graph error"
+
+              release.SetResult()
+              do! reload |> within
+              do! eventually "C's empty list" (fun () -> (lastOf s cFile).IsEmpty)
           }
 
           testTask "closed files changed on disk together settle in one pass" {

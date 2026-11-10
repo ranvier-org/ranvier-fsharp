@@ -268,6 +268,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
     let mutable onLoaded: ProjectGraph -> unit = ignore
     let mutable onLoadEndHook: unit -> unit = ignore
+    let mutable beforeLoadEnd: unit -> Task = fun () -> Task.CompletedTask
 
     let onLoadEnd () =
         try
@@ -512,6 +513,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             for p in referencing do
                 do! visit visited results p
 
+            do! beforeLoadEnd ()
             do! notifyWorkspace (Responses.workspaceLoad true)
             onLoadEnd ()
         }
@@ -618,6 +620,9 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         | :? UnauthorizedAccessException as ex ->
             eprintfn "[ranvierautocomplete] %s could not be read on close: %s" path ex.Message
             None
+
+    /// Awaits `hook` at the end of a reload, after its projects have loaded and before the load's end. For tests.
+    member internal _.BeforeLoadEnd(hook: unit -> Task) : unit = beforeLoadEnd <- hook
 
     /// Runs `hook` when a load or reload has finished, whether its projects loaded or not.
     member internal _.OnLoadEnd(hook: unit -> unit) : unit = onLoadEndHook <- hook
