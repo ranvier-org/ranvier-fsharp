@@ -121,9 +121,10 @@ type FileView =
       RowAt: int -> struct (obj * int) voption
       /// Whether the result is a whole check's (CheckFile), not a finish of declaration results
       Whole: bool
-      /// The text version of this file and of each file before it, in the turn that read the result: what it is of
+      /// The text version of this file and of each file before it, in the turn that read the result: what it is of.
+      /// Empty unless asked for (ProjectGraph.ReadFile's `inputs`)
       Inputs: int64[]
-      /// The graph's generation in that turn (ProjectGraph.Restarts)
+      /// The graph's generation in that turn (ProjectGraph.Restarts); -1 unless asked for
       Generation: int64 }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
@@ -159,15 +160,6 @@ type FileNow =
     /// Its project was disposed
     | Gone
 
-/// Files read in one graph turn against text versions they had (ProjectGraph.FilesNow)
-[<NoEquality; NoComparison>]
-type FilesNow =
-    { /// For each graph asked, its generation in the turn and its files, in the order asked
-      Graphs: struct (int64 * FileNow[])[]
-      /// What the caller's `busy` and `pending` read in the same turn
-      Busy: bool
-      Pending: bool }
-
 /// One file of a read made in one graph turn (ProjectGraph.ReadInOneTurn).
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
 type TurnFile =
@@ -202,6 +194,16 @@ and [<RequireQualifiedAccess; NoComparison; NoEquality>] TurnRead<'Extra> =
     | Read of extra: 'Extra * files: (ProjectGraph * TurnFile[])[]
     /// A project in the scope was disposed: its nodes never change again, so no later turn could answer
     | Gone
+
+/// Files read in one graph turn against text versions they had (ProjectGraph.FilesNow)
+and [<NoEquality; NoComparison>] FilesNow =
+    { /// For each graph asked, its generation in the turn and its files, in the order asked
+      Graphs: struct (int64 * FileNow[])[]
+      /// What the caller's `busy` and `pending` read in the same turn
+      Busy: bool
+      Pending: bool
+      /// What the caller's `projects` (the loaded projects) read in the same turn
+      Projects: ProjectGraph list }
 
 /// <summary>
 /// A project checked on a Ranvier graph, re-checking only what an edit can change.
@@ -764,7 +766,12 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// disposing the graph (a reload), cancels the task and nothing shared. Fails with ArgumentException for a signature
     /// file, which has no FileResult.
     /// </remarks>
-    member _.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
+    member this.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
+        this.ReadFile(file, prepare, read, false, ct)
+
+    /// ReadFile, with FileView.Inputs and Generation filled when `inputs` (empty and -1 otherwise)
+    member _.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, inputs: bool, ct: CancellationToken) : Task<'T> =
+        let wantsInputs = inputs
         let i = indexOf file
 
         if isSignatureFile files[i] then
@@ -804,8 +811,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             | ValueSome r ->
                 let hook = afterSettle
                 // In the turn readSettled applied them in: file i's result is of these texts
-                let inputs = Array.init (i + 1) (fun j -> files[j].Text.Text.Value.Version)
-                let generation = restarts
+                let inputs = if wantsInputs then Array.init (i + 1) (fun j -> files[j].Text.Text.Value.Version) else [||]
+                let generation = if wantsInputs then restarts else -1L
 
                 Task.Run<'T>(fun () ->
                     task {
@@ -990,8 +997,13 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// implementation file gives its latest text once parsed, and its last published result. Never waits for a check.
     /// </summary>
     member _.FilesNow
-        (graphs: struct (ProjectGraph * struct (string * int64)[])[], busy: unit -> bool, pending: unit -> bool, ct: CancellationToken)
-        : Task<FilesNow> =
+        (
+            graphs: struct (ProjectGraph * struct (string * int64)[])[],
+            busy: unit -> bool,
+            pending: unit -> bool,
+            projects: unit -> ProjectGraph list,
+            ct: CancellationToken
+        ) : Task<FilesNow> =
         for struct (g, _) in graphs do
             if not (obj.ReferenceEquals(g.Host, host)) then
                 invalidArg (nameof graphs) $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
@@ -1006,7 +1018,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 Task.FromResult
                     { Graphs = read |> Array.map (fun struct (g, fs) -> struct (g, fs |> Array.map _.Value))
                       Busy = busy ()
-                      Pending = pending () }
+                      Pending = pending ()
+                      Projects = projects () }
 
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)

@@ -168,7 +168,7 @@ module References =
         (landed: string option)
         (spelled: string option)
         (ct: CancellationToken)
-        : Task<struct (Answer * (ProjectGraph * int64 * struct (string * int64)[]) list)> =
+        : Task<struct (Answer * (ProjectGraph * int64 * struct (string * int64)[]) list * ProjectGraph list)> =
         task {
             let definersNow () =
                 match landed with
@@ -177,9 +177,9 @@ module References =
 
             // Asked again at each turn the read tries, on the graph thread: the answer is the projects' at that turn
             // The definers are the scope's Extra: the answer reads them, so they must be the agreeing turn's
-            let turnScope () : TurnScope<ProjectGraph list * (ProjectGraph * int64) list> =
+            let turnScope () : TurnScope<ProjectGraph list * (ProjectGraph * int64) list * ProjectGraph list> =
                 if scope.IsLoading() then
-                    { Loading = true; Projects = [||]; Name = None; Extra = [], [] }
+                    { Loading = true; Projects = [||]; Name = None; Extra = [], [], [] }
                 else
                     let definers = definersNow ()
 
@@ -197,11 +197,15 @@ module References =
                       // FSharp.Core's are reached from no text as well (SymbolUses.spelledName)
                       Name = if definers.IsEmpty then None else spelled
                       // Each project's generation in the same turn, for an answer from the last state
-                      Extra = definers, (if record then [ for p in projects -> p, p.Restarts ] else []) }
+                      Extra =
+                        definers,
+                        (if record then [ for p in projects -> p, p.Restarts ] else []),
+                        // Every loaded project, so one loaded or reloaded since refuses
+                        (if record then scope.Projects() else []) }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
-            | TurnRead.Gone -> return struct (Answer.Moved, [])
-            | TurnRead.Read((definers, generations), projects) ->
+            | TurnRead.Gone -> return struct (Answer.Moved, [], [])
+            | TurnRead.Read((definers, generations, loaded), projects) ->
                 let files = projects |> Seq.collect snd |> List.ofSeq
 
                 let read =
@@ -265,7 +269,7 @@ module References =
 
                         Answer.Found(List.distinct (hits @ inSignatures))
 
-                return struct (found, read)
+                return struct (found, read, loaded)
         }
 
     /// Every use of the symbol at the position, and the turn's files when the answer can be given again from them
@@ -276,7 +280,7 @@ module References =
                 | struct (Nothing, _, _) -> return struct (Answer.Found [], ValueNone)
                 | struct (InFile uses, _, _) -> return struct (Answer.Found uses, ValueNone)
                 | struct (Keyed(key, landed, spelled), version, lookup) ->
-                    let! struct (found, read) = everywhere record scope graph path key landed spelled ct
+                    let! struct (found, read, loaded) = everywhere record scope graph path key landed spelled ct
 
                     // The asking file in the turn must be at the text the symbol was asked of, in the asking graph
                     let asking =
@@ -291,7 +295,10 @@ module References =
                     | Answer.Found _, Some first, Some lookup ->
                         match LastState.merge (first :: read) with
                         | Some graphs ->
-                            let entry: LastState.Entry<Answer> = { Graphs = graphs; Answer = found }
+                            let entry: LastState.Entry<Answer> =
+                                { Graphs = graphs
+                                  Projects = LastState.projectsOf loaded
+                                  Answer = found }
                             return struct (found, ValueSome(struct (LastState.keyOf path version line lookup, entry)))
                         | None -> return struct (found, ValueNone)
                     | _ -> return struct (found, ValueNone)
@@ -330,13 +337,14 @@ module References =
         (shapes: Hover.LastAnswers)
         (busy: unit -> bool)
         (pending: unit -> bool)
+        (projects: unit -> ProjectGraph list)
         (graph: ProjectGraph)
         (path: string)
         (line: int)
         (character: int)
         (ct: CancellationToken)
         : Task<LastState.Outcome<Answer>> =
-        LastState.answer answers shapes busy pending graph path line character remapUses ct
+        LastState.answer answers shapes busy pending projects graph path line character remapUses ct
 
     /// <summary>
     /// Every use of the symbol at the position: the settled answer, given to `answers` too, or one from the last state
@@ -368,5 +376,5 @@ module References =
 
                     return found
                 })
-            (fromLastState answers shapes busy pending graph path line character)
+            (fromLastState answers shapes busy pending scope.Projects graph path line character)
             ct

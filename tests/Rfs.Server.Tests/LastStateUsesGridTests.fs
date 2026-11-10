@@ -332,6 +332,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                 let shapes = Hover.LastAnswers()
                 let uses = References.LastAnswers()
                 let definitions = Definition.LastAnswers()
+                let projectsNow () = graphs
                 let allFiles = asking |> List.map snd
                 let filesOf (g: ProjectGraph) = if obj.ReferenceEquals(g, state.Graph) then state.Files else asking |> List.filter (fun (o, _) -> obj.ReferenceEquals(o, g)) |> List.map snd
 
@@ -376,7 +377,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                                   yield showRange u.Range, u.IsFromDefinition ]
                             | None -> fcsUses[at] <- Set.empty
                         | Definition ->
-                            let! found = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf graph file t.Line t.Character CancellationToken.None |> wait
+                            let! found = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) projectsNow state.OwnersOf graph file t.Line t.Character CancellationToken.None |> wait
                             oldDefinitions[at] <- found
 
                             fcsDefinitions[at] <-
@@ -437,11 +438,11 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                 task {
                                     match feature with
                                     | References ->
-                                        match! References.fromLastState uses shapes (fun () -> true) (fun () -> true) graph file t.Line t.Character CancellationToken.None |> wait with
+                                        match! References.fromLastState uses shapes (fun () -> true) (fun () -> true) projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                         | LastState.Outcome.Refused r -> return Some r
                                         | _ -> return None
                                     | Definition ->
-                                        match! Definition.fromLastState definitions shapes (fun () -> true) (fun () -> true) graph file t.Line t.Character CancellationToken.None |> wait with
+                                        match! Definition.fromLastState definitions shapes (fun () -> true) (fun () -> true) projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                         | LastState.Outcome.Refused r -> return Some r
                                         | _ -> return None
                                 }
@@ -459,12 +460,12 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                 task {
                                     match feature with
                                     | References ->
-                                        match! References.fromLastState uses shapes busy pending graph file t.Line t.Character CancellationToken.None |> wait with
+                                        match! References.fromLastState uses shapes busy pending projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                         | LastState.Outcome.Answered _ -> return "answered"
                                         | LastState.Outcome.Settled -> return "settled"
                                         | LastState.Outcome.Refused r -> return $"%A{r}"
                                     | Definition ->
-                                        match! Definition.fromLastState definitions shapes busy pending graph file t.Line t.Character CancellationToken.None |> wait with
+                                        match! Definition.fromLastState definitions shapes busy pending projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                         | LastState.Outcome.Answered _ -> return "answered"
                                         | LastState.Outcome.Settled -> return "settled"
                                         | LastState.Outcome.Refused r -> return $"%A{r}"
@@ -481,7 +482,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
 
                             match feature with
                             | References ->
-                                match! References.fromLastState uses shapes (fun () -> false) (fun () -> true) graph file t.Line t.Character CancellationToken.None |> wait with
+                                match! References.fromLastState uses shapes (fun () -> false) (fun () -> true) projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                 | LastState.Outcome.Refused r -> countRefusal r
                                 | LastState.Outcome.Settled -> failures.Add $"%s{where}: settled while pending"
                                 | LastState.Outcome.Answered References.Answer.Moved -> failures.Add $"%s{where}: Moved from the last state"
@@ -518,7 +519,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                                 limits <- limits + 1
                                                 failures.Add $"%s{where}: the old answer differs from FCS"
                             | Definition ->
-                                match! Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) graph file t.Line t.Character CancellationToken.None |> wait with
+                                match! Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) projectsNow graph file t.Line t.Character CancellationToken.None |> wait with
                                 | LastState.Outcome.Refused r -> countRefusal r
                                 | LastState.Outcome.Settled -> failures.Add $"%s{where}: settled while pending"
                                 | LastState.Outcome.Answered ours ->
@@ -634,10 +635,11 @@ let private extraTests =
                   task {
                       let shapes = Hover.LastAnswers()
                       let definitions = Definition.LastAnswers()
+                      let projectsNow () = [ state.Graph ]
                       let c = fileNamed state "C.fs"
                       let b = fileNamed state "B.fs"
                       let line, character = find shadowC "scale 3"
-                      let! first = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      let! first = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) projectsNow state.OwnersOf state.Graph c line character CancellationToken.None |> wait
                       Expect.equal (first |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "A.fs") "scale is A's"
                       // B gains a scale that C's `open Lib.B` makes the one meant, and the state settles with no request
                       state.Graph.SetText(b, shadowB + "\nlet scale x = x + 1\n") |> ignore
@@ -647,7 +649,7 @@ let private extraTests =
                       state.Graph.SetText(b, shadowB + "\nlet scale x = x + 1\n\nlet more = 2\n") |> ignore
 
                       try
-                          let! last = Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) state.Graph c line character CancellationToken.None |> wait
+                          let! last = Definition.fromLastState definitions shapes (fun () -> false) (fun () -> true) projectsNow state.Graph c line character CancellationToken.None |> wait
 
                           match last with
                           | LastState.Outcome.Answered found -> failtest $"answered %A{found |> Option.map (fun r -> r.FileName)} from the state before the last"
@@ -656,7 +658,7 @@ let private extraTests =
                       finally
                           gate.Set()
 
-                      let! settled = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      let! settled = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) projectsNow state.OwnersOf state.Graph c line character CancellationToken.None |> wait
                       Expect.equal (settled |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "B.fs") "settled, scale is B's"
                       return [ () ]
                   })
@@ -673,6 +675,7 @@ let private extraTests =
                       let shapes = Hover.LastAnswers()
                       let uses = References.LastAnswers()
                       let graphs = [ state.Graph; appGraph ]
+                      let projectsNow () = graphs
                       let scope = scopeOf graphs state.OwnersOf (fun g -> if obj.ReferenceEquals(g, appGraph) then [ appFile ] else state.Files)
                       let line, character = find app "fromApp + 1"
                       let! first = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope appGraph appFile line character CancellationToken.None |> wait
@@ -688,7 +691,7 @@ let private extraTests =
                       state.Graph.SetText(a, libA + "\nlet added = 1\n") |> ignore
 
                       try
-                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) appGraph appFile line character CancellationToken.None |> wait
+                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) projectsNow appGraph appFile line character CancellationToken.None |> wait
 
                           match last with
                           | LastState.Outcome.Answered _ -> failtest "answered from the state before the restart"
@@ -696,6 +699,60 @@ let private extraTests =
                           | other -> failtest $"App restarted since: the held answer isn't the last state: %A{other}"
                       finally
                           gate.Set()
+
+                      return [ () ]
+                  })
+
+          Expect.equal (List.length results) 1 "ran"
+      }
+
+      testTask "references held from before another project was loaded refuse: App2 uses Lib's kept and publishes" {
+          let! results =
+              runReferencing { Name = "App2"; Files = [ "A.fs", libA ]; Steps = [] } appText (fun state appGraph appFile ->
+                  task {
+                      let shapes = Hover.LastAnswers()
+                      let uses = References.LastAnswers()
+                      let loaded = ResizeArray [ state.Graph; appGraph ]
+                      let projectsNow () = List.ofSeq loaded
+                      let filesOf (g: ProjectGraph) = if obj.ReferenceEquals(g, state.Graph) then state.Files else g.FilesOf |> List.ofArray
+                      let scope = scopeOf (List.ofSeq loaded) state.OwnersOf filesOf
+                      let a = state.Files.Head
+                      let line, character = find libA "kept = edited"
+                      let! first = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope state.Graph a line character CancellationToken.None |> wait
+                      Expect.isTrue (match first with References.Answer.Found u -> not u.IsEmpty | _ -> false) "kept is used"
+                      // App2, loaded later, uses kept too, and settles: the last state has its uses
+                      let app2Dir = Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName appFile), "App2")).FullName
+                      let app2File = Path.Combine(app2Dir, "App2.fs")
+                      File.WriteAllText(app2File, n "module App2.Main\n\nopen Lib.A\n\nlet two = kept + 2\n")
+                      let spec = appGraph.Spec
+
+                      let app2Spec =
+                          { spec with
+                              ProjectFile = Path.Combine(app2Dir, "App2.fsproj")
+                              SourceFiles = [ app2File ]
+                              OtherOptions =
+                                  spec.OtherOptions
+                                  |> List.map (fun o -> if o.StartsWith "--out:" then "--out:" + Path.Combine(app2Dir, "App2.dll") else o) }
+
+                      let! (app2: ProjectGraph) = ProjectGraph.Create(appGraph.Host, app2Spec, [ state.Graph ])
+
+                      try
+                          let! _ = app2.AllDiagnostics() |> wait
+                          loaded.Add app2
+                          let gate = hold [ state.Graph; appGraph; app2 ]
+                          state.Graph.SetText(a, libA.Replace("let kept =", "\nlet kept =")) |> ignore
+
+                          try
+                              let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) projectsNow state.Graph a (line + 1) character CancellationToken.None |> wait
+
+                              match last with
+                              | LastState.Outcome.Answered found -> failtest $"answered without App2's use: %A{found}"
+                              | LastState.Outcome.Refused Refusal.Moved -> ()
+                              | other -> failtest $"a project loaded since: %A{other}"
+                          finally
+                              gate.Set()
+                      finally
+                          app2.Dispose()
 
                       return [ () ]
                   })
@@ -712,6 +769,7 @@ let private extraTests =
                       let shapes = Hover.LastAnswers()
                       let uses = References.LastAnswers()
                       let r = state.Files.Head
+                      let projectsNow () = [ state.Graph ]
                       let scope = scopeOf [ state.Graph ] state.OwnersOf (fun _ -> state.Files)
                       let line, character = find text "first = 1"
                       let! _ = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope state.Graph r line character CancellationToken.None |> wait
@@ -725,7 +783,7 @@ let private extraTests =
                       state.Graph.SetText(r, text.Replace("let first = 1\n", "let extra = 0\nlet first = 1\n")) |> ignore
 
                       try
-                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) state.Graph r (line + 1) character CancellationToken.None |> wait
+                          let! last = References.fromLastState uses shapes (fun () -> false) (fun () -> true) projectsNow state.Graph r (line + 1) character CancellationToken.None |> wait
 
                           match last with
                           | LastState.Outcome.Answered a -> failtest $"answered %A{a}"

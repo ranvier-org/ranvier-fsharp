@@ -367,8 +367,10 @@ module Hover =
         let answers = ConditionalWeakTable<obj, Dictionary<AnswerKey, Answer>>()
         let order = LinkedList<struct (WeakReference * AnswerKey)>()
         let gate = obj ()
-        let rowShapes = ConditionalWeakTable<FSharpParseFileResults, FileShape>()
-        let wholeShapes = ConditionalWeakTable<FSharpParseFileResults, FileShape>()
+        // Lazy, so a second asker waits for the build under way instead of making another
+        let rowShapes = ConditionalWeakTable<FSharpParseFileResults, Lazy<FileShape>>()
+        let wholeShapes = ConditionalWeakTable<FSharpParseFileResults, Lazy<FileShape>>()
+        let answered = System.Collections.Concurrent.ConcurrentDictionary<string, unit>(StringComparer.OrdinalIgnoreCase)
         let mutable marked = 0L
 
         new() = LastAnswers(4096)
@@ -417,9 +419,32 @@ module Hover =
         /// The parse's shape, with rows when `byDeclaration`, made once while the parse lives
         member internal _.ShapeOf(text: string, parse: FSharpParseFileResults, byDeclaration: bool) : FileShape =
             if byDeclaration then
-                rowShapes.GetValue(parse, fun p -> PositionMap.shapeOf text p true)
+                rowShapes.GetValue(parse, fun p -> lazy (PositionMap.shapeOf text p true)).Value
             else
-                wholeShapes.GetValue(parse, fun _ -> PositionMap.textOnly text)
+                wholeShapes.GetValue(parse, fun _ -> lazy (PositionMap.textOnly text)).Value
+
+        /// The parse's shape, its directives and lexer states made, waiting at most until `ct`: the build goes on for
+        /// whoever asks next
+        member internal this.ShapeAsync(text: string, parse: FSharpParseFileResults, byDeclaration: bool, ct: CancellationToken) : Task<FileShape> =
+            let table = if byDeclaration then rowShapes else wholeShapes
+            let made = table.GetValue(parse, fun p -> lazy (if byDeclaration then PositionMap.shapeOf text p true else PositionMap.textOnly text))
+
+            if made.IsValueCreated && made.Value.States.IsValueCreated && made.Value.Directives.IsValueCreated then
+                Task.FromResult made.Value
+            else
+                Task
+                    .Run<FileShape>(fun () ->
+                        let s = made.Value
+                        s.Directives.Force() |> ignore
+                        s.States.Force() |> ignore
+                        s)
+                    .WaitAsync(ct)
+
+        /// Notes that a hover of the file was answered into the cache
+        member internal _.NoteAnswered(path: string) = answered.TryAdd(Path.GetFullPath path, ()) |> ignore
+
+        /// Whether a hover of the file was answered into the cache
+        member internal _.HasAnswered(path: string) = answered.ContainsKey(Path.GetFullPath path)
 
     /// <summary>
     /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
@@ -527,6 +552,7 @@ module Hover =
                         match answer, answers with
                         | Some markdown, ValueSome cache ->
                             let lineStr, names, endColumn = lookup
+                            cache.NoteAnswered path
 
                             cache.Add(
                                 owner,

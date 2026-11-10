@@ -45,7 +45,7 @@ type internal Period(token: string, what: string) =
 /// first ends the period unbegun, and an error answer, or none within <c>CreateTimeout</c>, leaves it so.
 /// </para>
 /// </remarks>
-type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publisher, client: RanvierClient) =
+type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publisher, client: RanvierClient, beginHold: TimeSpan) =
     // Graph thread
     let mutable status: Memo<ProgressStatus> = Unchecked.defaultof<_>
     let mutable root: Owner = Unchecked.defaultof<_>
@@ -83,7 +83,9 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
 
             (progress p (JObject(JProperty("kind", "begin"), JProperty("title", Progress.Title), JProperty("message", p.Message))))
                 .ContinueWith(fun (sent: Task) ->
-                    if sent.IsCompletedSuccessfully && p.State = Begun then
+                    if not sent.IsCompletedSuccessfully then
+                        log $"sending the progress's begin failed: %O{sent.Exception}"
+                    elif p.State = Begun then
                         Interlocked.Exchange(&showing, 1) |> ignore
                         Volatile.Read(&markShown).TrySetResult() |> ignore)
         else
@@ -148,7 +150,7 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
 
     let holdFor (s: ProgressStatus) =
         match s with
-        | Busy _ -> Progress.BeginHold
+        | Busy _ -> beginHold
         | Settled -> Progress.EndHold
 
     /// Graph thread: once one more change is wanted, after `after`. The one timer is re-armed, so a burst leaves one.
@@ -203,8 +205,10 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     /// The title of every period; its message says what is pending
     static member Title: string = "F#"
 
-    /// How long something must have been pending before the progress begins, or says something else. Settable for tests.
-    static member val BeginHold: TimeSpan = TimeSpan.FromMilliseconds 100. with get, set
+    /// How long something must have been pending before the progress begins, or says something else: the default
+    static member BeginHold: TimeSpan = TimeSpan.FromMilliseconds 100.
+
+    new(host, workspace, publisher, client) = new Progress(host, workspace, publisher, client, Progress.BeginHold)
 
     /// How long everything must have settled before the progress ends
     static member EndHold: TimeSpan = TimeSpan.FromMilliseconds 100.

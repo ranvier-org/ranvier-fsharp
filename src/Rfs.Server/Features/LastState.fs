@@ -38,8 +38,14 @@ module LastState =
           Files: struct (string * int64)[] }
 
     /// A settled answer and the graphs it is of: the asking graph first
+    /// `Projects`: the loaded projects in the answer's turn, held weakly
     [<NoEquality; NoComparison>]
-    type Entry<'T> = { Graphs: GraphAt[]; Answer: 'T }
+    type Entry<'T> =
+        { Graphs: GraphAt[]
+          Projects: WeakReference<ProjectGraph>[]
+          Answer: 'T }
+
+    let projectsOf (graphs: ProjectGraph list) = graphs |> List.map (fun g -> WeakReference<ProjectGraph> g) |> Array.ofList
 
     /// The asking file, its version, and the token asked at: line, end column, line text and long name
     type Key = (struct (string * int64 * int * int * string * string))
@@ -92,8 +98,24 @@ module LastState =
         let order = LinkedList<struct (Key * Entry<'T>)>()
         let gate = obj ()
         let mutable answered = 0L
+        // How many held entries name each file
+        let named = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+
+        let note (entry: Entry<'T>) (by: int) =
+            for g in entry.Graphs do
+                for struct (f, _) in g.Files do
+                    let full = Path.GetFullPath f
+
+                    match named.TryGetValue full, by with
+                    | (true, n), _ when n + by <= 0 -> named.Remove full |> ignore
+                    | (true, n), _ -> named[full] <- n + by
+                    | _, b when b > 0 -> named[full] <- b
+                    | _ -> ()
 
         new() = Cache<'T>(256)
+
+        /// Whether a held answer is of the file, so a change of it may be answered from
+        member _.Names(path: string) = lock gate (fun () -> named.ContainsKey(Path.GetFullPath path))
 
         /// How many answers were given from the last state
         member _.Answered = Interlocked.Read &answered
@@ -105,13 +127,18 @@ module LastState =
         member _.Add(key: Key, entry: Entry<'T>) =
             lock gate (fun () ->
                 match entries.TryGetValue key with
-                | true, node -> order.Remove node
+                | true, node ->
+                    let struct (_, old) = node.Value
+                    note old -1
+                    order.Remove node
                 | _ -> ()
 
                 entries[key] <- order.AddFirst(struct (key, entry))
+                note entry 1
 
                 while entries.Count > capacity do
-                    let struct (k, _) = order.Last.Value
+                    let struct (k, old) = order.Last.Value
+                    note old -1
                     order.RemoveLast()
                     entries.Remove k |> ignore)
 
@@ -143,27 +170,33 @@ module LastState =
     /// The forward maps made, by old shape and new shape, kept while both shapes live
     let private forwards = ConditionalWeakTable<FileShape, ConditionalWeakTable<FileShape, ForwardMap>>()
 
-    let private forwardOf (old: FileShape) (current: FileShape) : ForwardMap =
-        forwards.GetValue(old, fun _ -> ConditionalWeakTable()).GetValue(current, fun c -> PositionMap.forward old c)
+    /// Made once per pair; a build cancelled by `ct` stores nothing
+    let private forwardOf (old: FileShape) (current: FileShape) (ct: CancellationToken) : ForwardMap =
+        forwards.GetValue(old, fun _ -> ConditionalWeakTable()).GetValue(current, fun c -> PositionMap.forward old c ct)
 
-    let private shapesOf (shapes: Hover.LastAnswers) (p: PublishedState) (view: TextView) =
-        let old = shapes.ShapeOf(p.Text, p.Parse, not p.Whole)
-        let current = if old.Rows.Length = 0 then PositionMap.textOnly view.Text else shapes.ShapeOf(view.Text, view.Parse, true)
-        old, current
+    /// The old and new shapes of a changed file, made or waited for until `ct`
+    let private shapesOf (shapes: Hover.LastAnswers) (p: PublishedState) (view: TextView) (ct: CancellationToken) =
+        task {
+            let! old = shapes.ShapeAsync(p.Text, p.Parse, not p.Whole, ct)
+
+            if old.Rows.Length = 0 then
+                return old, PositionMap.textOnly view.Text
+            else
+                let! current = shapes.ShapeAsync(view.Text, view.Parse, true, ct)
+                return old, current
+        }
 
     /// <summary>
     /// Makes the shape of the file's latest parse, rows, directives and lexer states, once the parse lands: so an answer
-    /// from the last state doesn't lex on its way. For a client that shows the progress, on each change.
+    /// from the last state doesn't lex on its way. For a client that shows the progress, and only for a file something
+    /// held could be answered from (the server decides).
     /// </summary>
     let internal prepare (shapes: Hover.LastAnswers) (graph: ProjectGraph) (path: string) (ct: CancellationToken) : Task =
         task {
             try
                 let! latest = graph.LatestText(path, [||], (fun () -> false), ct)
-                ct.ThrowIfCancellationRequested()
-                let shape = shapes.ShapeOf(latest.View.Text, latest.View.Parse, true)
-                shape.Directives.Force() |> ignore
-                ct.ThrowIfCancellationRequested()
-                shape.States.Force() |> ignore
+                let! _ = shapes.ShapeAsync(latest.View.Text, latest.View.Parse, true, ct)
+                ()
             with _ ->
                 ()
         }
@@ -180,16 +213,26 @@ module LastState =
             let file = Path.GetFileName path
             lock traceGate (fun () -> File.AppendAllText(traceFile, $"%s{at} %s{file}:%d{line + 1} %s{outcome} %s{text}\n"))
 
+    /// Whether the loaded projects now are the ones the answer's turn had
+    let private sameProjects (held: WeakReference<ProjectGraph>[]) (now: ProjectGraph list) =
+        held.Length = now.Length
+        && held
+           |> Array.forall (fun w ->
+               match w.TryGetTarget() with
+               | true, g -> now |> List.exists (fun n -> obj.ReferenceEquals(n, g))
+               | _ -> false)
+
     /// <summary>
     /// The answer asked at the place the cursor had in the state it was given on, with its ranges mapped by `remap`, or
     /// why there is none. `busy` (a reload under way) and `pending` (the progress has begun) are read in the first turn,
-    /// before anything is lexed, and again in the turn that reads the files.
+    /// before anything is lexed, and again in the turn that reads the files, with `projects`, the loaded projects.
     /// </summary>
     let internal answer
         (cache: Cache<'T>)
         (shapes: Hover.LastAnswers)
         (busy: unit -> bool)
         (pending: unit -> bool)
+        (projects: unit -> ProjectGraph list)
         (graph: ProjectGraph)
         (path: string)
         (line: int)
@@ -217,25 +260,27 @@ module LastState =
                 let find (shape: FileShape) (version: int64) (l: int) (c: int) =
                     Hover.lookupIn shape l c |> Option.bind (fun lookup -> cache.Find(graph, keyOf path version l lookup) |> ValueOption.toOption)
 
-                let currentShape = shapes.ShapeOf(latest.View.Text, latest.View.Parse, true)
+                let! currentShape = shapes.ShapeAsync(latest.View.Text, latest.View.Parse, true, ct)
 
                 // The text as the answer had it, or the cursor mapped to the last published result's
-                let found =
-                    match find currentShape latest.View.Version line character with
-                    | Some entry -> Ok entry
-                    | None ->
-                        match latest.Published with
-                        | ValueNone -> Error Refusal.NoSnapshot
-                        | ValueSome p when p.Version = latest.View.Version -> Error Refusal.NotAnswered
-                        | ValueSome p ->
-                            let old, current = shapesOf shapes p latest.View
+                let! found =
+                    task {
+                        match find currentShape latest.View.Version line character with
+                        | Some entry -> return Ok entry
+                        | None ->
+                            match latest.Published with
+                            | ValueNone -> return Error Refusal.NoSnapshot
+                            | ValueSome p when p.Version = latest.View.Version -> return Error Refusal.NotAnswered
+                            | ValueSome p ->
+                                let! old, current = shapesOf shapes p latest.View ct
 
-                            match PositionMap.map old current line character with
-                            | Error refusal -> Error refusal
-                            | Ok at ->
-                                match find old p.Version at.OldLine at.OldCharacter with
-                                | Some entry -> Ok entry
-                                | None -> Error Refusal.NotAnswered
+                                match PositionMap.map old current line character with
+                                | Error refusal -> return Error refusal
+                                | Ok at ->
+                                    match find old p.Version at.OldLine at.OldCharacter with
+                                    | Some entry -> return Ok entry
+                                    | None -> return Error Refusal.NotAnswered
+                    }
 
                 mark "cursor"
 
@@ -252,7 +297,7 @@ module LastState =
                     if graphs |> Array.exists ValueOption.isNone then
                         return traced (Outcome.Refused Refusal.Moved)
                     else
-                        let! now = graph.FilesNow(graphs |> Array.map _.Value, busy, pending, ct)
+                        let! now = graph.FilesNow(graphs |> Array.map _.Value, busy, pending, projects, ct)
                         ct.ThrowIfCancellationRequested()
                         mark "files-turn"
 
@@ -289,6 +334,9 @@ module LastState =
                             return traced (Outcome.Refused Refusal.Reloading)
                         elif not now.Pending then
                             return traced Outcome.Settled
+                        elif not (sameProjects entry.Projects now.Projects) then
+                            // A project loaded, reloaded or gone since: its uses may be missing
+                            return traced (Outcome.Refused Refusal.Moved)
                         elif askingNow <> Some latest.View.Version then
                             return traced (Outcome.Refused Refusal.Moved)
                         else
@@ -307,20 +355,40 @@ module LastState =
                                         | true, l -> l.Add n
                                         | _ -> byPath[full] <- List [ n ]))
 
+                                // The changed files the answer has a range in, each one's map made before mapping
+                                let needed = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+                                remap
+                                    (fun r ->
+                                        needed.Add(Path.GetFullPath r.FileName) |> ignore
+                                        Ok r)
+                                    entry.Answer
+                                |> ignore
+
+                                let maps = Dictionary<string, ForwardMap>(StringComparer.OrdinalIgnoreCase)
+
+                                for full in needed do
+                                    match byPath.TryGetValue full with
+                                    | true, matches when matches.Count = 1 ->
+                                        match matches[0] with
+                                        | FileNow.Changed(view, ValueSome p) ->
+                                            let! old, current = shapesOf shapes p view ct
+                                            maps[full] <- forwardOf old current ct
+                                        | _ -> ()
+                                    | _ -> ()
+
                                 let remapIn (r: range) : Result<range, Refusal> =
                                     ct.ThrowIfCancellationRequested()
+                                    let full = Path.GetFullPath r.FileName
 
-                                    match byPath.TryGetValue(Path.GetFullPath r.FileName) with
+                                    match byPath.TryGetValue full with
                                     | false, _ -> Error Refusal.Moved
                                     | true, matches ->
                                         if matches |> Seq.forall (function FileNow.Same -> true | _ -> false) then
                                             Ok r
                                         else
-                                            match List.ofSeq matches with
-                                            | [ FileNow.Changed(view, ValueSome p) ] ->
-                                                let old, current = shapesOf shapes p view
-                                                let map = forwardOf old current
-
+                                            match maps.TryGetValue full with
+                                            | true, map ->
                                                 match map.At (r.StartLine - 1) r.StartColumn, map.At (r.EndLine - 1) r.EndColumn with
                                                 // Both ends in one row, moved by its shift
                                                 | Ok(struct (s, rowS)), Ok(struct (e, rowE)) when rowS = rowE && s - (r.StartLine - 1) = e - (r.EndLine - 1) ->
@@ -347,7 +415,8 @@ module LastState =
     /// </summary>
     /// <remarks>
     /// While something is pending but the progress hasn't begun (Settled), the last-state answer is asked again once
-    /// `whenShown` completes: the begin follows the pending state by the progress's hold.
+    /// `whenShown` completes: the begin follows the pending state by the progress's hold. Settled with the mark shown
+    /// ends the trying: nothing is pending then.
     /// </remarks>
     let internal race
         (whenShown: unit -> Task)
@@ -360,11 +429,12 @@ module LastState =
                 let mutable found = ValueNone
 
                 while found.IsNone do
+                    let shown = whenShown ()
+
                     match! last ct with
-                    | Outcome.Settled ->
-                        let shown = whenShown ()
-                        // Shown already, but not pending in that turn: ask again shortly
-                        if shown.IsCompleted then do! Task.Delay(50, ct) else do! shown.WaitAsync ct
+                    // Not shown when asked: ask again once it is
+                    | Outcome.Settled when not shown.IsCompleted -> do! shown.WaitAsync ct
+                    // Shown and nothing pending: the settled answer is the one
                     | o -> found <- ValueSome o
 
                 return found.Value

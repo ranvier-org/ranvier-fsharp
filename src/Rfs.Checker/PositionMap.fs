@@ -317,7 +317,7 @@ module PositionMap =
     /// A position outside every old row is Gap; a row with no unchanged counterpart is Edited (or OrdinalMoved). A
     /// range is assumed to lie in one row: a caller mapping both ends must require the same row index for each.
     /// </remarks>
-    let forward (old: FileShape) (current: FileShape) : ForwardMap =
+    let forward (old: FileShape) (current: FileShape) (ct: System.Threading.CancellationToken) : ForwardMap =
         if String.Equals(old.Text, current.Text, StringComparison.Ordinal) then
             { At = fun line _ -> Ok(struct (line, -1)) }
         elif old.Rows.Length = 0 || current.Rows.Length = 0 then
@@ -356,6 +356,7 @@ module PositionMap =
             let rowShift =
                 rows
                 |> Array.map (fun was ->
+                    ct.ThrowIfCancellationRequested()
                     let k = (was.Key.ModulePath, was.Key.Name, was.Key.Kind)
                     let now = groupOf currentGroups k
                     let before = groupOf oldGroups k

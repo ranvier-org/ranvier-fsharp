@@ -39,10 +39,12 @@ type private Run =
             r.Owner.Dispose()
             ValueTask()
 
-let private startIn (root: string) (progress: bool) (prepare: LspClient -> unit) : Task<Run> =
+let private startInWith (root: string) (progress: bool) (prepare: LspClient -> unit) (configure: RanvierServer -> unit) : Task<Run> =
     task {
         let! lsp, owner, server = TestServer.startCapturing ()
         prepare lsp
+        let! made = server |> within
+        configure made
         let events = ConcurrentQueue<string>()
         let titles = ConcurrentQueue<string>()
         let messages = ConcurrentQueue<string>()
@@ -114,6 +116,8 @@ let private startIn (root: string) (progress: bool) (prepare: LspClient -> unit)
               Messages = messages
               Publishes = publishes }
     }
+
+let private startIn (root: string) (progress: bool) (prepare: LspClient -> unit) = startInWith root progress prepare ignore
 
 let private start (progress: bool) = startIn depsDir progress ignore
 
@@ -562,32 +566,27 @@ let tests =
           }
 
           testTask "a check that settles inside the progress's begin hold gives no answer from the last state" {
-              let hold = Progress.BeginHold
-              Progress.BeginHold <- TimeSpan.FromSeconds 30.
+              // The hold is this server's: no other test sees it
+              use! r = startInWith depsDir true ignore (fun server -> server.ProgressBeginHold <- TimeSpan.FromSeconds 30.)
+              do! load r
+              do! r.Lsp.DidOpen(a, File.ReadAllText a)
+              do! r.Server.Publisher.Flushed()
+              let! settled = referencesAt r a 4 4 |> within
+              let graph = (r.Server.Workspace.ProjectOf a).Value
+              let gate, armed = holdChecks graph
 
               try
-                  use! r = start true
-                  do! load r
-                  do! r.Lsp.DidOpen(a, File.ReadAllText a)
-                  do! r.Server.Publisher.Flushed()
-                  let! settled = referencesAt r a 4 4 |> within
-                  let graph = (r.Server.Workspace.ProjectOf a).Value
-                  let gate, armed = holdChecks graph
-
-                  try
-                      do! r.Lsp.DidChange(a, 1, editAt 17 33 34 "3")
-                      let asked = referencesAt r a 4 4
-                      let! _ = Task.WhenAny(asked, Task.Delay 2000)
-                      Expect.isFalse asked.IsCompleted "pending, but the progress hasn't begun: it waits"
-                      Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state before the begin"
-                  finally
-                      armed.Value <- false
-                      gate.Set()
-
-                  let! after = referencesAt r a 4 4 |> within
-                  Expect.equal after settled "settled inside the hold: the settled answer"
-                  Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state"
-                  Expect.isFalse (r.Seen |> List.exists (fun e -> e.StartsWith "begin")) "no begin was sent"
+                  do! r.Lsp.DidChange(a, 1, editAt 17 33 34 "3")
+                  let asked = referencesAt r a 4 4
+                  let! _ = Task.WhenAny(asked, Task.Delay 2000)
+                  Expect.isFalse asked.IsCompleted "pending, but the progress hasn't begun: it waits"
+                  Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state before the begin"
               finally
-                  Progress.BeginHold <- hold
+                  armed.Value <- false
+                  gate.Set()
+
+              let! after = referencesAt r a 4 4 |> within
+              Expect.equal after settled "settled inside the hold: the settled answer"
+              Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state"
+              Expect.isFalse (r.Seen |> List.exists (fun e -> e.StartsWith "begin")) "no begin was sent"
           } ]

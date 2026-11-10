@@ -85,8 +85,26 @@ module Definition =
     /// The cursor's answer is a request node on the file (ProjectGraph.ReadFile), which runs again on a new text. The
     /// file's reading is over before another file's starts: no read waits for a file while it holds one. With it, what
     /// an answer from the last state needs: the place asked at, and the files the answer was read from at their versions.
-    let private atIn (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
+    let private atIn
+        (record: (unit -> ProjectGraph list) option)
+        (ownersOf: string -> ProjectGraph list)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        =
         task {
+            // The loaded projects, read before the answer's turns: one loaded during them refuses, never the other way
+            let! loaded =
+                match record with
+                | Some projects ->
+                    task {
+                        let! now = graph.FilesNow([||], (fun () -> false), (fun () -> false), projects, ct)
+                        return now.Projects
+                    }
+                | None -> Task.FromResult []
+
             // Only the check is asked under the lock
             let! struct (found, view, lookup) =
                 graph.ReadFile(
@@ -98,6 +116,7 @@ module Definition =
                         match lookup with
                         | Some l -> struct (find view.Result.CheckResults line l, inputs, lookup)
                         | None -> struct (Nowhere, inputs, lookup)),
+                    record.IsSome,
                     ct
                 )
 
@@ -109,8 +128,11 @@ module Definition =
 
             let entry (parts: (ProjectGraph * int64 * struct (string * int64)[]) list) (answer: range option) =
                 match lookup, LastState.merge (asking :: parts) with
-                | Some l, Some graphs ->
-                    let e: LastState.Entry<range option> = { Graphs = graphs; Answer = answer }
+                | Some l, Some graphs when record.IsSome ->
+                    let e: LastState.Entry<range option> =
+                        { Graphs = graphs
+                          Projects = LastState.projectsOf loaded
+                          Answer = answer }
                     ValueSome(struct (LastState.keyOf path version line l, e))
                 | _ -> ValueNone
 
@@ -147,7 +169,7 @@ module Definition =
 
     let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
         task {
-            let! struct (found, _) = atIn ownersOf graph path line character ct
+            let! struct (found, _) = atIn None ownersOf graph path line character ct
             return found
         }
 
@@ -163,6 +185,7 @@ module Definition =
         (shapes: Hover.LastAnswers)
         (busy: unit -> bool)
         (pending: unit -> bool)
+        (projects: unit -> ProjectGraph list)
         (graph: ProjectGraph)
         (path: string)
         (line: int)
@@ -174,7 +197,7 @@ module Definition =
             | None -> Ok None
             | Some r -> remap r |> Result.map Some
 
-        LastState.answer answers shapes busy pending graph path line character remap ct
+        LastState.answer answers shapes busy pending projects graph path line character remap ct
 
     /// <summary>
     /// The definition's location: the settled answer, given to `answers` too, or one from the last state (fromLastState)
@@ -186,6 +209,7 @@ module Definition =
         (busy: unit -> bool)
         (pending: unit -> bool)
         (whenShown: unit -> Task)
+        (projects: unit -> ProjectGraph list)
         (ownersOf: string -> ProjectGraph list)
         (graph: ProjectGraph)
         (path: string)
@@ -197,7 +221,7 @@ module Definition =
             whenShown
             (fun ct ->
                 task {
-                    let! struct (found, entry) = atIn ownersOf graph path line character ct
+                    let! struct (found, entry) = atIn (Some projects) ownersOf graph path line character ct
 
                     match entry with
                     | ValueSome(struct (key, e)) -> answers.Add(key, e)
@@ -205,5 +229,5 @@ module Definition =
 
                     return found
                 })
-            (fromLastState answers shapes busy pending graph path line character)
+            (fromLastState answers shapes busy pending projects graph path line character)
             ct

@@ -215,6 +215,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     /// How many references and definitions were answered from the last state. For tests.
     member internal _.LastStateAnswers: int64 = lastUses.Answered + lastDefinitions.Answered
 
+    /// How long something must be pending before the progress begins: set before `initialized`. For tests.
+    member val internal ProgressBeginHold: TimeSpan = Progress.BeginHold with get, set
+
     /// Graph thread, read in a request's turn: a check is pending and the progress that marks a last-state answer has
     /// begun on the client
     member private _.MarkShown() : bool =
@@ -230,7 +233,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     /// After a change: the shape of the file's next parse, made once it lands
     member private _.Prepare(path: string) : unit =
-        if canShowProgress then
+        // Only a file something held could answer from: else nothing reads the shape
+        if canShowProgress && (lastUses.Names path || lastDefinitions.Names path || lastAnswers.HasAnswered path) then
             let cts = new CancellationTokenSource()
 
             preparing.AddOrUpdate(
@@ -341,10 +345,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                           ServerInfo = Some { Name = "ranvierautocomplete"; Version = None } }
             }
 
-        member _.Initialized(_) =
+        member this.Initialized(_) =
             async {
                 if canShowProgress then
-                    progress <- Some(new Progress(host, workspace, publisher, client))
+                    progress <- Some(new Progress(host, workspace, publisher, client, this.ProgressBeginHold))
 
                 registerWatchers ()
 
@@ -462,7 +466,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                     let! found =
                         if canShowProgress then
-                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown this.WhenShown workspace.OwnersOf graph path line character ct
+                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown this.WhenShown workspace.ProjectsNow workspace.OwnersOf graph path line character ct
                         else
                             Definition.at workspace.OwnersOf graph path line character ct
 
