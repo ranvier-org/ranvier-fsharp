@@ -439,7 +439,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentHover(p: HoverParams) =
             reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
-                    let! text = Hover.at workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+                    let! text =
+                        Hover.answer (fun () -> workspace.IsLoading) workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
 
                     return
                         text

@@ -17,6 +17,7 @@
     <Compile Include="DefinitionTests.fs" />
     <Compile Include="TokenGrid.fs" />
     <Compile Include="HoverGridTests.fs" />
+    <Compile Include="LastStateGridTests.fs" />
     <Compile Include="DefinitionGridTexts.fs" />
     <Compile Include="DefinitionGridTests.fs" />
     <Compile Include="ReferencesGridTexts.fs" />

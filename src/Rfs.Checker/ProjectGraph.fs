@@ -118,13 +118,24 @@ type FileView =
       Identity: obj
       /// The result of the declaration that holds the 1-based line, and its first line: the same object while that
       /// declaration's result is kept. None outside every declaration, and for a file checked whole.
-      RowAt: int -> struct (obj * int) voption }
+      RowAt: int -> struct (obj * int) voption
+      /// Whether the result is a whole check's (CheckFile), not a finish of declaration results
+      Whole: bool }
 
     /// Check results for a query that reads the 1-based line and 0-based column, inside the `read` it was given to. In a file
     /// checked by declaration, a kept declaration holds the names as they were when it was checked: when an earlier result
     /// has changed since, this checks it again in the current environment and gives a view of that, adopting nothing
     /// (ProjectGraph.AdHocChecks). A file checked whole always has its CheckResults.
     member v.CheckResultsAt(line: int, column: int) : FSharpCheckFileResults = v.At line column
+
+/// A file's latest text, read in one graph turn (ProjectGraph.LatestText)
+[<NoEquality; NoComparison>]
+type LatestText =
+    { View: TextView
+      /// The file's result is settled on this text
+      Settled: bool
+      /// The latest `///` comments of each file asked for, ValueNone while its parse is pending
+      Docs: FileDocs voption[] }
 
 /// One file of a read made in one graph turn (ProjectGraph.ReadInOneTurn).
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
@@ -734,6 +745,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
               Version = r.Parsed.Version
               Before = r.Key.Before
               Identity = r.Identity
+              Whole = r.Lock.IsNone
               RowAt =
                 fun line ->
                     match r.Declarations with
@@ -844,6 +856,39 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             match answer () with
             | ValueSome found -> Task.FromResult found
             | ValueNone -> Request.waitForNextTurn flight
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
+    /// <summary>
+    /// A request node: the file's latest text and its parse, once parsed, read in one graph turn with whether the file's
+    /// result is settled on that text (as ReadFile waits for) and the latest `///` comments of each of `docsOf` (a graph
+    /// on this one's host, and its file), ValueNone for one whose parse is pending. Never waits for a check.
+    /// </summary>
+    member _.LatestText(file: string, docsOf: (ProjectGraph * string)[], ct: CancellationToken) : Task<LatestText> =
+        let i = indexOf file
+
+        if isSignatureFile files[i] then
+            invalidArg (nameof file) $"%s{file} is a signature file"
+
+        let body (flight: CancellationToken) =
+            let text = files[i].Text.Text.Value
+            let p = files[i].Text.Parsed.Value
+
+            if text.Version <> Volatile.Read &requested[i] || p.Version <> text.Version then
+                Request.waitForNextTurn flight
+            else
+                let settled =
+                    match (try readSettled i (fun f version -> (f :?> IReadableFile).Readable version) with NotReadyException _ -> ValueNone) with
+                    | ValueSome _ -> true
+                    | ValueNone -> false
+
+                Task.FromResult
+                    { View = { Parse = p.Parse; Text = p.Text; Version = p.Version }
+                      Settled = settled
+                      Docs = docsOf |> Array.map (fun (g: ProjectGraph, f) -> g.DocsNow f) }
 
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)

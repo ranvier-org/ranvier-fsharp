@@ -322,6 +322,66 @@ module Hover =
     /// Runs between a hover's signature and its docs, with the file. For tests.
     let mutable internal afterSignature: string -> Task = fun _ -> Task.CompletedTask
 
+    /// The first line of a hover answered from the last state while the file's check is pending
+    [<Literal>]
+    let StaleMark = "*From before the latest edit: still checking.*"
+
+    /// A hover given on a settled result: its Markdown, and each comment of another file it showed, by owner, to be the
+    /// same in that file's latest parse when the hover is given again
+    type private Answer =
+        { Markdown: string
+          Docs: (ProjectGraph * string)[]
+          Comments: (string * string * string[] voption)[] }
+
+    /// The answers given on one published result of a file (FileView.Identity), by their place in its text: in one
+    /// result a row's result and a position in it are one place
+    type private Snapshot =
+        { Identity: obj
+          Version: int64
+          Shape: Lazy<FileShape>
+          Answers: ConcurrentDictionary<struct (int * int * string * string), Answer> }
+
+    [<Literal>]
+    let private maxFiles = 64
+
+    [<Literal>]
+    let private maxAnswers = 4096
+
+    /// Per file, the result hovers last read settled. A file's answers are only ever of that one result.
+    let private snapshots = ConcurrentDictionary<string, Snapshot>(StringComparer.OrdinalIgnoreCase)
+
+    let private snapshotFor (path: string) (identity: obj) (version: int64) (text: string) (parse: FSharpParseFileResults) (whole: bool) =
+        let fresh () =
+            { Identity = identity
+              Version = version
+              Shape = lazy (PositionMap.shapeOf text parse (not whole))
+              Answers = ConcurrentDictionary() }
+
+        let s =
+            snapshots.AddOrUpdate(
+                path,
+                (fun _ -> fresh ()),
+                fun _ known ->
+                    if obj.ReferenceEquals(known.Identity, identity) || known.Version > version then known else fresh ()
+            )
+
+        if snapshots.Count > maxFiles then
+            for KeyValue(p, _) in snapshots |> Seq.truncate (snapshots.Count - maxFiles) |> Array.ofSeq do
+                if not (String.Equals(p, path, StringComparison.OrdinalIgnoreCase)) then
+                    snapshots.TryRemove p |> ignore
+
+        if obj.ReferenceEquals(s.Identity, identity) then ValueSome s else ValueNone
+
+    let private remember (s: Snapshot) (line: int) ((lineStr, names, endColumn): string * string list * int) (answer: Answer) =
+        if s.Answers.Count < maxAnswers then
+            s.Answers[struct (line, endColumn, lineStr, String.Join("\n", names))] <- answer
+
+    let private linesOf (doc: FSharp.Compiler.Xml.XmlDoc voption) =
+        doc |> ValueOption.map _.UnprocessedLines
+
+    /// How many hovers were answered from the last state. For tests.
+    let mutable internal markedAnswers = 0L
+
     /// <summary>
     /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
     /// ProjectGraph.ReadFile). The signature is the check's, cached by the declaration result and position, or by the
@@ -342,13 +402,15 @@ module Hover =
                     graph.ReadFile(
                         path,
                         (fun view -> lookupOf view.Text line character),
-                        (fun view lookup -> lookup |> Option.map (fun l -> signatureOf path view line l, view.Identity, view.Parse)),
+                        (fun view lookup ->
+                            lookup
+                            |> Option.map (fun l -> signatureOf path view line l, view.Identity, view.Parse, struct (view.Version, view.Text, view.Whole, l))),
                         ct
                     )
 
                 match signature with
                 | None -> return None
-                | Some(((_, sources) as signature), identity, parse) ->
+                | Some(((_, sources) as signature), identity, parse, struct (version, text, whole, lookup)) ->
                     let held =
                         sources
                         |> List.choose id
@@ -388,16 +450,149 @@ module Hover =
                         if own then
                             docs[path] <- docsOfParse parse
 
-                        let commentOf =
-                            FileDocs.CommentOf(fun file ->
-                                match docs.TryGetValue file with
-                                | true, d -> ValueSome d
-                                | _ -> ValueNone)
+                        let comments = ResizeArray()
 
-                        return format (compose commentOf signature)
+                        let commentOf =
+                            let of' =
+                                FileDocs.CommentOf(fun file ->
+                                    match docs.TryGetValue file with
+                                    | true, d -> ValueSome d
+                                    | _ -> ValueNone)
+
+                            fun (owner: FSharpDocOwner) ->
+                                let c = of' owner
+
+                                if not (String.Equals(owner.FileName, path, StringComparison.OrdinalIgnoreCase)) then
+                                    comments.Add((owner.FileName, owner.Path, linesOf c))
+
+                                c
+
+                        let answer = format (compose commentOf signature)
+
+                        match answer with
+                        | Some markdown ->
+                            match snapshotFor path identity version text parse whole with
+                            | ValueSome s ->
+                                remember
+                                    s
+                                    line
+                                    lookup
+                                    { Markdown = markdown
+                                      Docs = Array.map id held
+                                      Comments = comments.ToArray() }
+                            | ValueNone -> ()
+                        | None -> ()
+
+                        return answer
             }
 
         attempt ()
+
+    /// What a hover from the last state found: a refusal, which means wait for the check, or the answer with the place
+    /// in the old text it is of
+    [<RequireQualifiedAccess>]
+    type internal LastAnswer =
+        | Refused of Refusal
+        /// The file's result is settled: a hover answers it at once
+        | Settled
+        | Marked of markdown: string * at: OldPosition
+
+    /// <summary>
+    /// The hover at the position of `path`'s latest text from the last result a hover read settled, while the file's
+    /// check is pending: the answer given then at the place the position had (PositionMap.map), marked. Never renders:
+    /// a place not answered on that result is refused.
+    /// </summary>
+    /// <remarks>
+    /// The answer's comments of other files are compared with those files' latest parses, read in one turn with the text:
+    /// an edit of one refuses. Reads the file's text and parse, never its check, so it needs no lock and waits for no check.
+    /// </remarks>
+    let internal fromLastState (loading: unit -> bool) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<LastAnswer> =
+        task {
+            if loading () then
+                return LastAnswer.Refused Refusal.Reloading
+            else
+                match snapshots.TryGetValue path with
+                | false, _ -> return LastAnswer.Refused Refusal.NoSnapshot
+                | true, s ->
+                    let! latest = graph.LatestText(path, [||], ct)
+
+                    if latest.Settled then
+                        return LastAnswer.Settled
+                    else
+                        let old = s.Shape.Value
+
+                        let current =
+                            if String.Equals(latest.View.Text, old.Text, StringComparison.Ordinal) then
+                                PositionMap.textOnly latest.View.Text
+                            elif old.Rows.Length = 0 then
+                                PositionMap.textOnly latest.View.Text
+                            else
+                                PositionMap.shapeOf latest.View.Text latest.View.Parse true
+
+                        match PositionMap.map old current line character with
+                        | Error refusal -> return LastAnswer.Refused refusal
+                        | Ok at ->
+                            match lookupOf old.Text at.OldLine at.OldCharacter with
+                            | None -> return LastAnswer.Refused Refusal.NotAnswered
+                            | Some(lineStr, names, endColumn) ->
+                                match s.Answers.TryGetValue(struct (at.OldLine, endColumn, lineStr, String.Join("\n", names))) with
+                                | false, _ -> return LastAnswer.Refused Refusal.NotAnswered
+                                | true, answer ->
+                                    let! again = graph.LatestText(path, answer.Docs, ct)
+
+                                    let docs = Dictionary<string, FileDocs>(StringComparer.OrdinalIgnoreCase)
+                                    let mutable pending = false
+
+                                    for (_, file), d in Array.zip answer.Docs again.Docs do
+                                        match d with
+                                        | ValueSome d -> docs[file] <- d
+                                        | ValueNone -> pending <- true
+
+                                    let commentOf = FileDocs.CommentOf(fun file -> match docs.TryGetValue file with | true, d -> ValueSome d | _ -> ValueNone)
+
+                                    let same =
+                                        not pending
+                                        && again.View.Version = latest.View.Version
+                                        && answer.Comments
+                                           |> Array.forall (fun (file, ownerPath, lines) ->
+                                               linesOf (commentOf { FileName = file; Path = ownerPath }) = lines)
+
+                                    if not same then
+                                        return LastAnswer.Refused Refusal.DocsChanged
+                                    else
+                                        Interlocked.Increment &markedAnswers |> ignore
+                                        return LastAnswer.Marked(StaleMark + "\n\n" + answer.Markdown, at)
+        }
+
+    /// <summary>
+    /// A hover: from the last state, marked (fromLastState), when the file's check is pending and the position is safe
+    /// and was answered then; otherwise once the check settles (`at`). An answer from the last state is never given once
+    /// the settled one is.
+    /// </summary>
+    let answer (loading: unit -> bool) (owners: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
+        task {
+            use cts = CancellationTokenSource.CreateLinkedTokenSource ct
+            let settled = at owners graph path line character cts.Token
+            settled.ContinueWith(fun (t: Task<_>) -> t.Exception |> ignore) |> ignore
+
+            let! last =
+                task {
+                    try
+                        return! fromLastState loading graph path line character cts.Token
+                    with
+                    | :? OperationCanceledException when ct.IsCancellationRequested -> return raise (OperationCanceledException ct)
+                    | e ->
+                        // Nothing from the last state: the settled hover answers, or fails, as without it
+                        Diagnostics.Trace.WriteLine $"Rfs.Server: a hover from the last state failed: %O{e}"
+                        return LastAnswer.Refused Refusal.NotAnswered
+                }
+
+            match last with
+            | LastAnswer.Marked(markdown, _) when not settled.IsCompleted ->
+                cts.Cancel()
+                return Some markdown
+            | _ -> return! settled
+        }
 
     /// The name of the first `let` or `member` binding near the top of the text, as a hover would ask for it
     let private firstLookup (text: string) : (int * (string * string list * int)) option =
