@@ -266,7 +266,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                         fail r.Path $"its check failed: %O{ex}"
                         ValueNone
 
-                let faults = g.FaultsNow()
+                let faults = g.FaultsSeenNow()
 
                 match settled with
                 | ValueSome(struct (_, diagnostics)) ->
@@ -277,9 +277,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | ValueNone ->
                     let struct (at, before) = faultsAt
 
-                    // Pending after a fault of its project: what it reported elsewhere may never be replaced
+                    // Pending after a fault of its project or a referenced project: what it reported elsewhere may never be replaced
                     if obj.ReferenceEquals(at, g) && faults > before then
-                        fail r.Path "its project failed on the graph thread while its check was pending"
+                        fail r.Path "its project or a referenced project failed on the graph thread while its check was pending"
 
                     if not failing && (last.Current || not last.Waiting) then
                         last <- { last with Current = false; Waiting = true }

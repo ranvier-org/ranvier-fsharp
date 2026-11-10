@@ -14,6 +14,24 @@ open Rfs.Server.Tests
 open Rfs.Server.Tests.PublishTests
 open Rfs.Server.Tests.PublishFixTests
 
+let private multiDir = Path.Combine(Path.GetDirectoryName depsDir, "Multi")
+
+let private copyMulti () =
+    let root = Path.Combine(Path.GetTempPath(), "rfs-multi-" + Guid.NewGuid().ToString("N").Substring(0, 8))
+    Directory.CreateDirectory root |> ignore
+    File.Copy(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName multiDir)), "global.json"), Path.Combine(root, "global.json"))
+
+    for f in [ "Directory.Build.props"; "Directory.Packages.props" ] do
+        File.Copy(Path.Combine(multiDir, f), Path.Combine(root, f))
+
+    for name in [ "Lib"; "App" ] do
+        Directory.CreateDirectory(Path.Combine(root, name)) |> ignore
+
+        for f in Directory.GetFiles(Path.Combine(multiDir, name)) do
+            File.Copy(f, Path.Combine(root, name, Path.GetFileName f))
+
+    root
+
 /// A server initialized by hand, with or without `window.workDoneProgress`, and what it sent about progress
 type private Run =
     { Lsp: LspClient
@@ -589,4 +607,33 @@ let tests =
               Expect.equal after settled "settled inside the hold: the settled answer"
               Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state"
               Expect.isFalse (r.Seen |> List.exists (fun e -> e.StartsWith "begin")) "no begin was sent"
+          }
+
+          testTask "a fault of a referenced project on the graph thread ends Checking progress" {
+              let root = copyMulti ()
+              let app = Path.Combine(root, "App", "App.fsproj")
+              let useFile = Path.Combine(root, "App", "Use.fs")
+              let libFile = Path.Combine(root, "Lib", "Lib.fs")
+              Rfs.Harness.Fixtures.build app
+              use! r = startIn root true ignore
+              do! loadProject r app
+              do! quiet r
+              do! openQuiet r useFile
+              let before = r.Seen.Length
+              let hold = holdParse (r.Server.Workspace.ProjectOf useFile).Value useFile
+              do! r.Lsp.DidChange(useFile, 1, editAt 2 4 4 " ")
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length > before + 1))
+              let libGraph = (r.Server.Workspace.ProjectOf libFile).Value
+              let libHold = holdParse libGraph libFile
+              libGraph.SetText(libFile, "// pending\n" + File.ReadAllText libFile) |> ignore
+              libGraph.FailPost(InvalidOperationException "Lib faulted on graph thread")
+              do! r.Server.Publisher.Barrier()
+              hold.Set()
+              let checkingEnds = until "Checking ends" r (fun () -> r.Server.Host.Read(fun () -> not (r.Server.Publisher.CheckingNow())))
+              let! finished = Task.WhenAny(checkingEnds, Task.Delay 3000)
+              Expect.isTrue (obj.ReferenceEquals(finished, checkingEnds)) "CheckingNow should become false after upstream project fault"
+              libHold.Set()
+              let! seen = settledEvents r
+              Expect.equal (List.last seen) "end" "the period ends"
+              do! settledStatus r
           } ]

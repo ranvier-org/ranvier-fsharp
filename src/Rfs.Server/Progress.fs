@@ -290,9 +290,14 @@ type internal RestartNotices(host: GraphHost, workspace: Workspace, publisher: P
 
     member _.Dispose() =
         try
-            host.Post(fun () -> root.Dispose())
-        with :? ObjectDisposedException ->
-            ()
+            host
+                .Read(fun () -> root.Dispose())
+                .Wait(TimeSpan.FromSeconds 5.)
+            |> ignore
+        with
+        | :? ObjectDisposedException
+        | :? OperationCanceledException
+        | :? AggregateException -> ()
 
     interface IDisposable with
         member this.Dispose() = this.Dispose()

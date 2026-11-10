@@ -22,13 +22,25 @@ type internal Outgoing =
 /// list is the file's whole list, so the client would keep only the later one. Lists for a file therefore reach the
 /// client in the order they were queued, and so do all sends across files.
 /// </remarks>
-type internal Outbox() =
+type internal Outbox(?logger: string -> unit) =
     let channel = Channel.CreateUnbounded<struct (int64 * Outgoing)>(UnboundedChannelOptions(SingleReader = true))
     let latest = ConcurrentDictionary<string, int64>(StringComparer.OrdinalIgnoreCase)
     let mutable sequence = 0L
     let mutable beforePublish: int -> Task = fun _ -> Task.CompletedTask
 
-    let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
+    let log = defaultArg logger (fun (text: string) -> eprintfn "[ranvierautocomplete] %s" text)
+
+    let rec isDisposed (e: exn) =
+        if isNull e then
+            false
+        else
+            match e with
+            | :? ObjectDisposedException
+            | :? System.IO.IOException
+            | :? OperationCanceledException
+            | :? ChannelClosedException -> true
+            | :? AggregateException as a -> a.InnerExceptions |> Seq.exists isDisposed
+            | _ -> not (isNull e.InnerException) && isDisposed e.InnerException
 
     let superseded (path: string) (n: int64) =
         match latest.TryGetValue path with
@@ -39,28 +51,41 @@ type internal Outbox() =
         Task.Run(fun () ->
             task {
                 try
-                    while! channel.Reader.WaitToReadAsync() do
-                        let mutable more = true
+                    let mutable running = true
 
-                        while more do
-                            match channel.Reader.TryRead() with
-                            | true, struct (n, item) ->
-                                try
-                                    match item with
-                                    | Publish(path, hooked, send) ->
-                                        if not (superseded path n) then
-                                            match hooked with
-                                            | Some lsp -> do! beforePublish lsp
-                                            | None -> ()
+                    while running do
+                        let! canRead = channel.Reader.WaitToReadAsync()
 
+                        if not canRead then
+                            running <- false
+                        else
+                            let mutable more = true
+
+                            while more && running do
+                                match channel.Reader.TryRead() with
+                                | true, struct (n, item) ->
+                                    try
+                                        match item with
+                                        | Publish(path, hooked, send) ->
                                             if not (superseded path n) then
-                                                do! send ()
-                                    | Notify send -> do! send ()
-                                    | Marker done' -> done'.TrySetResult() |> ignore
-                                with ex ->
-                                    log $"publishing failed: %O{ex}"
-                            | _ -> more <- false
-                with ex ->
+                                                match hooked with
+                                                | Some lsp -> do! beforePublish lsp
+                                                | None -> ()
+
+                                                if not (superseded path n) then
+                                                    do! send ()
+                                        | Notify send -> do! send ()
+                                        | Marker done' -> done'.TrySetResult() |> ignore
+                                    with
+                                    | ex when isDisposed ex ->
+                                        more <- false
+                                        running <- false
+                                    | ex ->
+                                        log $"publishing failed: %O{ex}"
+                                | _ -> more <- false
+                with
+                | ex when isDisposed ex -> ()
+                | ex ->
                     log $"publishing stopped: %O{ex}"
             }
             :> Task)

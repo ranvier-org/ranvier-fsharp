@@ -857,4 +857,36 @@ let workspaceGraphTests =
               match results with
               | [ LoadResult.Failed(p, _) ] -> Expect.equal p project "the project fails to load"
               | other -> failtest $"the project should fail to load: %A{other}"
+          }
+
+          testTask "outbox does not log or continue draining after ObjectDisposedException" {
+              let logs = ConcurrentQueue<string>()
+              let outbox = new Outbox(fun msg -> logs.Enqueue msg)
+              try
+                  let secondRan = ref false
+                  outbox.Enqueue(Notify(fun () -> raise (ObjectDisposedException "JsonRpc")))
+                  outbox.Enqueue(Notify(fun () ->
+                      secondRan.Value <- true
+                      Task.CompletedTask))
+                  do! Task.Delay 200
+                  Expect.isFalse secondRan.Value "subsequent queued items are not invoked after disposal"
+                  Expect.isTrue logs.IsEmpty "disposal does not log to stderr"
+              finally
+                  (outbox :> IDisposable).Dispose()
+          }
+
+          testTask "outbox does not log or continue draining after AggregateException with ObjectDisposedException" {
+              let logs = ConcurrentQueue<string>()
+              let outbox = new Outbox(fun msg -> logs.Enqueue msg)
+              try
+                  let secondRan = ref false
+                  outbox.Enqueue(Notify(fun () -> raise (AggregateException(ObjectDisposedException "defaultRpc"))))
+                  outbox.Enqueue(Notify(fun () ->
+                      secondRan.Value <- true
+                      Task.CompletedTask))
+                  do! Task.Delay 200
+                  Expect.isFalse secondRan.Value "subsequent queued items are not invoked after disposal"
+                  Expect.isTrue logs.IsEmpty "disposal does not log to stderr"
+              finally
+                  (outbox :> IDisposable).Dispose()
           } ]

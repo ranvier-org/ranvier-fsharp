@@ -1498,6 +1498,16 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// </summary>
     member _.FaultsNow() : int = faultsNow.Value
 
+    /// <summary>
+    /// Graph thread, tracked: how many times work of this project or of projects it references failed on the graph
+    /// thread. A reader that keeps what a file last found can tell from it that the file's pending check may never
+    /// settle if an upstream project faulted.
+    /// </summary>
+    member this.FaultsSeenNow() : int =
+        faultsNow.Value
+        + (ProjectNodes.closure references (fun (g: ProjectGraph) -> g.References)
+           |> List.sumBy (fun (r: ProjectGraph) -> r.FaultsNow()))
+
     /// Graph thread, tracked: whether a restart failed, which leaves the project with no nodes until it is loaded again
     member _.RestartFailedNow() : bool =
         not (isNull (box restartFailed)) && restartFailed.Value
