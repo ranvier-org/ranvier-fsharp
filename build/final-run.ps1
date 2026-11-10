@@ -12,6 +12,7 @@
 
   -DryRun       prints the commit/SDK block, the plan and the estimate; builds and runs nothing.
   -Rebuild      builds even when results/server-final/environment.txt says the Release build already ran.
+  -Small        runs the small/mid suite plus core large scenarios (excludes huge and large-bigfile/edit scenarios).
   -SkipHugeRepeat  leaves the huge body scenarios out of the second pass (they are most of its time).
   -StepTimeoutS how long one step may take before it fails (default 300; the harness's own default is 120).
 
@@ -33,6 +34,7 @@
 param(
     [switch]$DryRun,
     [switch]$Rebuild,
+    [switch]$Small,
     [switch]$SkipHugeRepeat,
     [int]$StepTimeoutS = 300
 )
@@ -97,9 +99,18 @@ function Get-Cost($sc, [string]$engine) {
     10 + $cold + $sc.Edits * $edit + $sc.Requests * $req + $sc.Opens * $open
 }
 
-$all = @(Get-Scenarios)
-$noBaseline = @($all | Where-Object { -not (Test-Path (Join-Path $baseline "fsac-core-bg.$($_.Name).json")) })
-$repeatSet = @($all | Where-Object { $_.Kind -eq 'body' -and -not ($SkipHugeRepeat -and $_.Corpus -eq 'huge') })
+$allScenarios = @(Get-Scenarios)
+if ($Small) {
+    $largeCore = @('large-cold', 'large-body', 'large-signature', 'large-requests', 'large-references')
+    $fsacExtraSkip = @('mid-openmany-edits', 'mid-eof-then-insert')
+    $all = @($allScenarios | Where-Object { $_.Corpus -in 'small', 'mid' -or $_.Name -in $largeCore })
+    $noBaseline = @($all | Where-Object { $_.Corpus -in 'small', 'mid' -and $_.Name -notin $fsacExtraSkip -and -not (Test-Path (Join-Path $baseline "fsac-core-bg.$($_.Name).json")) })
+    $repeatSet = @($all | Where-Object { $_.Name -in 'small-body', 'mid-body', 'large-body' })
+} else {
+    $all = $allScenarios
+    $noBaseline = @($all | Where-Object { -not (Test-Path (Join-Path $baseline "fsac-core-bg.$($_.Name).json")) })
+    $repeatSet = @($all | Where-Object { $_.Kind -eq 'body' -and -not ($SkipHugeRepeat -and $_.Corpus -eq 'huge') })
+}
 
 function Show-Estimate {
     $rows = [System.Collections.Generic.List[object]]::new()
