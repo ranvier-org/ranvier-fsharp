@@ -265,7 +265,7 @@ module Hover =
                         false)
             | None -> false)
 
-    let private signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
+    let internal signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
         let owner, row =
             match view.RowAt(line + 1) with
             | ValueSome(struct (result, first)) -> result, line + 1 - first
@@ -346,25 +346,17 @@ module Hover =
                             | Some source ->
                                 let wsOwners = source.Owners @ source.InheritOwners |> List.filter isWorkspaceOwner
                                 if not wsOwners.IsEmpty then
-                                    match item.XmlDoc with
-                                    | FSharpXmlDoc.None
-                                    | FSharpXmlDoc.FromXmlFile _ -> ()
-                                    | _ ->
-                                        let missed =
-                                            wsOwners |> List.exists (fun o ->
-                                                if o.Path = "@?" then true
-                                                else
-                                                    match commentOf o with
-                                                    | ValueNone -> true
-                                                    | ValueSome _ -> false)
-                                        if missed then hasMiss <- true
+                                    let missed =
+                                        wsOwners |> List.exists (fun o ->
+                                            if o.Path = "@?" then true
+                                            else
+                                                match commentOf o with
+                                                | ValueNone -> true
+                                                | ValueSome _ -> false)
+                                    if missed then hasMiss <- true
 
                                 { item with XmlDoc = source.Compose commentOf }
                             | None ->
-                                match item.XmlDoc with
-                                | FSharpXmlDoc.None
-                                | FSharpXmlDoc.FromXmlFile _ -> ()
-                                | _ -> hasMiss <- true
                                 item)
                     )
                 | other -> other)
@@ -588,7 +580,6 @@ module Hover =
                             docs[path] <- docsOfParse parse
 
                         let comments = ResizeArray()
-                        let mutable hasMiss = false
 
                         let commentOf =
                             let of' =
@@ -848,9 +839,14 @@ module Hover =
                                 | Some(parts, identity, docs) ->
                                     format (compose (FileDocs.CommentOf(fun _ -> ValueSome docs)) parts) |> ignore
 
-                                    match rest with
-                                    | other :: _ -> do! graph.DocsInTurn(file, identity, [| graph, other |], CancellationToken.None) :> Task
-                                    | [] -> ()
+                                    let others =
+                                        rest
+                                        |> List.filter (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)))
+                                        |> Array.ofList
+                                        |> Array.map (fun f -> graph, f)
+
+                                    if not (Array.isEmpty others) then
+                                        do! graph.DocsInTurn(file, identity, others, CancellationToken.None) :> Task
 
                                     done' <- true
                         with ex ->

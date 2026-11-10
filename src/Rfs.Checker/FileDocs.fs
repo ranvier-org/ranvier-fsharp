@@ -65,12 +65,18 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
         let rec namesOf (pat: SynPat) : string list =
             match pat with
             | SynPat.Named(ident = SynIdent(id, _)) -> [ id.idText ]
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) -> [ (List.last ids).idText ]
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> [ (List.last ids).idText ]
             | SynPat.Typed(pat = p)
             | SynPat.Paren(pat = p)
             | SynPat.Attrib(pat = p) -> namesOf p
-            | SynPat.Tuple(elementPats = ps) -> ps |> List.collect namesOf
+            | SynPat.Tuple(elementPats = ps)
+            | SynPat.ArrayOrList(elementPats = ps)
+            | SynPat.Ands(pats = ps) -> ps |> List.collect namesOf
+            | SynPat.Record(fieldPats = fps) -> fps |> List.collect (fun (NamePatPairField(pat = p)) -> namesOf p)
+            | SynPat.ListCons(lhsPat = l; rhsPat = r)
+            | SynPat.Or(lhsPat = l; rhsPat = r)
             | SynPat.As(lhsPat = l; rhsPat = r) -> namesOf l @ namesOf r
+            | SynPat.OptionalVal(ident = id) -> [ id.idText ]
             | _ -> []
 
         let tagOf (flags: SynMemberFlags) (name: string) =
@@ -91,13 +97,49 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynPat.Typed(pat = p)
             | SynPat.Paren(pat = p)
             | SynPat.Attrib(pat = p) -> headPlaces p
-            | SynPat.Tuple(elementPats = ps) -> ps |> List.collect headPlaces
+            | SynPat.Tuple(elementPats = ps)
+            | SynPat.ArrayOrList(elementPats = ps)
+            | SynPat.Ands(pats = ps) -> ps |> List.collect headPlaces
+            | SynPat.Record(fieldPats = fps) -> fps |> List.collect (fun (NamePatPairField(pat = p)) -> headPlaces p)
+            | SynPat.ListCons(lhsPat = l; rhsPat = r)
+            | SynPat.Or(lhsPat = l; rhsPat = r)
             | SynPat.As(lhsPat = l; rhsPat = r) -> headPlaces l @ headPlaces r
+            | SynPat.OptionalVal(ident = id) -> [ id.idRange ]
+            | SynPat.IsInst _ -> []
+            | _ -> []
+
+        let rec patternPlaces (pat: SynPat) : range list =
+            match pat with
+            | SynPat.Named(ident = SynIdent(id, _)) -> [ id.idRange ]
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = ids); argPats = args) ->
+                let sub =
+                    match args with
+                    | SynArgPats.Pats pats -> pats |> List.collect patternPlaces
+                    | SynArgPats.NamePatPairs(pats = pats) -> pats |> List.collect (fun (NamePatPairField(pat = p)) -> patternPlaces p)
+                if sub.IsEmpty then
+                    if not ids.IsEmpty then [ (List.last ids).idRange ] else []
+                else
+                    sub
+            | SynPat.Typed(pat = p)
+            | SynPat.Paren(pat = p)
+            | SynPat.Attrib(pat = p) -> patternPlaces p
+            | SynPat.Tuple(elementPats = ps)
+            | SynPat.ArrayOrList(elementPats = ps)
+            | SynPat.Ands(pats = ps) -> ps |> List.collect patternPlaces
+            | SynPat.Record(fieldPats = fps) -> fps |> List.collect (fun (NamePatPairField(pat = p)) -> patternPlaces p)
+            | SynPat.ListCons(lhsPat = l; rhsPat = r)
+            | SynPat.Or(lhsPat = l; rhsPat = r)
+            | SynPat.As(lhsPat = l; rhsPat = r) -> patternPlaces l @ patternPlaces r
+            | SynPat.OptionalVal(ident = id) -> [ id.idRange ]
             | _ -> []
 
         let addBindingPlaces (pat: SynPat) (doc: PreXmlDoc) =
             for r in headPlaces pat do
                 add $"@%d{r.StartLine},%d{r.StartColumn}" doc
+
+        let addPatternPlaces (pat: SynPat) =
+            for r in patternPlaces pat do
+                add $"@%d{r.StartLine},%d{r.StartColumn}" PreXmlDoc.Empty
 
         let rec walkBinding (SynBinding(xmlDoc = doc; headPat = pat; expr = expr)) =
             addBindingPlaces pat doc
@@ -146,18 +188,23 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynExpr.Match(expr = e; clauses = cs)
             | SynExpr.MatchBang(expr = e; clauses = cs) ->
                 walkExpr e
-                for SynMatchClause(whenExpr = wOpt; resultExpr = r) in cs do
+                for SynMatchClause(pat = pat; whenExpr = wOpt; resultExpr = r) in cs do
+                    addPatternPlaces pat
                     wOpt |> Option.iter walkExpr
                     walkExpr r
             | SynExpr.TryWith(tryExpr = t; withCases = cs) ->
                 walkExpr t
-                for SynMatchClause(whenExpr = wOpt; resultExpr = r) in cs do
+                for SynMatchClause(pat = pat; whenExpr = wOpt; resultExpr = r) in cs do
+                    addPatternPlaces pat
                     wOpt |> Option.iter walkExpr
                     walkExpr r
-            | SynExpr.For(identBody = b; toBody = t) ->
+            | SynExpr.For(ident = id; identBody = b; toBody = t; doBody = d) ->
+                add $"@%d{id.idRange.StartLine},%d{id.idRange.StartColumn}" PreXmlDoc.Empty
                 walkExpr b
                 walkExpr t
-            | SynExpr.ForEach(enumExpr = e; bodyExpr = b) ->
+                walkExpr d
+            | SynExpr.ForEach(pat = pat; enumExpr = e; bodyExpr = b) ->
+                addPatternPlaces pat
                 walkExpr e
                 walkExpr b
             | SynExpr.Record(copyInfo = copyOpt; recordFields = rfs) ->
@@ -186,6 +233,43 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynExpr.IndexRange(expr1 = e1; expr2 = e2) ->
                 e1 |> Option.iter walkExpr
                 e2 |> Option.iter walkExpr
+            | SynExpr.MatchLambda(matchClauses = cs) ->
+                for SynMatchClause(pat = pat; whenExpr = wOpt; resultExpr = r) in cs do
+                    addPatternPlaces pat
+                    wOpt |> Option.iter walkExpr
+                    walkExpr r
+            | SynExpr.TypeApp(expr = e)
+            | SynExpr.New(expr = e)
+            | SynExpr.DotLambda(expr = e)
+            | SynExpr.DebugPoint(innerExpr = e)
+            | SynExpr.Fixed(expr = e)
+            | SynExpr.LongIdentSet(expr = e)
+            | SynExpr.FromParseError(expr = e)
+            | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = e)
+            | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = e) -> walkExpr e
+            | SynExpr.WhileBang(whileExpr = e1; doExpr = e2)
+            | SynExpr.Dynamic(funcExpr = e1; argExpr = e2)
+            | SynExpr.JoinIn(lhsExpr = e1; rhsExpr = e2)
+            | SynExpr.NamedIndexedPropertySet(expr1 = e1; expr2 = e2)
+            | SynExpr.LibraryOnlyStaticOptimization(expr = e1; optimizedExpr = e2)
+            | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = e1; rhsExpr = e2) ->
+                walkExpr e1
+                walkExpr e2
+            | SynExpr.SequentialOrImplicitYield(expr1 = e1; expr2 = e2; ifNotStmt = e3)
+            | SynExpr.DotNamedIndexedPropertySet(targetExpr = e1; argExpr = e2; rhsExpr = e3) ->
+                walkExpr e1
+                walkExpr e2
+                walkExpr e3
+            | SynExpr.LibraryOnlyILAssembly(args = es) -> es |> List.iter walkExpr
+            | SynExpr.InterpolatedString(contents = parts) ->
+                for part in parts do
+                    match part with
+                    | SynInterpolatedStringPart.FillExpr(fillExpr = e; formatting = f) ->
+                        walkExpr e
+                        match f with
+                        | SynInterpolationFormatting.DotNet(alignment = Some a) -> walkExpr a
+                        | _ -> ()
+                    | _ -> ()
             | _ -> ()
 
         and bindingMember (typePath: string) (SynBinding(xmlDoc = doc; valData = SynValData(memberFlags = flags); headPat = pat; expr = expr)) =
@@ -267,9 +351,11 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
 
             members |> List.iter (memberDefn typePath)
 
-        let exceptionRepr (path: string) (SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(id, _)); xmlDoc = doc)) =
+        let exceptionRepr (path: string) (SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(id, _); xmlDoc = caseDoc); xmlDoc = reprDoc)) =
             let typePath = join path id.idText
+            let doc = if not reprDoc.IsEmpty then reprDoc else caseDoc
             add ("T:" + typePath) doc
+            add ("C:" + typePath) doc
             typePath
 
         let rec decl (path: string) (d: SynModuleDecl) =
@@ -353,6 +439,6 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             match docsOf owner.FileName with
             // A place the parse has no member at: returns ValueNone. Any miss of a workspace owner is marked stale
             // by Hover (StaleMark) rather than silently returning the check's doc, as doc edits check zero declarations.
-            | ValueSome docs when owner.Path.StartsWith "@" && not (docs.Has owner.Path) -> ValueNone
+            | ValueSome docs when not (docs.Has owner.Path) -> ValueNone
             | ValueSome docs -> ValueSome(docs.Comment owner.Path)
             | ValueNone -> ValueNone

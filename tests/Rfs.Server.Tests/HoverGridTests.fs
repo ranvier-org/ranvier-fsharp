@@ -749,6 +749,176 @@ let tests =
            }
 
           yield
+            testTask "editing code on a line that also starts a /// or (** ... *) doc comment re-checks the declaration, while editing only doc comment does not" {
+                let dir = Directory.CreateTempSubdirectory "rfs-shared-line-"
+                try
+                    let file = Path.Combine(dir.FullName, "Test.fs")
+                    let proj = Path.Combine(dir.FullName, "Test.fsproj")
+                    let initialText = "module Test\n\ntype R = { /// doc for field\n    Field: int }\n\nlet y = 1\n"
+                    let docEditText = "module Test\n\ntype R = { /// updated doc for field\n    Field: int }\n\nlet y = 1\n"
+                    let codeEditText = "module Test\n\ntype R2 = { /// updated doc for field\n    Field: int }\n\nlet y = 1\n"
+
+                    File.WriteAllText(file, initialText)
+                    let! deps = ProjectSpec.load depsProject
+                    let spec = { ProjectSpec.sequential deps with ProjectFile = proj; SourceFiles = [ file ] }
+                    let host = GraphHost.Start "shared-line-test"
+                    try
+                        let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                        graph.Promote file
+                        let! _ = graph.AllDiagnostics() |> wait
+                        let! _ = graph.WhenPromoted(file, CancellationToken.None) |> wait
+                        let! _ = graph.Diagnostics file |> wait
+                        let checkedBefore = graph.CheckedCount
+
+                        // 1. Doc-only edit: leaves code unchanged -> re-checks 0 declarations
+                        graph.SetText(file, docEditText) |> ignore
+                        let! _ = graph.Diagnostics file |> wait
+                        Expect.equal graph.CheckedCount checkedBefore "editing only doc comment text on shared line re-checks 0 declarations"
+
+                        // 2. Code edit on line with doc comment -> re-checks the declaration
+                        graph.SetText(file, codeEditText) |> ignore
+                        let! _ = graph.Diagnostics file |> wait
+                        Expect.isGreaterThan graph.CheckedCount checkedBefore "editing code on a line that also starts a doc comment re-checks the declaration"
+                    finally
+                        host.Dispose()
+                finally
+                    try dir.Delete true with _ -> ()
+            }
+
+          yield
+            testTask "documented local let inside MatchLambda (function | ... -> ...)" {
+                let dir = Directory.CreateTempSubdirectory "rfs-matchlambda-"
+                try
+                    let file = Path.Combine(dir.FullName, "Test.fs")
+                    let proj = Path.Combine(dir.FullName, "Test.fsproj")
+                    let initialText = "module Test\n\nlet f =\n    function\n    | Some x ->\n        /// local in match lambda\n        let inner = x + 1\n        inner\n    | None -> 0\n"
+                    let docEditText = "module Test\n\nlet f =\n    function\n    | Some x ->\n        /// updated local in match lambda\n        let inner = x + 1\n        inner\n    | None -> 0\n"
+
+                    File.WriteAllText(file, initialText)
+                    let! deps = ProjectSpec.load depsProject
+                    let spec = { ProjectSpec.sequential deps with ProjectFile = proj; SourceFiles = [ file ] }
+                    let host = GraphHost.Start "matchlambda-test"
+                    try
+                        let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                        graph.Promote file
+                        let! _ = graph.AllDiagnostics() |> wait
+                        let! _ = graph.WhenPromoted(file, CancellationToken.None) |> wait
+                        let! _ = graph.Diagnostics file |> wait
+                        let checkedBefore = graph.CheckedCount
+
+                        // Hover over inner (line 6, col 12)
+                        let! hover1 = Hover.at (fun _ -> [ graph ]) graph file 6 12 CancellationToken.None |> wait
+                        Expect.isSome hover1 "hover over inner returned some"
+                        Expect.stringContains (hover1.Value) "local in match lambda" "hover contains doc of local let inside MatchLambda"
+
+                        // Edit doc comment
+                        graph.SetText(file, docEditText) |> ignore
+                        let! _ = graph.Diagnostics file |> wait
+                        Expect.equal graph.CheckedCount checkedBefore "doc edit on local inside MatchLambda re-checks 0 declarations"
+
+                        let! hover2 = Hover.at (fun _ -> [ graph ]) graph file 6 12 CancellationToken.None |> wait
+                        Expect.isSome hover2 "hover over inner returned some after doc edit"
+                        Expect.stringContains (hover2.Value) "updated local in match lambda" "hover contains updated doc after doc edit"
+                    finally
+                        host.Dispose()
+                finally
+                    try dir.Delete true with _ -> ()
+            }
+
+          yield
+            testTask "an exception doc edit updates hover and re-checks 0 declarations" {
+                let dir = Directory.CreateTempSubdirectory "rfs-exn-"
+                try
+                    let file = Path.Combine(dir.FullName, "Test.fs")
+                    let proj = Path.Combine(dir.FullName, "Test.fsproj")
+                    let initialText = "module Test\n\n/// doc for custom exn\nexception CustomExn of string\n\nlet raiseIt () = raise (CustomExn \"fail\")\n"
+                    let docEditText = "module Test\n\n/// updated doc for custom exn\nexception CustomExn of string\n\nlet raiseIt () = raise (CustomExn \"fail\")\n"
+
+                    File.WriteAllText(file, initialText)
+                    let! deps = ProjectSpec.load depsProject
+                    let spec = { ProjectSpec.sequential deps with ProjectFile = proj; SourceFiles = [ file ] }
+                    let host = GraphHost.Start "exn-test"
+                    try
+                        let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                        graph.Promote file
+                        let! _ = graph.AllDiagnostics() |> wait
+                        let! _ = graph.WhenPromoted(file, CancellationToken.None) |> wait
+                        let! _ = graph.Diagnostics file |> wait
+                        let checkedBefore = graph.CheckedCount
+
+                        // Hover over CustomExn (line 3, col 10)
+                        let! hover1 = Hover.at (fun _ -> [ graph ]) graph file 3 10 CancellationToken.None |> wait
+                        Expect.isSome hover1 "hover over CustomExn returned some"
+                        Expect.stringContains (hover1.Value) "doc for custom exn" "hover contains doc for exception"
+
+                        // Edit doc comment
+                        graph.SetText(file, docEditText) |> ignore
+                        let! _ = graph.Diagnostics file |> wait
+                        Expect.equal graph.CheckedCount checkedBefore "exception doc edit re-checks 0 declarations"
+
+                        let! hover2 = Hover.at (fun _ -> [ graph ]) graph file 3 10 CancellationToken.None |> wait
+                        Expect.isSome hover2 "hover over CustomExn returned some after doc edit"
+                        Expect.stringContains (hover2.Value) "updated doc for custom exn" "hover contains updated doc after doc edit"
+                    finally
+                        host.Dispose()
+                finally
+                    try dir.Delete true with _ -> ()
+            }
+
+          yield
+            testTask "a declaration with no doc comment has no StaleMark; genuinely missing owner path gets Hover.StaleMark" {
+                let dir = Directory.CreateTempSubdirectory "rfs-stalemark-"
+                try
+                    let file = Path.Combine(dir.FullName, "Test.fs")
+                    let proj = Path.Combine(dir.FullName, "Test.fsproj")
+                    let initialText = "module Test\n\nlet undocumented = 42\n\n/// documented value\nlet documented = 100\n"
+
+                    File.WriteAllText(file, initialText)
+                    let! deps = ProjectSpec.load depsProject
+                    let spec = { ProjectSpec.sequential deps with ProjectFile = proj; SourceFiles = [ file ] }
+                    let host = GraphHost.Start "stalemark-test"
+                    try
+                        let! (graph: ProjectGraph) = ProjectGraph.Create(host, spec)
+                        graph.Promote file
+                        let! _ = graph.AllDiagnostics() |> wait
+                        let! _ = graph.WhenPromoted(file, CancellationToken.None) |> wait
+                        let! _ = graph.Diagnostics file |> wait
+
+                        // 1. Hover on undocumented value -> has no StaleMark
+                        let! hoverNoDoc = Hover.at (fun _ -> [ graph ]) graph file 2 4 CancellationToken.None |> wait
+                        Expect.isSome hoverNoDoc "hover on undocumented value returned some"
+                        Expect.isFalse ((hoverNoDoc.Value: string).Contains Hover.StaleMark) "declaration with no doc comment has no StaleMark"
+
+                        // 2. Direct test of composeWithMiss:
+                        // Read signature of `documented`
+                        let! signature =
+                            graph.ReadFile(
+                                file,
+                                (fun view -> Hover.lookupOf view.Text 5 4),
+                                (fun view lookup -> lookup |> Option.map (fun l -> Hover.signatureOf file view 5 l)),
+                                CancellationToken.None
+                            )
+                        Expect.isSome signature "signature of documented value was read"
+                        let sig' = signature.Value
+
+                        // Case A: workspace owner found with empty doc (undocumented) -> hasMiss is false
+                        let _, hasMissFound = Hover.composeWithMiss (fun _ -> true) (fun _ -> ValueSome FSharp.Compiler.Xml.XmlDoc.Empty) sig'
+                        Expect.isFalse hasMissFound "found declaration with empty doc does not set hasMiss"
+
+                        // Case B: workspace owner genuinely missing (commentOf returns ValueNone) -> hasMiss is true
+                        let composedMissing, hasMissMissing = Hover.composeWithMiss (fun _ -> true) (fun _ -> ValueNone) sig'
+                        Expect.isTrue hasMissMissing "genuinely missing workspace owner sets hasMiss"
+                        let formatted = Hover.format composedMissing
+                        Expect.isSome formatted "formatted tooltip"
+                        let marked = Hover.StaleMark + "\n\n" + formatted.Value
+                        Expect.stringContains marked Hover.StaleMark "missing owner gets StaleMark attached"
+                    finally
+                        host.Dispose()
+                finally
+                    try dir.Delete true with _ -> ()
+            }
+
+          yield
            testTask "hover equals FCS at every token after an extension block's member is renamed (file level)" {
               let! results =
                   run false renameScenario (fun state ->
