@@ -336,7 +336,8 @@ module Hover =
     /// The answers given on one published result of a file (FileView.Identity), by their place in its text: in one
     /// result a row's result and a position in it are one place
     type private Snapshot =
-        { Identity: obj
+        { Graph: ProjectGraph
+          Identity: obj
           Version: int64
           Shape: Lazy<FileShape>
           Answers: ConcurrentDictionary<struct (int * int * string * string), Answer> }
@@ -350,9 +351,10 @@ module Hover =
     /// Per file, the result hovers last read settled. A file's answers are only ever of that one result.
     let private snapshots = ConcurrentDictionary<string, Snapshot>(StringComparer.OrdinalIgnoreCase)
 
-    let private snapshotFor (path: string) (identity: obj) (version: int64) (text: string) (parse: FSharpParseFileResults) (whole: bool) =
+    let private snapshotFor (graph: ProjectGraph) (path: string) (identity: obj) (version: int64) (text: string) (parse: FSharpParseFileResults) (whole: bool) =
         let fresh () =
-            { Identity = identity
+            { Graph = graph
+              Identity = identity
               Version = version
               Shape = lazy (PositionMap.shapeOf text parse (not whole))
               Answers = ConcurrentDictionary() }
@@ -362,7 +364,11 @@ module Hover =
                 path,
                 (fun _ -> fresh ()),
                 fun _ known ->
-                    if obj.ReferenceEquals(known.Identity, identity) || known.Version > version then known else fresh ()
+                    // A version is of one graph: a reload's graph starts again
+                    if obj.ReferenceEquals(known.Identity, identity) || (obj.ReferenceEquals(known.Graph, graph) && known.Version > version) then
+                        known
+                    else
+                        fresh ()
             )
 
         if snapshots.Count > maxFiles then
@@ -471,7 +477,7 @@ module Hover =
 
                         match answer with
                         | Some markdown ->
-                            match snapshotFor path identity version text parse whole with
+                            match snapshotFor graph path identity version text parse whole with
                             | ValueSome s ->
                                 remember
                                     s
@@ -512,8 +518,8 @@ module Hover =
                 return LastAnswer.Refused Refusal.Reloading
             else
                 match snapshots.TryGetValue path with
-                | false, _ -> return LastAnswer.Refused Refusal.NoSnapshot
-                | true, s ->
+                // A reload's graph has nothing answered yet: the old one's results were of another setup
+                | true, s when obj.ReferenceEquals(s.Graph, graph) ->
                     let! latest = graph.LatestText(path, [||], ct)
 
                     if latest.Settled then
@@ -562,6 +568,7 @@ module Hover =
                                     else
                                         Interlocked.Increment &markedAnswers |> ignore
                                         return LastAnswer.Marked(StaleMark + "\n\n" + answer.Markdown, at)
+                | _ -> return LastAnswer.Refused Refusal.NoSnapshot
         }
 
     /// <summary>
