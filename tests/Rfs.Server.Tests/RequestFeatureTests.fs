@@ -81,7 +81,7 @@ let private direct (s: Session) (feature: string) (path: string) (line: int, cha
     task {
         match feature with
         | "hover" ->
-            let! r = Hover.at graph path line character ct
+            let! r = Hover.at (fun _ -> [ graph ]) graph path line character ct
             return box r
         | "definition" ->
             let! r = Definition.at s.Server.Workspace.OwnersOf graph path line character ct

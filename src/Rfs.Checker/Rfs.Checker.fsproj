@@ -3,6 +3,7 @@
     <Compile Include="GraphHost.fs" />
     <Compile Include="Request.fs" />
     <Compile Include="NameIndex.fs" />
+    <Compile Include="FileDocs.fs" />
     <Compile Include="FileDeps.fs" />
     <Compile Include="FileGraph.fs" />
     <Compile Include="FileUses.fs" />
