@@ -817,4 +817,44 @@ let workspaceGraphTests =
               do! s.Lsp.DidChange(cFile, 1, atEnd s cFile "\n// c")
               do! eventually "the fault counted" (fun () -> graph.FaultCount > before)
               armed.Value <- false
+          }
+
+          testTask "a failure no project claims during a cold load doesn't fail the load" {
+              let dir = copyFixtureDir "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let! s = startSessionWith dir [ project ] false ignore |> within
+              use _ = disposing s
+              let loading = s.Server.Workspace.Load [ project ]
+              let failures = ref 0
+
+              // Unclaimed failures all through the load: another post's
+              while not loading.IsCompleted do
+                  s.Server.Host.Post(fun () -> failwith "an unclaimed post failure")
+                  failures.Value <- failures.Value + 1
+                  do! Task.Delay 50
+
+              let! results = loading
+              Expect.isGreaterThan failures.Value 2 "failures happened during the load"
+              Expect.equal results [ LoadResult.Loaded project ] "the project loads"
+          }
+
+          testTask "a fault of the project during its cold load fails the load" {
+              let dir = copyFixtureDir "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let created = TaskCompletionSource<Rfs.Checker.ProjectGraph>(TaskCreationOptions.RunContinuationsAsynchronously)
+              let! s = startSessionWith dir [ project ] false (fun server -> server.Workspace.OnGraphCreated(fun g -> created.TrySetResult g |> ignore)) |> within
+              use _ = disposing s
+              let loading = s.Server.Workspace.Load [ project ]
+              let! (graph: Rfs.Checker.ProjectGraph) = created.Task |> within
+
+              // The project's own posted work fails all through its cold check
+              while not loading.IsCompleted do
+                  graph.FailPost(InvalidOperationException "the project's own failure")
+                  do! Task.Delay 50
+
+              let! results = loading
+
+              match results with
+              | [ LoadResult.Failed(p, _) ] -> Expect.equal p project "the project fails to load"
+              | other -> failtest $"the project should fail to load: %A{other}"
           } ]

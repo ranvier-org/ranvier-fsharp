@@ -1180,6 +1180,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// How many times work of the project failed on the graph thread (its effects, its posted work). Any thread.
     member internal _.FaultCount: int = Volatile.Read &faults
 
+    /// The faults of the project and of the projects it references, which its waits end with: a wait that ended while
+    /// this stayed the same was ended by a failure no project claimed. Any thread.
+    member _.FaultsSeen: int = faultsSeen ()
+
     /// Makes the project's own work report its faults to its waits. Graph thread, before anything of it runs.
     member private _.Attach() =
         faultsNow <- createSignal 0

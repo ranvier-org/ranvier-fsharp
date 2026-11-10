@@ -26,13 +26,9 @@ module internal GraphClaims =
 
     let claim (ex: exn) = claimed.AddOrUpdate(ex, null)
 
-    /// Whether `ex`, or an exception it wraps, was claimed
-    let rec isClaimed (ex: exn) =
-        not (isNull ex)
-        && (fst (claimed.TryGetValue ex)
-            || (match ex with
-                | :? AggregateException as a -> a.InnerExceptions.Count > 0 && Seq.forall isClaimed a.InnerExceptions
-                | _ -> isClaimed ex.InnerException))
+    /// Whether `ex` itself was claimed. What it wraps doesn't count: a failure that wraps a project's may have left work
+    /// of its own undone. The host is handed the claimed exception itself (a guarded effect's report, a post's reraise).
+    let isClaimed (ex: exn) = not (isNull ex) && fst (claimed.TryGetValue ex)
 
 [<AbstractClass; Sealed>]
 type internal GraphThread private () =
@@ -149,8 +145,9 @@ type GraphHost private (name: string) =
 
     /// Ends the waits a failure may have stranded. The waiters have just run: what could still settle has. A failure a
     /// project claimed ends the shared waits only, as that project's own waits end with its fault count; one no project
-    /// claimed (a pump that stopped mid-flush, a scope's error, someone else's post) ends the apart ones too.
-    let failParked () =
+    /// claimed (a pump that stopped mid-flush, a scope's error, someone else's post) ends the apart ones too, but only
+    /// those the waiters just ran (`ran`): one registered since has not been tried, and gets its turn next pass.
+    let failParked (ran: HashSet<Waiter>) =
         if not (isNull failure) then
             let ex = failure
             let all = unclaimed
@@ -159,8 +156,9 @@ type GraphHost private (name: string) =
 
             let parked =
                 lock gate (fun () ->
-                    let ended = waiters.FindAll(fun w -> all || not w.Apart).ToArray()
-                    waiters.RemoveAll(fun w -> all || not w.Apart) |> ignore
+                    let ends (w: Waiter) = not w.Apart || (all && ran.Contains w)
+                    let ended = waiters.FindAll(ends).ToArray()
+                    waiters.RemoveAll(ends) |> ignore
                     ended)
 
             for w in parked do
@@ -175,7 +173,8 @@ type GraphHost private (name: string) =
 
         taken.ToArray()
 
-    let runWaiters () =
+    /// Runs every parked waiter once; returns those it ran
+    let runWaiters () : HashSet<Waiter> =
         let snapshot = lock gate (fun () -> waiters.ToArray())
 
         if snapshot.Length > 0 then
@@ -185,6 +184,8 @@ type GraphHost private (name: string) =
                 lock gate (fun () ->
                     for w in finished do
                         waiters.Remove w |> ignore)
+
+        HashSet<Waiter>(snapshot, HashIdentity.Reference)
 
     let loop (ready: ManualResetEventSlim) () =
         let dispatcher =
@@ -219,8 +220,8 @@ type GraphHost private (name: string) =
                         // Work run by this pump may have disposed the host; parked reads must then fault, not settle.
                         if not (isStopping ()) then
                             noteRootErrors ()
-                            runWaiters ()
-                            failParked ()
+                            let ran = runWaiters ()
+                            failParked ran
         finally
             let parked =
                 lock gate (fun () ->

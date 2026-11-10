@@ -273,6 +273,62 @@ let tests =
                   host.Dispose()
           }
 
+          testTask "an unclaimed failure leaves an apart wait registered after the waiters ran to be tried first" {
+              let host = GraphHost.Start "apart-late"
+
+              try
+                  let ran = ref false
+
+                  // A step done at once whose work registers another, as afterPump's work may, in a pump with an
+                  // unclaimed failure
+                  host.Post(fun () ->
+                      host.WhenSettled(
+                          (fun () ->
+                              host.WhenSettled(
+                                  (fun () ->
+                                      ran.Value <- true
+                                      ValueSome()),
+                                  CancellationToken.None,
+                                  true
+                              )
+                              |> ignore
+
+                              ValueSome()),
+                          CancellationToken.None,
+                          true
+                      )
+                      |> ignore
+
+                      failwith "unclaimed boom")
+
+                  let deadline = DateTime.UtcNow.AddSeconds 10.
+
+                  while not ran.Value && DateTime.UtcNow < deadline do
+                      do! Task.Delay 20
+
+                  Expect.isTrue ran.Value "the late step ran"
+              finally
+                  host.Dispose()
+          }
+
+          testTask "an unclaimed failure that wraps a claimed one ends the apart waits" {
+              let host = GraphHost.Start "apart-wrapped"
+
+              try
+                  let apart = host.WhenSettled((fun () -> (ValueNone: int voption)), CancellationToken.None, true)
+                  host.Read(fun () -> ()) |> within 10
+                  let inner = InvalidOperationException "a project's claimed failure"
+
+                  host.Post(fun () ->
+                      GraphClaims.claim inner
+                      raise (InvalidOperationException("another post's failure around it", inner)))
+
+                  let! finished = Task.WhenAny(apart, Task.Delay 10000)
+                  Expect.isTrue (obj.ReferenceEquals(finished, apart)) "the apart wait ended"
+              finally
+                  host.Dispose()
+          }
+
           test "WhenSettled with an unsatisfied read waits without spinning and honours cancellation" {
               use host = GraphHost.Start "cancel-wait"
               let mutable reads = 0

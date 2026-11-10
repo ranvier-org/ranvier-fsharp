@@ -393,7 +393,25 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     log text
                     do! showWarning text
 
-                let! graph = ProjectGraph.Create(host, spec, references)
+                let deadline = Diagnostics.Stopwatch.StartNew()
+                let left () = timeout - deadline.Elapsed
+
+                // A wait of the load ended by a failure no project claimed (the project's faults, and its references',
+                // didn't rise) says nothing of the project: it is waited for again, within the load's timeout. A fault of
+                // the project or a reference fails the load (N1 of the slice 6 re-review).
+                let rec again (faults: unit -> int) (work: unit -> Task<'T>) : Task<'T> =
+                    task {
+                        let before = faults ()
+
+                        try
+                            return! work ()
+                        with :? GraphFailedException as ex when faults () = before && left () > TimeSpan.Zero ->
+                            log $"%s{spec.ProjectFile}: a load wait ended by a failure no project claimed, waiting again: %s{ex.Message}"
+                            return! again faults work
+                    }
+
+                let referencesFaults () = references |> List.sumBy _.FaultsSeen
+                let! graph = again referencesFaults (fun () -> ProjectGraph.Create(host, spec, references))
                 created.Value <- Some graph
                 onGraphCreated graph
 
@@ -412,7 +430,10 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
                 // The settle waits take no token of their own
                 try
-                    let! _ = graph.AllDiagnostics().WaitAsync(timeout, lifetime.Token)
+                    let! _ =
+                        again (fun () -> graph.FaultsSeen) (fun () ->
+                            graph.AllDiagnostics().WaitAsync((if left () > TimeSpan.Zero then left () else TimeSpan.Zero), lifetime.Token))
+
                     ()
                 with :? TimeoutException ->
                     raise (
