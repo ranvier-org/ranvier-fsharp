@@ -587,6 +587,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             onLoadEnd ()
         }
 
+    /// Counts as loading until disposed (idempotent): a project change known and not yet applied
+    member _.HoldLoading() : IDisposable =
+        Interlocked.Increment &loading |> ignore
+        postLoading ()
+        let ended = ref 0
+
+        { new IDisposable with
+            member _.Dispose() =
+                if Interlocked.Exchange(&ended.contents, 1) = 0 then
+                    Interlocked.Decrement &loading |> ignore
+                    postLoading () }
+
     /// How long a load waits for a project's cold check: `RFS_LOAD_TIMEOUT_MS`, else ten minutes
     static member DefaultLoadTimeout() : TimeSpan =
         match Environment.GetEnvironmentVariable "RFS_LOAD_TIMEOUT_MS" with

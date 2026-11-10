@@ -227,6 +227,21 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let finding (item: unit -> Row) : unit -> Found =
         let mutable last = nothing
         let mutable failing = false
+        // The owner's fault count at the last settle: a fault since, with the check still pending, may have stranded it
+        let mutable faultsAt = struct (Unchecked.defaultof<ProjectGraph>, 0)
+
+        let fail (path: string) (why: string) =
+            if not failing then
+                failing <- true
+                faulted.Add path |> ignore
+                log $"%s{path}: no diagnostics to publish, %s{why}"
+                let own = Dictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
+
+                match last.Groups.TryGetValue path with
+                | true, l -> own[path] <- l
+                | _ -> ()
+
+                last <- { Groups = own; Current = false }
 
         fun () ->
             let r = item ()
@@ -245,26 +260,24 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                     with
                     | NotReadyException _ -> ValueNone
                     | ex ->
-                        if not failing then
-                            failing <- true
-                            faulted.Add r.Path |> ignore
-                            log $"%s{r.Path}: no diagnostics to publish, its check failed: %O{ex}"
-                            let own = Dictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
-
-                            match last.Groups.TryGetValue r.Path with
-                            | true, l -> own[r.Path] <- l
-                            | _ -> ()
-
-                            last <- { Groups = own; Current = false }
-
+                        fail r.Path $"its check failed: %O{ex}"
                         ValueNone
+
+                let faults = g.FaultsNow()
 
                 match settled with
                 | ValueSome(struct (_, diagnostics)) ->
                     failing <- false
+                    faultsAt <- struct (g, faults)
                     last <- { Groups = groupsOf r.Path diagnostics; Current = true }
                     last
                 | ValueNone ->
+                    let struct (at, before) = faultsAt
+
+                    // Pending after a fault of its project: what it reported elsewhere may never be replaced
+                    if obj.ReferenceEquals(at, g) && faults > before then
+                        fail r.Path "its project failed on the graph thread while its check was pending"
+
                     if last.Current then
                         last <- { last with Current = false }
 

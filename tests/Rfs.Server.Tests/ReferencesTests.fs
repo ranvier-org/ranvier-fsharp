@@ -619,6 +619,38 @@ let tests =
               Expect.isTrue gone.IsMoved "a project went away"
           }
 
+          testTask "a project change waiting out the watched-file debounce counts as loading, so a request waits for the reload" {
+              Fixtures.build depsProject
+              let! (s: Session) = startSessionWith depsDir [ depsProject ] true (fun server -> server.WatchDelayForTests <- TimeSpan.FromSeconds 3.)
+              use _ = disposing s
+              let aFile = file "A.fs"
+              do! openAll s [ aFile ]
+              do! s.Server.Publisher.Barrier().WaitAsync(TimeSpan.FromSeconds 120.)
+              let at = position (s.Lsp.Text aFile) "baseValue" 0 1
+              let! (before: Answer) = references s aFile at true
+              let old = (s.Server.Workspace.ProjectOf aFile).Value
+              let change = $$"""{"changes":[{"uri":{{JsonValue.Create(Paths.toUri depsProject).ToJsonString()}},"type":2}]}"""
+              do! s.Lsp.Notify("workspace/didChangeWatchedFiles", JsonNode.Parse change)
+              // Well inside the 3 s window, before the reload begins
+              let deadline = DateTime.UtcNow.AddSeconds 1.
+              let mutable loading = false
+
+              while not loading && DateTime.UtcNow < deadline do
+                  let! (now: bool) = s.Server.Host.Read(fun () -> s.Server.Workspace.LoadingNow())
+                  loading <- now
+
+                  if not loading then
+                      do! Task.Delay 20
+
+              Expect.isTrue loading "the change waiting in the debounce counts as loading"
+              let pending = references s aFile at true
+              do! Task.Delay 1000
+              Expect.isFalse pending.IsCompleted "a request in the window waits for the reload"
+              let! (answer: Answer) = pending |> within
+              Expect.equal answer before "and answers after it"
+              Expect.isFalse (obj.ReferenceEquals((s.Server.Workspace.ProjectOf aFile).Value, old)) "from the reloaded graph"
+          }
+
           testTask "a turn that finds a load under way leaves the read pending, and the next answers" {
               let! (s: Session) = start depsDir depsProject [ file "A.fs" ]
               use _ = disposing s
@@ -640,7 +672,7 @@ let tests =
               do! whenAsked "the turn that saw the load" (fun () -> asks >= 1)
               do! Task.Delay 300
               Expect.isFalse pending.IsCompleted "the loading turn isn't answered from"
-              // The loading signal's end wakes the read
+              // The scope is a stub, so no node the read tracks changes: a graph item wakes the step to ask again
               let! _ = graph.Mode aFile
               let! (loadEnded: References.Answer) = pending |> within
               Expect.equal (sprintf "%A" loadEnded) (sprintf "%A" expected) "the answer of the turn after the load"

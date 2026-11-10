@@ -213,6 +213,66 @@ let tests =
                   host.Dispose ()
           }
 
+          // I1 of slice 6's review: a failure no project claims may have stranded an apart wait too
+          for kind in [ "post"; "scope"; "pump"; "effect" ] do
+            testTask $"a failure no project claims ends the apart waits too: %s{kind}" {
+                  let host = GraphHost.Start("apart-" + kind)
+
+                  try
+                      let! (signal: Signal<int>) =
+                          host.Read(fun () ->
+                              let s = createSignal 0
+                              createRoot (fun _ -> GraphEffects.guarded (fun () -> if s.Value = 1 then failwith "effect boom")) |> ignore
+                              s)
+
+                      let apart = host.WhenSettled((fun () -> (ValueNone: int voption)), CancellationToken.None, true)
+                      host.Read(fun () -> ()) |> within 10
+
+                      match kind with
+                      | "post" -> host.Post(fun () -> failwith "post boom")
+                      | "scope" -> host.Graph.Dispatch(Action(fun () -> failwith "scope boom"))
+                      | "pump" -> host.FailNextPump(InvalidOperationException "pump boom")
+                      | _ -> host.Post(fun () -> signal.Value <- 1)
+
+                      let! finished = Task.WhenAny(apart, Task.Delay 10000)
+                      Expect.isTrue (obj.ReferenceEquals(finished, apart)) $"the apart wait ended (%s{kind})"
+                      Expect.isTrue apart.IsFaulted $"and faulted (%s{kind})"
+                  finally
+                      host.Dispose()
+            }
+
+          testTask "a failure a project claimed ends the shared waits, not the apart ones" {
+              let host = GraphHost.Start "apart-claimed"
+
+              try
+                  let! (signal: Signal<int>) =
+                      host.Read(fun () ->
+                          let s = createSignal 0
+                          createRoot (fun _ -> GraphEffects.guardedFor ignore (fun () -> if s.Value = 1 then failwith "claimed boom")) |> ignore
+                          s)
+
+                  let apart = host.WhenSettled((fun () -> (ValueNone: int voption)), CancellationToken.None, true)
+                  let shared = host.WhenSettled(fun () -> (ValueNone: int voption))
+                  host.Read(fun () -> ()) |> within 10
+                  host.Post(fun () -> signal.Value <- 1)
+                  let! finished = Task.WhenAny(shared, Task.Delay 10000)
+                  Expect.isTrue (obj.ReferenceEquals(finished, shared)) "the shared wait ended"
+                  Expect.isTrue shared.IsFaulted "and faulted"
+                  host.Read(fun () -> ()) |> within 10
+                  Expect.isFalse apart.IsCompleted "the apart wait goes on"
+
+                  let claimedPost = InvalidOperationException "claimed post boom"
+                  host.Post(fun () ->
+                      GraphClaims.claim claimedPost
+                      raise claimedPost)
+
+                  host.Read(fun () -> ()) |> within 10
+                  host.Read(fun () -> ()) |> within 10
+                  Expect.isFalse apart.IsCompleted "a claimed post doesn't end it either"
+              finally
+                  host.Dispose()
+          }
+
           test "WhenSettled with an unsatisfied read waits without spinning and honours cancellation" {
               use host = GraphHost.Start "cancel-wait"
               let mutable reads = 0

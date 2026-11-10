@@ -220,16 +220,29 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     // waits end with it, and no other project's (N2).
     let mutable faults = 0
     let mutable lastFault: exn = null
+    // Graph thread: the count as a node, written after the pump that counted, for readers that must follow it
+    let mutable faultsNow: Signal<int> = Unchecked.defaultof<_>
 
     let fault (ex: exn) =
         lastFault <- ex
         Interlocked.Increment &faults |> ignore
+
+        if not (isNull (box faultsNow)) then
+            host.WhenSettled(
+                (fun () ->
+                    faultsNow.Value <- Volatile.Read &faults
+                    ValueSome()),
+                CancellationToken.None,
+                true
+            )
+            |> ignore
 
     let post (work: unit -> unit) =
         host.Post(fun () ->
             try
                 work ()
             with ex ->
+                GraphClaims.claim ex
                 fault ex
                 reraise ())
 
@@ -480,7 +493,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                                         return { Fingerprints = built |> Array.map _.Fingerprint; Context = ctx }
                                     }))
 
-                    GraphEffects.guarded (fun () ->
+                    GraphEffects.guardedFor fault (fun () ->
                         match contextMemo.TryValue with
                         | Ready next when not (obj.ReferenceEquals(next, seen)) -> project.Post(fun () -> restarting (fun () -> this.Restart next))
                         | _ -> ())
@@ -1161,13 +1174,24 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// Fails as a restart does when it throws. For tests.
     member internal _.FailRestart(ex: exn) : unit = post (fun () -> restarting (fun () -> raise ex))
 
+    /// Fails posted work of the project, as a failing SetText would. For tests.
+    member internal _.FailPost(ex: exn) : unit = post (fun () -> raise ex)
+
     /// How many times work of the project failed on the graph thread (its effects, its posted work). Any thread.
     member internal _.FaultCount: int = Volatile.Read &faults
 
     /// Makes the project's own work report its faults to its waits. Graph thread, before anything of it runs.
     member private _.Attach() =
+        faultsNow <- createSignal 0
         project.Post <- post
         project.Fault <- fault
+
+    /// <summary>
+    /// Graph thread, tracked: how many times work of the project failed on the graph thread (its nodes' effects, its
+    /// posted work). A reader that keeps what a file last found can tell from it that the file's pending check may never
+    /// settle.
+    /// </summary>
+    member _.FaultsNow() : int = faultsNow.Value
 
     /// Awaits `hook` in each ReadFile after the file settled and before it takes the lock. For tests.
     member internal _.OnReadSettled(hook: unit -> Task) : unit = afterSettle <- hook

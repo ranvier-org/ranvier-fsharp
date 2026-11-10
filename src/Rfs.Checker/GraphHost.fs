@@ -19,6 +19,21 @@ type private Waiter =
 type GraphFailedException(what: string, inner: exn) =
     inherit Exception($"%s{what} failed on the graph thread: %s{inner.Message}", inner)
 
+/// Failures a project has claimed: its own waits end with them (ProjectGraph's fault count), so the host's apart waits
+/// need not. Any failure not claimed may have stranded any wait, and ends them all.
+module internal GraphClaims =
+    let private claimed = System.Runtime.CompilerServices.ConditionalWeakTable<exn, obj>()
+
+    let claim (ex: exn) = claimed.AddOrUpdate(ex, null)
+
+    /// Whether `ex`, or an exception it wraps, was claimed
+    let rec isClaimed (ex: exn) =
+        not (isNull ex)
+        && (fst (claimed.TryGetValue ex)
+            || (match ex with
+                | :? AggregateException as a -> a.InnerExceptions.Count > 0 && Seq.forall isClaimed a.InnerExceptions
+                | _ -> isClaimed ex.InnerException))
+
 [<AbstractClass; Sealed>]
 type internal GraphThread private () =
     /// Tells this thread's host that an effect failed
@@ -50,8 +65,9 @@ module internal GraphEffects =
             with
             | NotReadyException _ -> reraise ()
             | ex ->
-                GraphThread.Report ex
+                GraphClaims.claim ex
                 owner ex
+                GraphThread.Report ex
                 reraise ())
 
 /// <summary>
@@ -74,8 +90,9 @@ module internal GraphEffects =
 /// <para>
 /// After any of these, the <c>WhenSettled</c> calls still parked once the waiters have run fault with
 /// <c>GraphFailedException</c>: what the failure left undone may be what they wait for, and nothing else would end
-/// them. Later calls wait as usual. A call made apart (a project's wait, which checks its own project's faults) is not
-/// ended by them: the host is shared, and a fault of one project must fail nothing of another's.
+/// them. Later calls wait as usual. A call made apart (a project's wait, which checks its own project's faults) is ended
+/// only by a failure no project claimed (GraphClaims): the host is shared, and a fault one project claimed must fail
+/// nothing of another's.
 /// </para>
 /// <para>
 /// Once <c>Dispose</c> begins, work still in the inbox does not run: queued <c>Read</c>s fault with
@@ -95,6 +112,8 @@ type GraphHost private (name: string) =
     let mutable graph: Graph = Unchecked.defaultof<Graph>
     let mutable thread: Thread = null
     let mutable startupError: exn = null
+    // For tests: thrown by the next pump in place of its work
+    let mutable nextPumpFails: exn = null
 
     let maxKeptErrors = 256
 
@@ -103,13 +122,17 @@ type GraphHost private (name: string) =
     let isStopping () = Volatile.Read &stopping
     let isClosed () = Volatile.Read &closed
 
-    // Graph thread only: set while a pump runs, taken after it
+    // Graph thread only: set while a pump runs, taken after it. `unclaimed`: a failure no project claimed was among them
     let mutable failure: exn = null
+    let mutable unclaimed = false
     let mutable rootErrorsSeen = 0
 
     let failed (kind: string) (ex: exn) =
         eprintfn "[ranvierautocomplete] graph %s, %s failed: %O" name kind ex
         failure <- GraphFailedException(kind, ex)
+
+        if not (GraphClaims.isClaimed ex) then
+            unclaimed <- true
 
     let keep (queue: ConcurrentQueue<exn>) (kind: string) (ex: exn) =
         failed kind ex
@@ -124,17 +147,21 @@ type GraphHost private (name: string) =
             rootErrorsSeen <- rootErrorsSeen + 1
             failed "a graph scope" ex
 
-    /// Ends the waits a failure may have stranded. The waiters have just run: what could still settle has.
+    /// Ends the waits a failure may have stranded. The waiters have just run: what could still settle has. A failure a
+    /// project claimed ends the shared waits only, as that project's own waits end with its fault count; one no project
+    /// claimed (a pump that stopped mid-flush, a scope's error, someone else's post) ends the apart ones too.
     let failParked () =
         if not (isNull failure) then
             let ex = failure
+            let all = unclaimed
             failure <- null
+            unclaimed <- false
 
             let parked =
                 lock gate (fun () ->
-                    let shared = waiters.FindAll(fun w -> not w.Apart).ToArray()
-                    waiters.RemoveAll(fun w -> not w.Apart) |> ignore
-                    shared)
+                    let ended = waiters.FindAll(fun w -> all || not w.Apart).ToArray()
+                    waiters.RemoveAll(fun w -> all || not w.Apart) |> ignore
+                    ended)
 
             for w in parked do
                 w.Abort ex
@@ -183,7 +210,9 @@ type GraphHost private (name: string) =
 
                     if not (isStopping ()) then
                         try
-                            graph.Pump() |> ignore
+                            match Interlocked.Exchange(&nextPumpFails, null) with
+                            | null -> graph.Pump() |> ignore
+                            | ex -> raise ex
                         with ex ->
                             keep pumpErrors "a pump" ex
 
@@ -326,6 +355,11 @@ type GraphHost private (name: string) =
 
     member this.WhenSettled(read: unit -> 'T voption) : Task<'T> =
         this.WhenSettled(read, CancellationToken.None)
+
+    /// Makes the next pump throw `ex` instead of running, as a pump that stops mid-flush does. For tests.
+    member internal _.FailNextPump(ex: exn) : unit =
+        Volatile.Write(&nextPumpFails, ex)
+        wake.Set()
 
     /// The failures of <c>Post</c>ed work since the last call, oldest first (the newest 256 are kept).
     member _.TakePostErrors() : exn[] = drain postErrors

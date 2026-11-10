@@ -28,34 +28,50 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     do
         workspace.OnLoaded publisher.Loaded
 
-    /// Applies one batch of watched-file changes, off the graph thread
-    let applyWatched (changes: (string * bool) list) : Task =
+    /// Applies one batch of watched-file changes, off the graph thread; then ends `held`, the loading the batch's
+    /// project changes held while they waited (FilesChanged holds it from its start)
+    let applyWatched (changes: (string * bool) list) (held: IDisposable) : Task =
         task {
             try
-                do! workspace.FilesChanged changes
-                publisher.DiskChanged [ for path, deleted in changes do if not deleted then yield path ]
-            with ex ->
-                eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
+                try
+                    let applying = workspace.FilesChanged changes
+                    held.Dispose()
+                    do! applying
+                    publisher.DiskChanged [ for path, deleted in changes do if not deleted then yield path ]
+                with ex ->
+                    eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
+            finally
+                held.Dispose()
         }
 
     // Graph thread: the watched-file changes not yet applied, and how many notifications brought them. A burst (a branch
     // switch, a git pull) is applied as one batch once the notifications have been quiet for a while, so each project
-    // reloads once and the files changed settle once.
+    // reloads once and the files changed settle once. A project-level change waiting there counts as loading, so a read
+    // in one turn waits for the reload rather than answer from the graph it will replace.
     let watched = Collections.Generic.List<string * bool>()
     let mutable arrivals: Ranvier.Signal<int> = Unchecked.defaultof<_>
+    let mutable holding: IDisposable = null
+    let mutable watchDelay = RanvierServer.WatchDelay()
 
-    do
-        host.Post(fun () ->
+    let isProjectLevel (path: string) =
+        let ext = Path.GetExtension path
+        ext = ".fsproj" || ext = ".props" || ext = ".targets" || Path.GetFileName path = "project.assets.json"
+
+    /// Graph thread: the debounce, made at the first notification
+    let ensureWatch () =
+        if isNull (box arrivals) then
             Ranvier.Api.createRoot (fun _ ->
                 arrivals <- Ranvier.Api.createSignal 0
-                let quiet = Ranvier.TimedCombinators.debounce (RanvierServer.WatchDelay()) (fun () -> arrivals.Value) host.Graph
+                let quiet = Ranvier.TimedCombinators.debounce watchDelay (fun () -> arrivals.Value) host.Graph
 
                 Ranvier.Api.createEffect (fun () ->
                     if quiet.Value > 0 && watched.Count > 0 then
                         let batch = List.ofSeq watched
+                        let held = if isNull holding then { new IDisposable with member _.Dispose() = () } else holding
+                        holding <- null
                         watched.Clear()
-                        Task.Run(fun () -> applyWatched batch) |> ignore))
-            |> ignore)
+                        Task.Run(fun () -> applyWatched batch held) |> ignore))
+            |> ignore
 
     let mutable rootPath: string option = None
     let mutable automaticInit = false
@@ -163,6 +179,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             match Double.TryParse text with
             | true, ms when ms >= 0. -> TimeSpan.FromMilliseconds ms
             | _ -> TimeSpan.FromMilliseconds 200.
+
+    /// How long this server's watched-file notifications must be quiet; set before the first one. For tests.
+    member internal _.WatchDelayForTests
+        with set (delay: TimeSpan) = watchDelay <- delay
 
     member _.Client = client
     member _.Host = host
@@ -315,6 +335,11 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         [ for c in p.Changes -> Paths.ofUri c.Uri, (c.Type = FileChangeType.Deleted) ]
 
                     host.Post(fun () ->
+                        ensureWatch ()
+
+                        if isNull holding && changes |> List.exists (fst >> isProjectLevel) then
+                            holding <- workspace.HoldLoading()
+
                         watched.AddRange changes
                         arrivals.Value <- arrivals.Value + 1)
                 with ex ->

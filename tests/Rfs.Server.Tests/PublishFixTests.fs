@@ -758,4 +758,63 @@ let workspaceGraphTests =
               let graph = (s.Server.Workspace.ProjectOf cFile).Value
               let! _ = graph.Diagnostics cFile |> within
               ()
+          }
+
+          testTask "a counted fault that leaves a file pending takes its findings out of other files' lists" {
+              // X, in P2, reports an error in S, which P1 publishes; X's next check is held, and P2's work fails meanwhile
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              File.WriteAllText(x, $"module X\n\nlet y : int = S.value\n\n# 1 \"%s{shared}\"\nmodule Foreign =\n    let bad : string = 1\n")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let foreign (d: Diagnostic) = d.Message.Contains "string"
+              do! eventually "X's error in S" (fun () -> lastOf s shared |> List.exists foreign)
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              let hold, entered = holdParse second x
+              do! s.Lsp.DidChange(x, 1, replace s x "let y : int" "let y  : int")
+              do! eventually "X's parse" (fun () -> entered.Value)
+              second.FailPost(InvalidOperationException "an injected post fault")
+              do! eventually "S without X's error, X still pending" (fun () -> not (lastOf s shared |> List.exists foreign))
+              Expect.isFalse (hasVersion s x 1) "X's check is still held"
+              hold.Set()
+          }
+
+          testTask "a project's own parked wait fails through its fault count" {
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              let hold, entered = holdParse second x
+              do! s.Lsp.DidChange(x, 1, replace s x "let y : int" "let y  : int")
+              do! eventually "X's parse" (fun () -> entered.Value)
+              do! s.Server.Publisher.Barrier()
+              let parked = second.Diagnostics x
+              do! Task.Delay 200
+              Expect.isFalse parked.IsCompleted "parked on the held parse"
+              second.FailPost(InvalidOperationException "an injected post fault")
+              let! finished = Task.WhenAny(parked :> Task, Task.Delay 10000)
+              Expect.isTrue (obj.ReferenceEquals(finished, parked)) "the wait ended"
+              Expect.isTrue (parked.Exception.InnerException :? Rfs.Checker.GraphFailedException) "with the project's fault"
+              hold.Set()
+          }
+
+          testTask "an effect of a project's nodes that fails is counted to that project" {
+              let! (s, _, cFile, _, _) = foreignSession false
+              use _ = disposing s
+              let graph = (s.Server.Workspace.ProjectOf cFile).Value
+              let before = graph.FaultCount
+              let armed = ref true
+
+              graph.OnFlight(fun kind file _ ->
+                  if armed.Value && kind = "parse" && file.EndsWith "C.fs" then
+                      raise (InvalidOperationException "an injected fault in C"))
+
+              do! s.Lsp.DidChange(cFile, 1, atEnd s cFile "\n// c")
+              do! eventually "the fault counted" (fun () -> graph.FaultCount > before)
+              armed.Value <- false
           } ]
