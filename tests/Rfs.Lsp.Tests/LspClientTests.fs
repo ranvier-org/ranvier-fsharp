@@ -83,6 +83,28 @@ let tests =
                       })
           }
 
+          testTask "client declares workDoneProgress and answers its create request" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          let! _ = client.Initialize(Uri(Path.GetTempPath()).AbsoluteUri, JsonNode.Parse "{}")
+                          let! init = server.WaitForMethod "initialize"
+
+                          Expect.isTrue
+                              (init |> at [ "params"; "capabilities"; "window"; "workDoneProgress" ] |> bln)
+                              "the capability is declared"
+
+                          let! _ = server.Request("window/workDoneProgress/create", JsonNode.Parse """{"token":"rfs/progress/1"}""")
+
+                          let! reply =
+                              server.WaitFor(fun m ->
+                                  isNull m["method"] && not (isNull m["id"]) && (m.ContainsKey "result" || m.ContainsKey "error"))
+
+                          Expect.isTrue (reply.ContainsKey "result") "the create is answered with a result"
+                          Expect.isFalse (reply.ContainsKey "error") "and not an error"
+                      })
+          }
+
           testTask "configure sends didChangeConfiguration and answers workspace/configuration by section" {
               do!
                   withClient (fun server client ->

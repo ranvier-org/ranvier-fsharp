@@ -1260,6 +1260,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// </summary>
     member _.FaultsNow() : int = faultsNow.Value
 
+    /// Graph thread, tracked: whether a restart failed, which leaves the project with no nodes until it is loaded again
+    member _.RestartFailedNow() : bool =
+        not (isNull (box restartFailed)) && restartFailed.Value
+
     /// Awaits `hook` in each ReadFile after the file settled and before it takes the lock. For tests.
     member internal _.OnReadSettled(hook: unit -> Task) : unit = afterSettle <- hook
 

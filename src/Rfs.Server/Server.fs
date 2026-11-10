@@ -80,9 +80,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable peekDepth = 2
     let mutable excludedDirs: string list = [ ".git"; "node_modules"; ".ionide" ]
     let mutable canRegisterWatchers = false
+    let mutable canShowProgress = false
+    let mutable progress: Progress option = None
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
+            progress |> Option.iter _.Dispose()
             publisher.Dispose()
             workspace.Dispose()
             host.Dispose()
@@ -192,6 +195,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     member internal _.Documents = documents
     member internal _.Publisher = publisher
 
+    /// What the progress says now, or None when the client did not declare the capability. For tests.
+    member internal _.ProgressStatus() : Task<ProgressStatus option> =
+        match progress with
+        | Some p -> task { let! s = p.Status() in return Some s }
+        | None -> Task.FromResult None
+
     member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
         async {
             try
@@ -245,6 +254,11 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     |> Option.bind _.DynamicRegistration
                     |> Option.defaultValue false
 
+                canShowProgress <-
+                    p.Capabilities.Window
+                    |> Option.bind _.WorkDoneProgress
+                    |> Option.defaultValue false
+
                 let capabilities =
                     { ServerCapabilities.Default with
                         TextDocumentSync =
@@ -272,6 +286,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.Initialized(_) =
             async {
+                if canShowProgress then
+                    progress <- Some(new Progress(host, workspace, publisher, client))
+
                 registerWatchers ()
 
                 match rootPath, automaticInit with

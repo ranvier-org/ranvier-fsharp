@@ -34,11 +34,14 @@ type private Row =
 type private Found =
     { Groups: IReadOnlyDictionary<string, Rfs.Lsp.Diagnostic list>
       /// From a check settled for the row as it is now; false while an earlier one is kept
-      Current: bool }
+      Current: bool
+      /// A check for the row as it is now is under way: not settled, and not failed
+      Waiting: bool }
 
     static member None: Found =
         { Groups = Dictionary<string, Rfs.Lsp.Diagnostic list>() :> IReadOnlyDictionary<_, _>
-          Current = false }
+          Current = false
+          Waiting = false }
 
 module internal GraphTurn =
     /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush: a settle
@@ -241,7 +244,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | true, l -> own[path] <- l
                 | _ -> ()
 
-                last <- { Groups = own; Current = false }
+                last <- { Groups = own; Current = false; Waiting = false }
 
         fun () ->
             let r = item ()
@@ -269,7 +272,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | ValueSome(struct (_, diagnostics)) ->
                     failing <- false
                     faultsAt <- struct (g, faults)
-                    last <- { Groups = groupsOf r.Path diagnostics; Current = true }
+                    last <- { Groups = groupsOf r.Path diagnostics; Current = true; Waiting = false }
                     last
                 | ValueNone ->
                     let struct (at, before) = faultsAt
@@ -278,8 +281,8 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                     if obj.ReferenceEquals(at, g) && faults > before then
                         fail r.Path "its project failed on the graph thread while its check was pending"
 
-                    if last.Current then
-                        last <- { last with Current = false }
+                    if not failing && (last.Current || not last.Waiting) then
+                        last <- { last with Current = false; Waiting = true }
 
                     last
 
@@ -520,6 +523,13 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     /// How many rows and last lists the publisher keeps. For tests.
     member internal _.Retained() : Task<int> =
         host.Read(fun () -> rows.Value.Count + lastKeys.Count)
+
+    /// Graph thread, tracked: whether any row's check is under way, its file's or one it waits for
+    member internal _.CheckingNow() : bool =
+        projection.Keys |> Seq.exists (fun k -> (projection.Get k).Waiting)
+
+    /// Queues a send behind the lists queued so far
+    member internal _.Enqueue(item: Outgoing) : unit = outbox.Enqueue item
 
     member _.Dispose() =
         Volatile.Write(&disposed, 1)

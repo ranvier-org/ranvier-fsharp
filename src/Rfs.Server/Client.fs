@@ -18,6 +18,10 @@ type RanvierClient(sendServerNotification: ClientNotificationSender, sendServerR
     override _.ClientRegisterCapability(p: RegistrationParams) =
         sendServerRequest.Send "client/registerCapability" (box p)
 
+    /// `window/workDoneProgress/create` for `token`
+    member _.CreateProgress(token: string) : Async<Result<unit, JsonRpc.Error>> =
+        sendServerRequest.Send "window/workDoneProgress/create" (box (Newtonsoft.Json.Linq.JObject(Newtonsoft.Json.Linq.JProperty("token", token))))
+
     /// A custom `fsharp/*` or `rfs/*` notification
     member _.Notify(method: string, payload: obj) =
         sendServerNotification method payload |> Async.Ignore

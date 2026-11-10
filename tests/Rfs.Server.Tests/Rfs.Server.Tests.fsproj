@@ -9,6 +9,7 @@
     <Compile Include="WorkspaceTests.fs" />
     <Compile Include="PublishTests.fs" />
     <Compile Include="PublishFixTests.fs" />
+    <Compile Include="ProgressTests.fs" />
     <Compile Include="HoverTests.fs" />
     <Compile Include="CompletionTests.fs" />
     <Compile Include="CompletionGridTests.fs" />

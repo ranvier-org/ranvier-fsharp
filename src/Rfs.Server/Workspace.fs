@@ -691,6 +691,12 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     /// Graph thread, tracked: the projects' graphs, in load order
     member internal _.ProjectsNow() : ProjectGraph list = entryList.Value |> Array.map _.Graph |> List.ofArray
 
+    /// Graph thread, tracked: the project files whose restart failed, in load order. Each stays so until it is reloaded.
+    member internal _.DeadNow() : string list =
+        [ for e in entryList.Value do
+              if e.Graph.RestartFailedNow() then
+                  yield e.Spec.ProjectFile ]
+
     /// Graph thread, tracked: the source files of the project of `graph`, as FilesOf
     member internal _.FilesNow(graph: ProjectGraph) : string list =
         match entryList.Value |> Array.tryFind (fun e -> obj.ReferenceEquals(e.Graph, graph)) with
