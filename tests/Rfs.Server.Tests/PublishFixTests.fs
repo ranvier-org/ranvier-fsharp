@@ -116,7 +116,7 @@ let fixTests =
               do! eventually "the last publish" (fun () -> hasVersion s a 501)
           }
 
-          testTask "a document keeps one version per graph, not one per edit" {
+          testTask "a document keeps one row and one last list, not one per edit" {
               let! s = startSession () |> within
               use _ = disposing s
               do! openAll s [ a ]
@@ -126,7 +126,8 @@ let fixTests =
                   do! s.Lsp.DidChange(a, v, atEnd s a "\n// ")
 
               do! eventually "the last edit's publish" (fun () -> hasVersion s a 5)
-              Expect.equal s.Server.Documents.VersionEntries 1 "one version for one graph"
+              let! retained = s.Server.Publisher.Retained()
+              Expect.equal retained 2 "one row, one last list"
           }
 
           testTask "a foreign publish does not suppress the file's own" {
@@ -134,18 +135,19 @@ let fixTests =
               use _ = disposing s
               do! openAll s [ a ]
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
-              let hold = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              let hold = new ManualResetEventSlim false
               let entered = ref false
+              let armed = ref true
 
-              s.Server.Publisher.BeforePublish(fun lsp ->
-                  if lsp = 1 then
+              // Holds version 1's parse, so its own list is decided after the foreign one is queued
+              (s.Server.Workspace.ProjectOf a).Value.OnFlight(fun kind path _ ->
+                  if armed.Value && kind = "parse" && String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
+                      armed.Value <- false
                       entered.Value <- true
-                      hold.Task :> Task
-                  else
-                      Task.CompletedTask)
+                      hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
 
               do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
-              do! eventually "version 1 settled" (fun () -> entered.Value)
+              do! eventually "version 1's parse" (fun () -> entered.Value)
               let counts = s.Counts.Count
 
               let position = { Line = 0; Character = 0 }
@@ -160,7 +162,8 @@ let fixTests =
 
               // Version 1 is the document's current one while its own result is held
               do! s.Server.Publisher.PublishForeign(a, [ foreign ])
-              hold.SetResult()
+              do! eventually "the foreign list" (fun () -> publishesOf s a |> Array.exists (fun (_, v, d) -> v = Some 1 && d.Length = 1 && d.Head.Code = "FS9999"))
+              hold.Set()
               let! expected = oracleFor s [ a ] a
               Expect.isFalse (List.isEmpty expected) "the edit breaks A"
               do! eventually "A's own diagnostics" (fun () -> equalsOracle expected (lastOf s a))
@@ -223,16 +226,17 @@ let fixTests =
               do! openAll s [ a ]
               do! eventually "the open publish" (fun () -> hasVersion s a 0)
               do! s.Server.Publisher.Flushed()
-              let before = s.Server.Publisher.RetainedGraphs
+              let! before = s.Server.Publisher.RetainedGraphs()
               let counts = s.Counts.Count
               let published = (publishesOf s a).Length
               do! s.Server.Workspace.Reload depsProject |> within
               do! eventually "the publish after the reload" (fun () -> (publishesOf s a).Length > published && s.Counts.Count > counts)
               do! s.Server.Publisher.Flushed()
-              Expect.equal s.Server.Publisher.RetainedGraphs before "state is kept for the live graph only"
+              let! after = s.Server.Publisher.RetainedGraphs()
+              Expect.equal after before "state is kept for the live graph only"
           }
 
-          testTask "rapid edits: an older result held at the gate is not published" {
+          testTask "rapid edits: a list held in the outbox is replaced by a newer version's" {
               let! s = startSession () |> within
               use _ = disposing s
               do! openAll s [ a ]
@@ -253,9 +257,13 @@ let fixTests =
               do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
               do! eventually "version 1 settled" (fun () -> entered.ContainsKey 1)
               do! s.Lsp.DidChange(a, 2, replace s a "baseValue = \"s\"" "baseValue = 11")
-              do! eventually "version 2 settled" (fun () -> entered.ContainsKey 2)
+              // Version 2's list is queued behind the held one: its effect ran in the pump that settled it
+              do! eventually "the server at version 2" (fun () -> (s.Server.Documents.TryFind a |> Option.map _.LspVersion) = Some 2)
+              do! s.Server.Publisher.Barrier()
+              let! _ = (s.Server.Workspace.ProjectOf a).Value.Diagnostics a |> within
+              do! s.Server.Publisher.Barrier()
               holds[1].SetResult()
-              do! Task.Delay 300
+              do! eventually "version 2 at the hook" (fun () -> entered.ContainsKey 2)
               holds[2].SetResult()
               do! eventually "version 2 published" (fun () -> hasVersion s a 2)
               Expect.isFalse (hasVersion s a 1) "the older result is dropped"
@@ -263,16 +271,20 @@ let fixTests =
 
           testTask "typing during promotion" {
               let hold = new ManualResetEventSlim false
+              let building = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
+              // Promotion is held inside its build, and the edits are sent once it is there
               let prepare (server: RanvierServer) =
                   server.Workspace.OnGraphCreated(fun graph ->
                       graph.OnBeginFile(fun path ->
                           if String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
+                              building.TrySetResult() |> ignore
                               hold.Wait(TimeSpan.FromSeconds 90.) |> ignore))
 
               let! s = startSessionWith depsDir [ depsProject ] true prepare |> within
               use _ = disposing s
               do! openAll s [ a ]
+              do! building.Task.WaitAsync(TimeSpan.FromSeconds 120.)
               let graph = (s.Server.Workspace.ProjectOf a).Value
               let promoted = graph.WhenPromoted(a, CancellationToken.None)
 
@@ -289,7 +301,8 @@ let fixTests =
               Expect.isFalse promoted.IsCompleted "the edits came before promotion completed"
               hold.Set()
               let! _ = promoted |> within
-              do! Task.Delay 500
+              // Promotion's last pump queued whatever it changed
+              do! s.Server.Publisher.Flushed()
               let versions = publishesOf s a |> Array.choose (fun (_, v, _) -> v)
               Expect.equal versions (Array.sort versions) "versions only rise"
               Expect.equal (Array.last versions) 5 "the last publish is the last edit"
@@ -331,3 +344,261 @@ let fixTests =
               do! eventually "the empty publish" (fun () -> (lastOf s cFile).IsEmpty)
           }
         ]
+
+/// A copy of Deps whose C.fs, after a #line directive naming A.fs, reports an error that lands in A.fs: a file's
+/// diagnostics in another file. A and C open, then C closed when `close`. The session, A, C, the project and the
+/// foreign message.
+let private foreignSession (close: bool) : Task<Session * string * string * string * string> =
+    task {
+        let dir = copyFixtureDir "Deps"
+        let project = Path.Combine(dir, "Deps.fsproj")
+        let aFile = Path.Combine(dir, "A.fs")
+        let cFile = Path.Combine(dir, "C.fs")
+        File.AppendAllText(cFile, $"\n# 1 \"%s{aFile}\"\nmodule Foreign =\n    let bad : string = Deps.A.baseValue\n")
+        let! s = startSessionWith dir [ project ] true ignore |> within
+        do! openAll s [ aFile; cFile ]
+        do! eventually "the open publishes" (fun () -> hasVersion s aFile 0 && hasVersion s cFile 0)
+        let foreign (d: Diagnostic) = d.Message.Contains "string"
+        do! eventually "C's error in A" (fun () -> lastOf s aFile |> List.exists foreign)
+        let message = (lastOf s aFile |> List.find foreign).Message
+
+        if close then
+            do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri cFile) ])
+            do! eventually "C is cleared" (fun () -> publishesOf s cFile |> Array.exists (fun (_, v, _) -> v = None))
+            do! s.Server.Publisher.Flushed()
+            Expect.contains (lastOf s aFile |> List.map _.Message) message "C's error in A stays: C on disk still reports it"
+
+        return s, aFile, cFile, project, message
+    }
+
+/// Drops `name` from the project file
+let private dropFromProject (project: string) (name: string) =
+    File.WriteAllText(
+        project,
+        (File.ReadAllText project)
+            .Replace($"    <Compile Include=\"%s{name}\" />\r\n", "")
+            .Replace($"    <Compile Include=\"%s{name}\" />\n", "")
+    )
+
+let private weakGraph (s: Session) (path: string) : WeakReference = WeakReference((s.Server.Workspace.ProjectOf path).Value)
+
+let private collected (r: WeakReference) =
+    for _ in 1..3 do
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
+        GC.Collect()
+
+    not r.IsAlive
+
+/// Drops the graph's event log, which a Debug build of Ranvier keeps with every value its nodes published (as
+/// ReferencesIndexTests does). A no-op for an untraced Ranvier.
+let private dropTrace (host: Rfs.Checker.GraphHost) : Task =
+    host.Read(fun () ->
+        let graph = host.Graph
+
+        let traceModule =
+            [ "Ranvier.TraceModule"; "Ranvier.Trace" ]
+            |> List.tryPick (fun name ->
+                match typeof<Ranvier.Graph>.Assembly.GetType name with
+                | null -> None
+                | t -> Option.ofObj (t.GetMethod "lastSeq") |> Option.map (fun m -> t, m))
+
+        match traceModule with
+        | Some(t, lastSeq) ->
+            let last = lastSeq.Invoke(null, [| box graph |])
+            t.GetMethod("checkpoint").Invoke(null, [| box graph; last; box "dropped" |]) |> ignore
+        | None -> ())
+
+/// The index of the first publish of `path` at `version`, in arrival order
+let private indexOf (s: Session) (path: string) (version: int option) =
+    s.Published.ToArray()
+    |> Array.findIndex (fun (p, v, _) -> v = version && String.Equals(p, LspClient.NormalizePath path, StringComparison.OrdinalIgnoreCase))
+
+[<Tests>]
+let rowTests =
+    testSequenced
+    <| testList
+        "Publish rows"
+        [ testTask "nothing is published for a closed document after its empty list" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a ]
+              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              let graph = (s.Server.Workspace.ProjectOf a).Value
+              // Closed before version 1 has settled: the settled result comes after the close
+              do! s.Lsp.DidChange(a, 1, replace s a "baseValue = 10" "baseValue = \"s\"")
+              do! s.Lsp.Notify("textDocument/didClose", textDocument [ "uri", JsonValue.Create(Paths.toUri a) ])
+              do! eventually "the empty publish" (fun () -> publishesOf s a |> Array.exists (fun (_, v, _) -> v = None))
+              let! _ = graph.Diagnostics a |> within
+              do! s.Server.Publisher.Flushed()
+              do! Task.Delay 500
+              do! s.Server.Publisher.Flushed()
+              let after = publishesOf s a |> Array.skipWhile (fun (_, v, _) -> v <> None)
+              Expect.equal after.Length 1 "the empty list is the last publish"
+              let _, _, last = after[0]
+              Expect.isEmpty last "and it is empty"
+          }
+
+          testTask "publishes leave in the order they were queued, across two files" {
+              let! s = startSession () |> within
+              use _ = disposing s
+              do! openAll s [ a; b ]
+              do! eventually "the open publishes" (fun () -> hasVersion s a 0 && hasVersion s b 0)
+              let hold = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+              let entered = ref false
+
+              s.Server.Publisher.BeforePublish(fun lsp ->
+                  if lsp = 1 then
+                      entered.Value <- true
+                      hold.Task
+                  else
+                      Task.CompletedTask)
+
+              do! s.Lsp.DidChange(a, 1, atEnd s a "\n// a")
+              do! eventually "A's list at the hook" (fun () -> entered.Value)
+              do! s.Lsp.DidChange(b, 7, atEnd s b "\n// b")
+              do! eventually "the server at version 7" (fun () -> (s.Server.Documents.TryFind b |> Option.map _.LspVersion) = Some 7)
+              do! s.Server.Publisher.Barrier()
+              let! _ = (s.Server.Workspace.ProjectOf b).Value.Diagnostics b |> within
+              do! s.Server.Publisher.Barrier()
+              do! Task.Delay 300
+              Expect.isFalse (hasVersion s b 7) "B's list waits behind A's"
+              hold.SetResult()
+              do! eventually "both lists" (fun () -> hasVersion s a 1 && hasVersion s b 7)
+              Expect.isLessThan (indexOf s a (Some 1)) (indexOf s b (Some 7)) "A's list, queued first, arrives first"
+          }
+
+          testTask "a fault in one project leaves another's publishes alone" {
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let first = (s.Server.Workspace.OwnersOf shared).Head
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              Expect.isFalse (obj.ReferenceEquals(first, second)) "S is published from P1, X from P2"
+              let hold = new ManualResetEventSlim false
+              let entered = ref false
+              let armed = ref true
+
+              // X's edit is waiting to settle when P1 fails
+              second.OnFlight(fun kind path _ ->
+                  if armed.Value && kind = "parse" && path.EndsWith "X.fs" then
+                      armed.Value <- false
+                      entered.Value <- true
+                      hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+              do! s.Lsp.DidChange(x, 1, replace s x "let y : int" "let y : string")
+              do! eventually "X's parse" (fun () -> entered.Value)
+              do! s.Server.Publisher.Barrier()
+              do! Task.Delay 200
+              first.FailRestart(InvalidOperationException "an injected restart fault")
+              do! s.Server.Publisher.Barrier()
+              do! s.Server.Publisher.Barrier()
+              hold.Set()
+              let! all = s.Oracle.Check p2 (Map [ x, s.Lsp.Text x ])
+              let expected = all |> List.filter (fun d -> d.File.EndsWith "X.fs")
+              Expect.isFalse (List.isEmpty expected) "the edit breaks X"
+              do! eventually "X's version 1" (fun () -> hasVersion s x 1)
+              Expect.isEmpty (Diagnostics.compare expected (lastOf s x)) "X equals the oracle"
+              let before = (publishesOf s shared).Length
+              do! s.Lsp.DidChange(shared, 1, atEnd s shared "\n// s")
+              do! s.Server.Publisher.Flushed()
+              do! Task.Delay 1000
+              do! s.Server.Publisher.Flushed()
+              Expect.equal (publishesOf s shared).Length before "S, in the failed project, gets nothing new"
+              let! faulted = s.Server.Publisher.Faulted shared
+              Expect.isTrue faulted "and S's fault is logged"
+          }
+
+          testTask "a close that a load overtakes still takes the unsaved text out" {
+              let! s = startSessionWith depsDir [ depsProject ] false ignore |> within
+              use _ = disposing s
+              do! openAll s [ a; c ]
+              do! eventually "the empty publishes" (fun () -> hasVersion s a 0 && hasVersion s c 0)
+              do! s.Lsp.DidChange(a, 1, replace s a "(s: Shape) : int =" "(s: Shape) : unit =")
+              do! eventually "the server at version 1" (fun () -> (s.Server.Documents.TryFind a |> Option.map _.LspVersion) = Some 1)
+              let! broken = oracleFor s [ a; c ] c
+              Expect.isFalse (List.isEmpty broken) "the unsaved edit breaks C"
+              // The load registers the project, with A's unsaved text, after Close has looked at the disk and before
+              // its post runs
+              s.Server.Publisher.OnClose(fun _ -> s.Load().Wait())
+              s.Server.Publisher.Close a
+              s.Server.Publisher.OnClose ignore
+              do! s.Server.Publisher.Barrier()
+              let graph = (s.Server.Workspace.ProjectOf c).Value
+              let! (settled: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) = graph.Diagnostics c |> within
+              let! onDisk = oracleFor s [] c
+              Expect.isTrue (List.isEmpty onDisk) "C is clean with A as on disk"
+              Expect.isEmpty (settled |> Array.map _.Message |> List.ofArray) "the graph checks C against A on disk"
+          }
+
+          testTask "a closed file's diagnostics in an open file follow it while it reports any" {
+              let! (s, aFile, _, _, message) = foreignSession true
+              use _ = disposing s
+              // C is closed: only its row's check says that A's edit takes its error away
+              do! s.Lsp.DidChange(aFile, 1, replace s aFile "baseValue = 10" "baseValue = \"s\"")
+              do! eventually "A's version 1 without C's error" (fun () -> hasVersion s aFile 1 && not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+          }
+
+          testTask "a closed file's diagnostics in an open file go when a reload drops it, and so does the old graph" {
+              let! (s, aFile, _, project, message) = foreignSession true
+              use _ = disposing s
+              let old = weakGraph s aFile
+              dropFromProject project "C.fs"
+
+              do! s.Server.Workspace.Reload project |> within
+              do! s.Server.Publisher.Flushed()
+              do! eventually "A without C's error" (fun () -> not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+              // The closed row went with the reload, so nothing of the publisher holds the replaced graph
+              do! dropTrace s.Server.Host
+              Expect.isTrue (collected old) "the replaced graph is collected"
+          } 
+          testTask "an open file's diagnostics in another open file go when a reload drops it" {
+              let! (s, aFile, cFile, project, message) = foreignSession false
+              use _ = disposing s
+              dropFromProject project "C.fs"
+              do! s.Server.Workspace.Reload project |> within
+              do! s.Server.Publisher.Flushed()
+              do! eventually "C's empty list" (fun () -> (lastOf s cFile).IsEmpty)
+              do! eventually "A without C's error" (fun () -> not (lastOf s aFile |> List.exists (fun d -> d.Message = message)))
+          }
+
+          testTask "work after a pump sees every effect of the pump's flush, whatever order they were made in" {
+              let host = Rfs.Checker.GraphHost.Start "after-pump"
+              use _ = { new IAsyncDisposable with member _.DisposeAsync() = (host.Dispose(); ValueTask.CompletedTask) }
+
+              for countingFirst in [ true; false ] do
+                  let adopted = ref 0
+                  let seen = Collections.Concurrent.ConcurrentQueue<int>()
+
+                  let! (signal: Ranvier.Signal<int>) =
+                      host.Read(fun () ->
+                          let signal = Ranvier.Api.createSignal 0
+
+                          let counting () =
+                              Ranvier.Api.createEffect (fun () ->
+                                  if signal.Value > 0 then
+                                      GraphTurn.afterPump host (fun () -> seen.Enqueue adopted.Value))
+
+                          let adopting () =
+                              Ranvier.Api.createEffect (fun () ->
+                                  if signal.Value > 0 then
+                                      adopted.Value <- adopted.Value + 1)
+
+                          Ranvier.Api.createRoot (fun _ ->
+                              if countingFirst then
+                                  counting ()
+                                  adopting ()
+                              else
+                                  adopting ()
+                                  counting ())
+                          |> ignore
+
+                          signal)
+
+                  host.Post(fun () -> signal.Value <- 1)
+                  do! eventually "the count" (fun () -> seen.Count = 1)
+                  Expect.equal (seen.ToArray()) [| 1 |] $"the count includes the adoption (counting effect made first: %b{countingFirst})"
+          } ]

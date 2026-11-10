@@ -8,6 +8,7 @@
     <Compile Include="Paths.fs" />
     <Compile Include="Workspace.fs" />
     <Compile Include="Documents.fs" />
+    <Compile Include="Outbox.fs" />
     <Compile Include="Publisher.fs" />
     <Compile Include="Features/Hover.fs" />
     <Compile Include="Features/Completion.fs" />

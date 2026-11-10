@@ -132,7 +132,7 @@ let tests =
                       let pending = overLsp s feature d (at feature disk)
                       do! Task.Delay 300
                       Expect.isFalse pending.IsCompleted "the request waits for D"
-                      s.Server.Workspace.Close d |> ignore
+                      s.Server.Workspace.Close(d, Workspace.ReadOnClose d) |> ignore
                       gate.Set()
                       let! (answer: JsonNode) = pending
 
