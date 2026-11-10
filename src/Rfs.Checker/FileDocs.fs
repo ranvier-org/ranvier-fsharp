@@ -126,11 +126,11 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
             | SynMemberDefn.AutoProperty(ident = id; xmlDoc = doc) -> addMember typePath ("property " + id.idText) doc
             | SynMemberDefn.Interface(members = Some ms) -> ms |> List.iter (memberDefn typePath)
             | SynMemberDefn.ValField(fieldInfo = f) -> fields typePath [ f ]
-            // A class `let`: a value of the type
+            // A class `let`: a value of the type, of a kind of its own, as a module of the type's name shares its path
             | SynMemberDefn.LetBindings(bindings = bs) ->
                 for SynBinding(xmlDoc = doc; headPat = pat) in bs do
                     for name in namesOf pat do
-                        add ("V:" + typePath + "." + name) doc
+                        add ("L:" + typePath + "." + name) doc
             | SynMemberDefn.NestedType(typeDefn = t) -> typeDefn typePath t
             | _ -> ()
 

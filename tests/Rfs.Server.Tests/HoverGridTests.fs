@@ -205,12 +205,92 @@ let u = Calc().Add(1, 2) + int (Calc().Add(1.0, 2.0)) + Hidden().Join(3, 4)
 
 let private signedScenario =
     let f1 = edits signedFsi [ "Adds ints (fsi)", "Adds two ints (fsi)"; "Joins ints (fsi)", "Joins two ints (fsi)" ]
-    let f2 = edits f1 [ "type Hidden =", "
-type Hidden =" ]
+    let f2 = edits f1 [ "type Hidden =", "\ntype Hidden =" ]
 
     { Name = "signed docs"
       Files = [ "S.fsi", signedFsi; "S.fs", signedFs; "U.fs", signedLater ]
       Steps = [ "a signature doc edit", [ "S.fsi", f1 ]; "a line insert in the signature", [ "S.fsi", f2 ] ] }
+
+/// Owners whose names collide: a type's `let` and a module's value of one name, in a type and module of one name; and
+/// extensions in one module of two types of one name (the re-review's collide.fsx). Then two extension blocks of one
+/// type in separate rows, the first block's member renamed.
+let private collide =
+    normalizedText
+        """module Lib.C
+
+/// A type named like a module
+type Foo() =
+    /// class let x of Foo
+    let x = 1
+    member _.Get() = x
+
+module Foo =
+    /// module value x of Foo
+    let x = 2
+    let useX = x
+
+module N1 =
+    /// N1's Thing
+    type Thing() =
+        member _.Id = 1
+
+module N2 =
+    /// N2's Thing
+    type Thing() =
+        member _.Id = 2
+
+module Ext =
+    open N1
+
+    type N1.Thing with
+        /// Ext on N1.Thing
+        member _.Extra() = 10
+
+    type N2.Thing with
+        /// Ext on N2.Thing
+        member _.Extra() = 20
+
+    type System.String with
+        /// first block's Foo
+        member s.Foo(x: int) = s.Length + x
+
+    type System.String with
+        /// second block's Foo
+        member s.Foo(x: string) = s + x
+
+open Ext
+
+let a = N1.Thing().Extra()
+let b = N2.Thing().Extra()
+let c = "a".Foo(1) + ("a".Foo "b").Length
+"""
+
+let private collideLater =
+    normalizedText
+        """module Lib.D
+
+open Lib.C
+open Lib.C.Ext
+
+let d = N1.Thing().Extra() + N2.Thing().Extra() + Foo.x + Foo().Get()
+let e = ("x".Foo "y").Length
+"""
+
+let private collideScenario, renameScenario =
+    let renamed =
+        edits
+            collide
+            [ "        /// first block's Foo\n        member s.Foo(x: int) = s.Length + x", "        /// first block's Bar\n        member s.Bar(x: int) = s.Length + x"
+              "let c = \"a\".Foo(1) + (\"a\".Foo \"b\").Length", "let c = \"a\".Bar(1) + (\"a\".Foo \"b\").Length" ]
+
+    let docs = edits renamed [ "/// second block's Foo", "/// the only Foo"; "/// module value x of Foo", "/// Foo's module value x" ]
+
+    { Name = "colliding owners"
+      Files = [ "C.fs", collide; "D.fs", collideLater ]
+      Steps = [ "a doc edit", [ "C.fs", edits collide [ "/// second block's Foo", "/// the other Foo"; "/// module value x of Foo", "/// Foo's module value x" ] ] ] },
+    { Name = "an extension block renamed"
+      Files = [ "C.fs", collide; "D.fs", collideLater ]
+      Steps = [ "the first block's member renamed", [ "C.fs", renamed ]; "a doc edit", [ "C.fs", docs ] ] }
 
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
@@ -249,6 +329,23 @@ let tests =
     <| testList
         "HoverGrid"
         [ for promote in [ true; false ] do
+              yield
+               testTask $"""hover equals FCS at every token where owners' names collide (%s{if promote then "by declaration" else "file level"})""" {
+                  let! results =
+                      run promote collideScenario (fun state ->
+                          task {
+                              let results = ResizeArray()
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              return List.ofSeq results
+                          })
+
+                  expectNoDifferences results
+              }
+
               yield
                testTask $"""hover equals FCS at every token of a signed file and a later file after signature doc edits (%s{if promote then "by declaration" else "file level"})""" {
                   let! results =
@@ -297,7 +394,8 @@ let tests =
 
           yield
            // Pending: a declaration's text, which decides whether it is checked again, includes every `///` inside it (the
-           // fork's ParsedDeclaration.Text), so a doc edit checks the edited declarations again, and what depends on them
+           // fork's ParsedDeclaration.Text), so a doc edit checks the edited declarations again, and the rows of the same
+           // file that hold their types. No later file or other project is checked again: the fingerprint has no docs.
            ptestTask "a doc-only edit checks no declaration and renders no signature again" {
               let mutable last = None
               let after = docEdit libA
@@ -335,6 +433,42 @@ let tests =
                           | None -> ()
 
                           last <- Some again
+                          return List.ofSeq results
+                      })
+
+              expectNoDifferences results
+          }
+
+          yield
+           testTask "hover equals FCS at every token after an extension block's member is renamed (file level)" {
+              let! results =
+                  run false renameScenario (fun state ->
+                      task {
+                          let results = ResizeArray()
+
+                          for file in state.Implementations do
+                              let! r = compareFile state state.Graph file state.Reference
+                              results.Add r
+
+                          return List.ofSeq results
+                      })
+
+              expectNoDifferences results
+          }
+
+          yield
+           // Pending: the kept second block counts its own member's place among the module's extensions as its check saw
+           // them, the first block's old `Foo` included, while the parse has one `Foo` (the re-review's open shape)
+           ptestTask "hover equals FCS at every token after an extension block's member is renamed (by declaration)" {
+              let! results =
+                  run true renameScenario (fun state ->
+                      task {
+                          let results = ResizeArray()
+
+                          for file in state.Implementations do
+                              let! r = compareFile state state.Graph file state.Reference
+                              results.Add r
+
                           return List.ofSeq results
                       })
 
@@ -383,9 +517,7 @@ let tests =
           yield
            testTask "a hover whose docs' file changes while it reads answers for the new texts" {
               let withString =
-                  edits libA [ "    /// Adds an int", "    /// Adds strings
-    member _.Add(a: string, b: string) = a + b
-    /// Adds an int" ]
+                  edits libA [ "    /// Adds an int", "    /// Adds strings\n    member _.Add(a: string, b: string) = a + b\n    /// Adds an int" ]
 
               let mutable answered = None
 

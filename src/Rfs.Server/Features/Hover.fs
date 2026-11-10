@@ -224,8 +224,7 @@ module Hover =
         let cache = signatures.GetValue(owner, fun _ -> ConcurrentDictionary())
 
         cache.GetOrAdd(
-            struct (row, endColumn, lineStr, String.Join("
-", names)),
+            struct (row, endColumn, lineStr, String.Join("\n", names)),
             fun _ ->
                 rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
                 view.Result.CheckResults.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
@@ -301,7 +300,10 @@ module Hover =
 
                     // The docs in one turn with the signature's result still published: an edit that lands between
                     // them reads the file again
-                    match! graph.DocsInTurn(path, identity, held, ct) with
+                    // With no file of the workspace to read, every doc is the check's: no turn
+                    let! read = if held.Length = 0 then Task.FromResult(ValueSome [||]) else graph.DocsInTurn(path, identity, held, ct)
+
+                    match read with
                     | ValueNone -> return! attempt ()
                     | ValueSome read ->
                         let docs = Dictionary<string, FileDocs>(StringComparer.OrdinalIgnoreCase)
