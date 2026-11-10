@@ -1,0 +1,130 @@
+{
+  "server": "ranvier",
+  "scenario": "small-references",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-10T19:03:09.0964913Z",
+  "coldMs": 6113.9701000000005,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FSharp.Data.Adaptive/Core/Transaction.fs",
+      "latencyMs": 117.3338,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "open src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs",
+      "latencyMs": 131.6485,
+      "publishes": 1,
+      "declsChecked": 15,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "references src/FSharp.Data.Adaptive/Core/Transaction.fs 310:8",
+      "latencyMs": 1309.0755,
+      "answer": "11 402A33F5A96A",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "references src/FSharp.Data.Adaptive/Core/Transaction.fs 318:17",
+      "latencyMs": 7.5717,
+      "answer": "16 E4720CEF05FF",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "references src/FSharp.Data.Adaptive/Core/Transaction.fs 36:111",
+      "latencyMs": 5.5445,
+      "answer": "2 05C0FCA55D6F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 9:29",
+      "latencyMs": 2548.0483,
+      "answer": "20 7DBF3F9C7D4A",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 20:36",
+      "latencyMs": 1.651,
+      "answer": "0 E3B0C44298FC",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 300:19",
+      "latencyMs": 12.1408,
+      "answer": "15 4278D9B0D3F3",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 181:16",
+      "latencyMs": 4.2425,
+      "answer": "5 3C4FF46260C5",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 28:20",
+      "latencyMs": 2.9888,
+      "answer": "50 44E1F5D64499",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 122:17",
+      "latencyMs": 2.8087,
+      "answer": "2 BC72195A6864",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "references src/FSharp.Data.Adaptive/AdaptiveValue/AdaptiveValue.fs 427:8",
+      "latencyMs": 9.0965,
+      "answer": "4 5EE531C4A88F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 337.234375,
+  "allocatedMb": 3869.0615768432617,
+  "gen2": 6
+}

@@ -1,0 +1,7 @@
+R (ranvier-fsharp)  0837cf3  (uncommitted files: 0)
+F (fickle-fsharp)   c39df403f3  (uncommitted files: 0)  fork FCS dll written 2026-11-11T00:55:51
+FSAC baseline       4c33a2a7  (expected 4c33a2a)
+SDK                 10.0.403  (global.json: 10.0.403)
+machine             AMD Ryzen 9 9900X 12-Core Processor, 12 cores / 24 threads, 62 GB, Microsoft Windows NT 10.0.26200.0
+started             2026-11-11T02:55:35
+WARNING: running at start: dotnet#53540, dotnet#65104, dotnet#97180, dotnet#103852, fsautocomplete#26168, fsautocomplete#60792, fsautocomplete#70200, fsautocomplete#72588, fsautocomplete#86540, fsautocomplete#115256

@@ -1,0 +1,321 @@
+{
+  "server": "ranvier",
+  "scenario": "small-requests",
+  "commit": "76afc00027b10933606e733ff6258275c53224b3",
+  "startedAt": "2026-11-10T19:03:20.4882864Z",
+  "coldMs": 6568.8688,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FSharp.Data.Adaptive/Core/Transaction.fs",
+      "latencyMs": 131.2936,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 128:34",
+      "latencyMs": 98.0827,
+      "answer": "1 5DA65538710A",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 274:11",
+      "latencyMs": 22.8435,
+      "answer": "1 7DB0FC930044",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 312:18",
+      "latencyMs": 15.379,
+      "answer": "1 9207D11CEC5B",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 227:36",
+      "latencyMs": 11.9735,
+      "answer": "1 6583D1A1C7F5",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 182:20",
+      "latencyMs": 17.6284,
+      "answer": "1 60411F02F415",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 113:30",
+      "latencyMs": 19.0845,
+      "answer": "1 8E77C6908E09",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 173:34",
+      "latencyMs": 4.9532,
+      "answer": "1 0026865113D6",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 264:10",
+      "latencyMs": 13.4844,
+      "answer": "1 BC294BAA9176",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 244:28",
+      "latencyMs": 29.3631,
+      "answer": "1 7004651775E2",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "hover src/FSharp.Data.Adaptive/Core/Transaction.fs 102:15",
+      "latencyMs": 3.9338,
+      "answer": "1 EFA3BFD97A73",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 168:20",
+      "latencyMs": 137.0561,
+      "answer": "6 0F32A6DA6B5F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 189:18",
+      "latencyMs": 9.8276,
+      "answer": "16 2E9B85154197",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 154:10",
+      "latencyMs": 19.8845,
+      "answer": "8 502C5190CD43",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 220:53",
+      "latencyMs": 6.9908,
+      "answer": "16 4EFC80A08C35",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 245:32",
+      "latencyMs": 6.9552,
+      "answer": "10 28EC996D16BF",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 285:24",
+      "latencyMs": 4.7542,
+      "answer": "4 30D1BC2B96F5",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 338:31",
+      "latencyMs": 10.7657,
+      "answer": "17 059FA4013108",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 334:35",
+      "latencyMs": 4.6604,
+      "answer": "11 F91FEF8D9BEA",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 313:10",
+      "latencyMs": 3.8115,
+      "answer": "11 3009F310500A",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "completion src/FSharp.Data.Adaptive/Core/Transaction.fs 217:37",
+      "latencyMs": 3.9528,
+      "answer": "16 7B5F84405898",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 102:14",
+      "latencyMs": 114.7596,
+      "answer": "1 757E13623BF3",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 104:28",
+      "latencyMs": 39.8487,
+      "answer": "1 8BF5F8E49C9F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 227:35",
+      "latencyMs": 11.2911,
+      "answer": "1 140F93FE3F20",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 312:17",
+      "latencyMs": 6.0421,
+      "answer": "1 F03039E94DCA",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 333:20",
+      "latencyMs": 5.1591,
+      "answer": "1 957F404D4DDD",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 26,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 181:19",
+      "latencyMs": 3.0493,
+      "answer": "1 5840239817EB",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 27,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 121:21",
+      "latencyMs": 64.7303,
+      "answer": "1 53364244069E",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 244:27",
+      "latencyMs": 4.867,
+      "answer": "1 14A8B5140297",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 29,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 321:25",
+      "latencyMs": 5.5082,
+      "answer": "1 07293874C3BF",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 30,
+      "step": "definition src/FSharp.Data.Adaptive/Core/Transaction.fs 236:24",
+      "latencyMs": 6.3337,
+      "answer": "1 A00D6FA82812",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 255.14453125,
+  "allocatedMb": 2152.064651489258,
+  "gen2": 4
+}

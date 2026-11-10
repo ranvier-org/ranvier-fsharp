@@ -1,0 +1,21 @@
+{
+  "server": "ranvier",
+  "scenario": "mid-openmany",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-10T19:07:45.7541473Z",
+  "coldMs": 5826.9296,
+  "steps": [
+    {
+      "index": 0,
+      "step": "openMany 20",
+      "latencyMs": 608.407,
+      "publishes": 20,
+      "declsChecked": 6,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 441.3828125,
+  "allocatedMb": 2478.187530517578,
+  "gen2": 6
+}

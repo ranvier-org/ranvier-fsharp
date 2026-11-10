@@ -1,0 +1,321 @@
+{
+  "server": "ranvier",
+  "scenario": "mid-requests",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-10T19:12:27.8746579Z",
+  "coldMs": 4971.5754,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FsAutoComplete.Core/DocumentationFormatter.fs",
+      "latencyMs": 217.0282,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 112:17",
+      "latencyMs": 49.5687,
+      "answer": "1 940DEBBD5C45",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 72:25",
+      "latencyMs": 75.6401,
+      "answer": "1 2197565902CA",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 96:17",
+      "latencyMs": 6.51,
+      "answer": "1 F22A624C162C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 126:60",
+      "latencyMs": 2.7039,
+      "answer": "1 C2E2E20AA806",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 99:9",
+      "latencyMs": 3.4634,
+      "answer": "1 ADB9CD398712",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 107:41",
+      "latencyMs": 5.0256,
+      "answer": "1 A39DC0B39000",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 13:25",
+      "latencyMs": 367.7144,
+      "answer": "1 D0C8A7DBCE89",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 16:79",
+      "latencyMs": 2.2234,
+      "answer": "1 96D1AC195581",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 541:32",
+      "latencyMs": 8.9447,
+      "answer": "1 F481DB7DF8D8",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "hover src/FsAutoComplete.Core/DocumentationFormatter.fs 109:19",
+      "latencyMs": 20.3069,
+      "answer": "1 ABD332BD0D79",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 65:13",
+      "latencyMs": 106.9489,
+      "answer": "41 4B52991A7905",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 71:24",
+      "latencyMs": 10.5745,
+      "answer": "41 0C22D33A0228",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 101:38",
+      "latencyMs": 6.8534,
+      "answer": "41 9055EA7CFFB9",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 96:15",
+      "latencyMs": 32.8557,
+      "answer": "118 27ABD2776809",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 121:27",
+      "latencyMs": 8.0116,
+      "answer": "41 48E8D476ADA0",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 126:27",
+      "latencyMs": 45.5204,
+      "answer": "90 B2659C7D40DE",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 52:12",
+      "latencyMs": 8.8923,
+      "answer": "31 3B556023B447",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 41:17",
+      "latencyMs": 8.9964,
+      "answer": "14 697A020261C9",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 49:17",
+      "latencyMs": 11.0163,
+      "answer": "41 9BC95B9AF017",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "completion src/FsAutoComplete.Core/DocumentationFormatter.fs 113:13",
+      "latencyMs": 15.7458,
+      "answer": "41 56456F227574",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 96:17",
+      "latencyMs": 97.4627,
+      "answer": "1 B486FB9256A4",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 123:8",
+      "latencyMs": 20.7377,
+      "answer": "1 B075CE3B94C7",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 95:22",
+      "latencyMs": 2.6131,
+      "answer": "1 455902206066",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 99:8",
+      "latencyMs": 2.8228,
+      "answer": "1 FFD6CA6453A2",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 109:15",
+      "latencyMs": 3.1121,
+      "answer": "1 21544125F66E",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 26,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 541:31",
+      "latencyMs": 9.4249,
+      "answer": "1 248FCDD177C6",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 27,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 314:12",
+      "latencyMs": 5.2853,
+      "answer": "1 664371AA2F10",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 587:25",
+      "latencyMs": 9.6651,
+      "answer": "1 FCD72EA49D03",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 29,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 164:45",
+      "latencyMs": 5.3743,
+      "answer": "1 D31972853FC1",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 30,
+      "step": "definition src/FsAutoComplete.Core/DocumentationFormatter.fs 16:16",
+      "latencyMs": 1.5917,
+      "answer": "1 AF807A9ED3C2",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 456.3046875,
+  "allocatedMb": 3000.450370788574,
+  "gen2": 7
+}

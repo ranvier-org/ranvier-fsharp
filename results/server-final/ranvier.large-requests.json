@@ -1,0 +1,321 @@
+{
+  "server": "ranvier",
+  "scenario": "large-requests",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-10T19:15:34.2260532Z",
+  "coldMs": 12177.6386,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/Fantomas.Core/Queue.fs",
+      "latencyMs": 99.7086,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "hover src/Fantomas.Core/Queue.fs 15:42",
+      "latencyMs": 110.4999,
+      "answer": "1 9CA654B19A1A",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "hover src/Fantomas.Core/Queue.fs 17:10",
+      "latencyMs": 9.2785,
+      "answer": "1 B878EBADF410",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "hover src/Fantomas.Core/Queue.fs 23:18",
+      "latencyMs": 6.9083,
+      "answer": "1 9079719EAC7C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "hover src/Fantomas.Core/Queue.fs 30:19",
+      "latencyMs": 2.8222,
+      "answer": "1 590026E458B5",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "hover src/Fantomas.Core/Queue.fs 45:29",
+      "latencyMs": 2.1056,
+      "answer": "1 0208D38467E5",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "hover src/Fantomas.Core/Queue.fs 48:13",
+      "latencyMs": 6.9323,
+      "answer": "1 10BCD5044A99",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "hover src/Fantomas.Core/Queue.fs 58:16",
+      "latencyMs": 2.5587,
+      "answer": "1 C236ED7FD8EB",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "hover src/Fantomas.Core/Queue.fs 79:19",
+      "latencyMs": 2.4991,
+      "answer": "1 FFC1C968C4EA",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "hover src/Fantomas.Core/Queue.fs 99:19",
+      "latencyMs": 3.3737,
+      "answer": "1 4636110F3316",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "hover src/Fantomas.Core/Queue.fs 136:101",
+      "latencyMs": 5.7136,
+      "answer": "1 D676F6EB0C39",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "completion src/Fantomas.Core/Queue.fs 15:42",
+      "latencyMs": 129.2338,
+      "answer": "7 8722A3DD704F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "completion src/Fantomas.Core/Queue.fs 24:22",
+      "latencyMs": 12.3114,
+      "answer": "12 CD7EA798E704",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "completion src/Fantomas.Core/Queue.fs 25:21",
+      "latencyMs": 8.3828,
+      "answer": "117 2AEFBE7CE9F3",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "completion src/Fantomas.Core/Queue.fs 30:18",
+      "latencyMs": 11.8688,
+      "answer": "125 92162648657F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "completion src/Fantomas.Core/Queue.fs 41:17",
+      "latencyMs": 8.2572,
+      "answer": "131 40C09B7368CE",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "completion src/Fantomas.Core/Queue.fs 45:28",
+      "latencyMs": 11.4425,
+      "answer": "131 EF5AA3073826",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "completion src/Fantomas.Core/Queue.fs 58:45",
+      "latencyMs": 9.9624,
+      "answer": "20 A0EAE1717FAC",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "completion src/Fantomas.Core/Queue.fs 77:22",
+      "latencyMs": 3.9421,
+      "answer": "20 F8B5DE6DA82C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "completion src/Fantomas.Core/Queue.fs 99:18",
+      "latencyMs": 6.4111,
+      "answer": "125 A00398656286",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "completion src/Fantomas.Core/Queue.fs 129:38",
+      "latencyMs": 5.0396,
+      "answer": "12 47AD891DCCB6",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "definition src/Fantomas.Core/Queue.fs 22:15",
+      "latencyMs": 83.8969,
+      "answer": "1 165368DEA1D2",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "definition src/Fantomas.Core/Queue.fs 23:18",
+      "latencyMs": 3.6464,
+      "answer": "1 E0CC34CF560C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "definition src/Fantomas.Core/Queue.fs 24:23",
+      "latencyMs": 1.9681,
+      "answer": "1 70352E98E81C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "definition src/Fantomas.Core/Queue.fs 79:18",
+      "latencyMs": 2.0967,
+      "answer": "1 CF5169206F1C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "definition src/Fantomas.Core/Queue.fs 96:34",
+      "latencyMs": 2.1129,
+      "answer": "1 78A55461F8D6",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 26,
+      "step": "definition src/Fantomas.Core/Queue.fs 115:40",
+      "latencyMs": 2.1157,
+      "answer": "1 2C3FABF2D41C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 27,
+      "step": "definition src/Fantomas.Core/Queue.fs 117:43",
+      "latencyMs": 2.3866,
+      "answer": "1 FDD4E82C6889",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 28,
+      "step": "definition src/Fantomas.Core/Queue.fs 133:45",
+      "latencyMs": 2.7388,
+      "answer": "1 ED4760758B31",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 29,
+      "step": "definition src/Fantomas.Core/Queue.fs 136:100",
+      "latencyMs": 6.1241,
+      "answer": "1 76CF08F76415",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 30,
+      "step": "definition src/Fantomas.Core/Queue.fs 129:39",
+      "latencyMs": 2.3891,
+      "answer": "1 6CEB78885CCA",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 655.55078125,
+  "allocatedMb": 4756.567344665527,
+  "gen2": 8
+}

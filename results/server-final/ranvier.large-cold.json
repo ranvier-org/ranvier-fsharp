@@ -1,0 +1,21 @@
+{
+  "server": "ranvier",
+  "scenario": "large-cold",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-10T19:15:01.3782011Z",
+  "coldMs": 11144.321699999999,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/Fantomas.Core/Queue.fs",
+      "latencyMs": 78.9262,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 636.93359375,
+  "allocatedMb": 4589.227020263672,
+  "gen2": 8
+}

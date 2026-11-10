@@ -1,0 +1,130 @@
+{
+  "server": "ranvier",
+  "scenario": "large-references",
+  "commit": "9b5cde1f5f9d944e6979726d1a2df6f3b42f5714",
+  "startedAt": "2026-11-10T19:15:13.3817967Z",
+  "coldMs": 11614.955899999999,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/Fantomas.Core/Trivia.fs",
+      "latencyMs": 165.32,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "open src/Fantomas.Core/Context.fs",
+      "latencyMs": 129.5563,
+      "publishes": 1,
+      "declsChecked": 25,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "references src/Fantomas.Core/Trivia.fs 81:12",
+      "latencyMs": 7831.9713,
+      "answer": "24 21E6C3DA235F",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "references src/Fantomas.Core/Trivia.fs 84:13",
+      "latencyMs": 9.0036,
+      "answer": "43 C679C58CA74C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "references src/Fantomas.Core/Trivia.fs 226:9",
+      "latencyMs": 3.6306,
+      "answer": "13 39E24257E661",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "references src/Fantomas.Core/Trivia.fs 230:9",
+      "latencyMs": 3.7519,
+      "answer": "24 31F1DD0BFE48",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "references src/Fantomas.Core/Trivia.fs 267:9",
+      "latencyMs": 3.412,
+      "answer": "11 E7AC03689ED2",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "references src/Fantomas.Core/Trivia.fs 568:4",
+      "latencyMs": 9.7027,
+      "answer": "8 B1F4A6683674",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "references src/Fantomas.Core/Context.fs 8:36",
+      "latencyMs": 2.0418,
+      "answer": "18 B29DDBF2F51C",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "references src/Fantomas.Core/Context.fs 232:41",
+      "latencyMs": 6.0554,
+      "answer": "8 1AD00FD16336",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "references src/Fantomas.Core/Context.fs 254:23",
+      "latencyMs": 4.2391,
+      "answer": "8 2BA9419C7B68",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "references src/Fantomas.Core/Context.fs 941:37",
+      "latencyMs": 16.7006,
+      "answer": "10 02C6E6C55C57",
+      "publishes": 0,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 733.40625,
+  "allocatedMb": 8265.27710723877,
+  "gen2": 10
+}

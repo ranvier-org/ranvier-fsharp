@@ -1,0 +1,135 @@
+{
+  "server": "fsac-core-bg",
+  "scenario": "mid-crossproject",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-10T18:56:37.0741087Z",
+  "coldMs": 6667.6761,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FsAutoComplete.Core/AdaptiveExtensions.fs",
+      "latencyMs": 4359.6362,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "open src/FsAutoComplete.Logging/FsLibLog.fs",
+      "latencyMs": 316.4805,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #1 fwd",
+      "latencyMs": 176.602,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027",
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027"
+      ],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #2 inv",
+      "latencyMs": 312.7803,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #3 fwd",
+      "latencyMs": 95.3269,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027",
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027"
+      ],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #4 inv",
+      "latencyMs": 106.734,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #5 fwd",
+      "latencyMs": 72.9449,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027",
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027"
+      ],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #6 inv",
+      "latencyMs": 62.6462,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #7 fwd",
+      "latencyMs": 74.3963,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027",
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027"
+      ],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #8 inv",
+      "latencyMs": 56.1168,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #9 fwd",
+      "latencyMs": 80.1209,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027",
+        "missing: C:\\Users\\shaya\\RiderProjects\\ranvier-fsharp-corpus\\mid\\src\\FsAutoComplete.Core\\AdaptiveExtensions.fs 947:74-947:87 sev=1 FS0001 The type \u0027Log\u0027 does not match the type \u0027unit\u0027"
+      ],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #10 inv",
+      "latencyMs": 58.1079,
+      "publishes": 1,
+      "declsChecked": null,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 688.15234375,
+  "allocatedMb": 2118.3332290649414,
+  "gen2": 11
+}

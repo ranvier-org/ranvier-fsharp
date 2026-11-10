@@ -1,0 +1,246 @@
+{
+  "server": "ranvier",
+  "scenario": "mid-openmany-edits",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-10T19:07:52.4514748Z",
+  "coldMs": 14119.494100000002,
+  "steps": [
+    {
+      "index": 0,
+      "step": "openMany 150",
+      "latencyMs": 3619.6702,
+      "publishes": 150,
+      "declsChecked": 368,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #1 fwd",
+      "latencyMs": 448.9433,
+      "publishes": 1,
+      "declsChecked": 341,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #2 inv",
+      "latencyMs": 163.9755,
+      "publishes": 1,
+      "declsChecked": 1312,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #3 fwd",
+      "latencyMs": 137.2176,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #4 inv",
+      "latencyMs": 133.5149,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #5 fwd",
+      "latencyMs": 135.4414,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #6 inv",
+      "latencyMs": 132.4322,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #7 fwd",
+      "latencyMs": 128.0841,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #8 inv",
+      "latencyMs": 128.2462,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #9 fwd",
+      "latencyMs": 154.4,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #10 inv",
+      "latencyMs": 504.6564,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #11 fwd",
+      "latencyMs": 118.4655,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 12,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #12 inv",
+      "latencyMs": 120.8973,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 13,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #13 fwd",
+      "latencyMs": 113.1575,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 14,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #14 inv",
+      "latencyMs": 115.8333,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 15,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #15 fwd",
+      "latencyMs": 115.5441,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 16,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #16 inv",
+      "latencyMs": 121.2661,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 17,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #17 fwd",
+      "latencyMs": 113.0603,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 18,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #18 inv",
+      "latencyMs": 124.2527,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 19,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #19 fwd",
+      "latencyMs": 117.2032,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 20,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddExplicitTypeAnnotation.fs 21:17-21:18 #20 inv",
+      "latencyMs": 113.4302,
+      "publishes": 1,
+      "declsChecked": 1,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 21,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddBindingToSignatureFile.fs 13:43-13:43 #1 fwd",
+      "latencyMs": 122.974,
+      "publishes": 1,
+      "declsChecked": 2,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 22,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddBindingToSignatureFile.fs 13:43-13:43 #2 inv",
+      "latencyMs": 494.8763,
+      "publishes": 1,
+      "declsChecked": 2,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 23,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddBindingToSignatureFile.fs 13:43-13:43 #3 fwd",
+      "latencyMs": 115.0015,
+      "publishes": 1,
+      "declsChecked": 2,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 24,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddBindingToSignatureFile.fs 13:43-13:43 #4 inv",
+      "latencyMs": 115.8873,
+      "publishes": 1,
+      "declsChecked": 2,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 25,
+      "step": "edit src/FsAutoComplete/CodeFixes/AddBindingToSignatureFile.fs 13:43-13:43 #5 fwd",
+      "latencyMs": 116.802,
+      "publishes": 1,
+      "declsChecked": 2,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 898.44140625,
+  "allocatedMb": 13742.59920501709,
+  "gen2": 12
+}

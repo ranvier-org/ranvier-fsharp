@@ -1,0 +1,120 @@
+{
+  "server": "ranvier",
+  "scenario": "mid-crossproject",
+  "commit": "4c33a2a7223ea1a885c6bf91e92c7c967c524597",
+  "startedAt": "2026-11-10T19:05:18.2031061Z",
+  "coldMs": 5432.9516,
+  "steps": [
+    {
+      "index": 0,
+      "step": "open src/FsAutoComplete.Core/AdaptiveExtensions.fs",
+      "latencyMs": 322.4516,
+      "publishes": 1,
+      "declsChecked": 0,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 1,
+      "step": "open src/FsAutoComplete.Logging/FsLibLog.fs",
+      "latencyMs": 220.314,
+      "publishes": 1,
+      "declsChecked": 86,
+      "oracleDiff": null,
+      "error": null
+    },
+    {
+      "index": 2,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #1 fwd",
+      "latencyMs": 74.4329,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 3,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #2 inv",
+      "latencyMs": 51.515,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 4,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #3 fwd",
+      "latencyMs": 30.1336,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 5,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #4 inv",
+      "latencyMs": 29.2837,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 6,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #5 fwd",
+      "latencyMs": 32.1596,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 7,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #6 inv",
+      "latencyMs": 38.2139,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 8,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #7 fwd",
+      "latencyMs": 23.739,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 9,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #8 inv",
+      "latencyMs": 30.7491,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 10,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #9 fwd",
+      "latencyMs": 34.4301,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    },
+    {
+      "index": 11,
+      "step": "edit src/FsAutoComplete.Logging/FsLibLog.fs 276:79-276:79 #10 inv",
+      "latencyMs": 34.2048,
+      "publishes": 1,
+      "declsChecked": 87,
+      "oracleDiff": [],
+      "error": null
+    }
+  ],
+  "peakWorkingSetMb": 698.90625,
+  "allocatedMb": 17988.04295349121,
+  "gen2": 25
+}
