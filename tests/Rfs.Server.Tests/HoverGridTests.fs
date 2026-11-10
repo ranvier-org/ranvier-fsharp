@@ -699,12 +699,15 @@ let tests =
                       run true shape (fun state ->
                           task {
                               let results = ResizeArray()
+                              let placedBefore = state.Implementations |> List.sumBy Hover.placedSignaturesRendered
 
                               for file in state.Implementations do
                                   let! r = compareFile state state.Graph file state.Reference
                                   results.Add r
 
                               let first = state.Implementations |> List.sumBy Hover.signaturesRendered
+                              let placed = state.Implementations |> List.sumBy Hover.placedSignaturesRendered
+                              Expect.isGreaterThan placed placedBefore $"%s{state.Step}: a first hover named an extension by its place"
 
                               for file in state.Implementations do
                                   let! r = compareFile state state.Graph file state.Reference

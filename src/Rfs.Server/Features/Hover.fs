@@ -221,6 +221,18 @@ module Hover =
         | true, n -> n
         | _ -> 0L
 
+    let private placedRendered = ConcurrentDictionary<string, int64>(StringComparer.OrdinalIgnoreCase)
+
+    /// How many signatures rendered for hovers in the file named an `@` owner. For tests.
+    let internal placedSignaturesRendered (path: string) =
+        match placedRendered.TryGetValue path with
+        | true, n -> n
+        | _ -> 0L
+
+    /// The tooltip parts at the 0-based line, as a hover asks for them. It reads the check, so it runs inside a read.
+    let private partsAt (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
+        check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+
     let private signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
         let owner, row =
             match view.RowAt(line + 1) with
@@ -231,7 +243,7 @@ module Hover =
 
         let render (check: FSharpCheckFileResults) =
             rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
-            check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+            partsAt check line (lineStr, names, endColumn)
 
         let placed (predicate: string -> bool) ((_, sources): Signature) =
             sources
@@ -241,15 +253,22 @@ module Hover =
 
         let joined = String.Join("\n", names)
         let key = struct (row, endColumn, lineStr, joined)
-        let byResult = placedSignatures.GetValue(view.Identity, fun _ -> ConcurrentDictionary())
         let placedKey = struct (line, endColumn, lineStr, joined)
+
+        let cachedPlaced () =
+            match placedSignatures.TryGetValue view.Identity with
+            | true, byResult ->
+                match byResult.TryGetValue placedKey with
+                | true, s -> ValueSome s
+                | _ -> ValueNone
+            | _ -> ValueNone
 
         match cache.TryGetValue key with
         | true, s -> s
         | _ ->
-            match byResult.TryGetValue placedKey with
-            | true, s -> s
-            | _ ->
+            match cachedPlaced () with
+            | ValueSome s -> s
+            | ValueNone ->
                 let s = render view.Result.CheckResults
 
                 // An `@` owner is the place of an extension's value as the check has it now. A kept row's result can
@@ -263,8 +282,9 @@ module Hover =
                     // names it in the parse. Checked again in the current environment (RowView.at), as any query reading
                     // its names would be, the row refers to the current value, which a binding of the check makes and
                     // whose place is in the parse.
+                    placedRendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
                     let s = if placed (fun p -> p = "@?") s then render (view.At (line + 1) endColumn) else s
-                    byResult.TryAdd(placedKey, s) |> ignore
+                    placedSignatures.GetValue(view.Identity, fun _ -> ConcurrentDictionary()).TryAdd(placedKey, s) |> ignore
                     s
 
     /// The tooltip with each element's documentation made from the current comments of the declarations it is read
@@ -379,57 +399,67 @@ module Hover =
 
         attempt ()
 
-    /// The first identifier of the text that a hover would ask for, near its top
+    /// The name of the first `let` or `member` binding near the top of the text, as a hover would ask for it
     let private firstLookup (text: string) : (int * (string * string list * int)) option =
         let lines = text.Split '\n'
+        let binding = Regex(@"^\s*(?:let|member)\s+(?:(?:inline|private|internal|mutable|rec|static)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)")
 
         seq {
-            for line in 0 .. min (lines.Length - 1) 200 do
-                for m in Regex.Matches(lines[line], @"\b[A-Za-z_][A-Za-z0-9_]*") do
-                    yield line, m.Index
+            for line in 0 .. min (lines.Length - 1) 400 do
+                match binding.Match lines[line] with
+                | m when m.Success -> yield line, m.Groups[1].Index
+                | _ -> ()
         }
-        |> Seq.truncate 64
+        |> Seq.truncate 16
         |> Seq.tryPick (fun (line, character) -> lookupOf text line character |> Option.map (fun l -> line, l))
 
+    /// 0 not warmed, 1 warming, 2 warmed
     let mutable private warmed = 0
 
     /// <summary>
-    /// Once in a process, compiles what a first hover runs: the tooltip parts, a file's comment walk, and a docs read of
-    /// another file (ProjectGraph.DocsInTurn). On a real file of `graph`, whose answer is dropped.
+    /// Once in a process, compiles what a first hover runs: the tooltip parts of a binding's name, a file's comment walk,
+    /// and a docs read of another file (ProjectGraph.DocsInTurn). On a real file of `graph`, whose answer is dropped.
     /// </summary>
     /// <remarks>
-    /// The request node takes the file's lock only to read the published result's fields; GetToolTipParts runs after
-    /// it is released, so no hover waits on it. Any failure is dropped: nothing reads what this computes.
+    /// The parts are rendered inside the read, under the file's lock, as a hover's are: holding it costs a file's checks
+    /// and hovers one render, once. The docs read takes no lock and comes after it. A warm-up that renders nothing, or
+    /// fails, leaves the next project's load to try again.
     /// </remarks>
     let warm (graph: ProjectGraph) (files: string list) : Task =
-        if Interlocked.Exchange(&warmed, 1) <> 0 then
+        if Interlocked.CompareExchange(&warmed, 1, 0) <> 0 then
             Task.CompletedTask
         else
             Task.Run<unit>(fun () ->
                 task {
+                    let mutable done' = false
+
                     try
-                        match files |> List.filter (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))) with
-                        | [] -> ()
-                        | file :: rest ->
-                            let! found =
-                                graph.ReadFile(
-                                    file,
-                                    (fun text -> firstLookup text.Text, docsOfParse text.Parse),
-                                    (fun view (lookup, docs) -> lookup |> Option.map (fun l -> view.Result.CheckResults, view.Identity, docs, l)),
-                                    CancellationToken.None
-                                )
+                        try
+                            match files |> List.filter (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))) with
+                            | [] -> ()
+                            | file :: rest ->
+                                let! found =
+                                    graph.ReadFile(
+                                        file,
+                                        (fun text -> firstLookup text.Text, docsOfParse text.Parse),
+                                        (fun view (lookup, docs) ->
+                                            lookup |> Option.map (fun (line, l) -> partsAt view.Result.CheckResults line l, view.Identity, docs)),
+                                        CancellationToken.None
+                                    )
 
-                            match found with
-                            | None -> ()
-                            | Some(check, identity, docs, (line, (lineStr, names, endColumn))) ->
-                                let parts = check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
-                                let commentOf = FileDocs.CommentOf(fun _ -> ValueSome docs)
-                                format (compose commentOf parts) |> ignore
+                                match found with
+                                | None -> ()
+                                | Some(parts, identity, docs) ->
+                                    format (compose (FileDocs.CommentOf(fun _ -> ValueSome docs)) parts) |> ignore
 
-                                match rest with
-                                | other :: _ -> do! graph.DocsInTurn(file, identity, [| graph, other |], CancellationToken.None) :> Task
-                                | [] -> ()
-                    with _ ->
-                        ()
+                                    match rest with
+                                    | other :: _ -> do! graph.DocsInTurn(file, identity, [| graph, other |], CancellationToken.None) :> Task
+                                    | [] -> ()
+
+                                    done' <- true
+                        with ex ->
+                            eprintfn "[ranvierautocomplete] hover warm-up failed: %O" ex
+                    finally
+                        Volatile.Write(&warmed, (if done' then 2 else 0))
                 })
             :> Task
