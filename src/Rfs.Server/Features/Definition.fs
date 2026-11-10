@@ -83,38 +83,116 @@ module Definition =
         | _ -> Nowhere
 
     /// The cursor's answer is a request node on the file (ProjectGraph.ReadFile), which runs again on a new text. The
-    /// file's reading is over before another file's starts: no read waits for a file while it holds one.
-    let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
+    /// file's reading is over before another file's starts: no read waits for a file while it holds one. With it, what
+    /// an answer from the last state needs: the place asked at, and the files the answer was read from at their versions.
+    let private atIn (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
         task {
             // Only the check is asked under the lock
-            let! found =
+            let! struct (found, version, lookup) =
                 graph.ReadFile(
                     path,
                     (fun view -> Hover.lookupOf view.Text line character),
                     (fun view lookup ->
                         match lookup with
-                        | Some lookup -> find view.Result.CheckResults line lookup
-                        | None -> Nowhere),
+                        | Some l -> struct (find view.Result.CheckResults line l, view.Version, lookup)
+                        | None -> struct (Nowhere, view.Version, lookup)),
                     ct
                 )
 
+            let asking = LastState.fileAt graph path version
+
+            let entry (files: LastState.FileAt list) (answer: range option) =
+                match lookup with
+                | Some l ->
+                    let e: LastState.Entry<range option> = { Files = Array.ofList (asking :: files); Answer = answer }
+                    ValueSome(struct (LastState.keyOf path version line l, e))
+                | None -> ValueNone
+
             match found with
-            | Nowhere -> return None
+            | Nowhere -> return struct (None, entry [] None)
             | Local range ->
                 // In the row that uses it, which the file's result keeps current. Anywhere else, as a signed function's
                 // parameter lands in its signature, nothing keeps that location current, and there is no key to look it up.
                 let here = String.Equals(Path.GetFullPath range.FileName, Path.GetFullPath path, StringComparison.OrdinalIgnoreCase)
-                return (if here && not (range.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)) then Some range else None)
+                let answer = if here && not (range.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)) then Some range else None
+                return struct (answer, entry [] answer)
             | Keyed(key, landed, asSignature) ->
                 let implementation = if landed.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then Path.ChangeExtension(landed, ".fs") else landed
                 let owners = ownersOf implementation @ ownersOf (Path.ChangeExtension(landed, ".fsi")) |> List.distinct
                 let mutable answer = None
+                let mutable from = []
 
                 // A file two projects hold: only the one whose assembly the key names defines it
                 for owner in owners do
                     if answer.IsNone then
-                        let! current = owner.CurrentLocation((if asSignature then landed else path), landed, key, ct)
+                        let! struct (current, at) = owner.CurrentLocationAt((if asSignature then landed else path), landed, key, ct)
                         answer <- current
 
-                return answer
+                        match current with
+                        | Some r -> from <- [ LastState.fileAt owner r.FileName at ]
+                        | None -> ()
+
+                // Nothing found in a project read: which files decided that, no turn here says
+                return struct (answer, (if answer.IsSome || owners.IsEmpty then entry from answer else ValueNone))
         }
+
+    let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
+        task {
+            let! struct (found, _) = atIn ownersOf graph path line character ct
+            return found
+        }
+
+    /// The settled answers definition gave, for answers from the last state
+    type LastAnswers = LastState.Cache<range option>
+
+    /// <summary>
+    /// The definition's location from the last state while anything is pending (LastState.answer): the settled answer
+    /// asked at the place the cursor had, mapped to the latest text, or a refusal. Reads no check.
+    /// </summary>
+    let internal fromLastState
+        (answers: LastAnswers)
+        (shapes: Hover.LastAnswers)
+        (busy: unit -> bool)
+        (pending: unit -> bool)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<LastState.Outcome<range option>> =
+        let remap (remap: LastState.Remap) (answer: range option) =
+            match answer with
+            | None -> Ok None
+            | Some r -> remap r |> Result.map Some
+
+        LastState.answer answers shapes busy pending graph path line character remap ct
+
+    /// <summary>
+    /// The definition's location: the settled answer, given to `answers` too, or one from the last state (fromLastState)
+    /// while the settled one hasn't completed. Only for a client that shows the server's progress.
+    /// </summary>
+    let answer
+        (answers: LastAnswers)
+        (shapes: Hover.LastAnswers)
+        (busy: unit -> bool)
+        (pending: unit -> bool)
+        (ownersOf: string -> ProjectGraph list)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<range option> =
+        LastState.race
+            (fun ct ->
+                task {
+                    let! struct (found, entry) = atIn ownersOf graph path line character ct
+
+                    match entry with
+                    | ValueSome(struct (key, e)) -> answers.Add(key, e)
+                    | ValueNone -> ()
+
+                    return found
+                })
+            (fromLastState answers shapes busy pending graph path line character)
+            ct

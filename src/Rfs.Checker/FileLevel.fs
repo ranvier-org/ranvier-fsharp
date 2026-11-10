@@ -393,6 +393,7 @@ module internal WholeFile =
                 | ValueSome r ->
                     ValueSome
                         { Identity = r.Identity
+                          Version = r.Parsed.Version
                           Text = r.Parsed.Text
                           Parse = r.Parsed.Parse
                           Whole = r.Lock.IsNone

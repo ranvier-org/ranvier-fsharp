@@ -26,6 +26,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let publisher = new Publisher(host, workspace, client, documents)
     // The hovers given on settled results, for answers from the last state while a check is pending
     let lastAnswers = Hover.LastAnswers()
+    // The references and definitions given on settled states, for answers from the last state marked by the progress
+    let lastUses = References.LastAnswers()
+    let lastDefinitions = Definition.LastAnswers()
     let notices = new RestartNotices(host, workspace, publisher, client)
 
     do
@@ -206,6 +209,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     member _.Workspace = workspace
     member internal _.Documents = documents
     member internal _.Publisher = publisher
+
+    /// How many references and definitions were answered from the last state. For tests.
+    member internal _.LastStateAnswers: int64 = lastUses.Answered + lastDefinitions.Answered
 
     /// What the progress says now, or None when the client did not declare the capability. For tests.
     member internal _.ProgressStatus() : Task<ProgressStatus option> =
@@ -417,7 +423,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentDefinition(p: DefinitionParams) =
             reading "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
-                    let! found = Definition.at workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+                    let line, character = int p.Position.Line, int p.Position.Character
+
+                    let! found =
+                        if canShowProgress then
+                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow publisher.CheckingNow workspace.OwnersOf graph path line character ct
+                        else
+                            Definition.at workspace.OwnersOf graph path line character ct
 
                     return
                         found
@@ -476,7 +488,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 let! answer =
                     reading "references" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                         task {
-                            let! found = References.find scope graph path (int p.Position.Line) (int p.Position.Character) ct
+                            let line, character = int p.Position.Line, int p.Position.Character
+
+                            let! found =
+                                if canShowProgress then
+                                    References.answer lastUses lastAnswers workspace.LoadingNow publisher.CheckingNow scope graph path line character ct
+                                else
+                                    References.find scope graph path line character ct
 
                             match found with
                             // LSP's ContentModified. Ionide's bundled client shows nothing for it and doesn't ask again

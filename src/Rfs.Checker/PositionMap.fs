@@ -43,6 +43,8 @@ type FileShape =
 type PublishedState =
     { /// FileView.Identity of the result
       Identity: obj
+      /// The text version the result is of
+      Version: int64
       Text: string
       Parse: FSharpParseFileResults
       /// A whole check's result
@@ -260,3 +262,30 @@ module PositionMap =
                                 Error Refusal.LexerState
                             else
                                 Ok { OldLine = oldLine; OldCharacter = character }
+
+    /// <summary>
+    /// Where the 0-based position of `old` is in `current`: the line moved by its row's shift, and `map` must give it
+    /// back exactly, so every refusal of `map` holds here too. A position outside every row of `old` is Gap, and a row
+    /// with no unchanged counterpart in `current` is Edited.
+    /// </summary>
+    let mapForward (old: FileShape) (current: FileShape) (line: int) (character: int) : Result<int, Refusal> =
+        if String.Equals(old.Text, current.Text, StringComparison.Ordinal) then
+            Ok line
+        elif old.Rows.Length = 0 || current.Rows.Length = 0 then
+            Error Refusal.CheckedWhole
+        else
+            match rowAt old.Rows (line + 1) character with
+            | None -> Error Refusal.Gap
+            | Some was ->
+                match find current.Rows was.Key with
+                | None -> Error Refusal.Edited
+                | Some row ->
+                    let newLine = line + (row.StartLine - was.StartLine)
+
+                    if newLine < 0 || newLine >= current.Lines.Length then
+                        Error Refusal.Edited
+                    else
+                        match map old current newLine character with
+                        | Ok at when at.OldLine = line && at.OldCharacter = character -> Ok newLine
+                        | Ok _ -> Error Refusal.Edited
+                        | Error refusal -> Error refusal

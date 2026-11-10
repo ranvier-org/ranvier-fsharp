@@ -265,7 +265,7 @@ let private expectLookupsAsFork (graph: Rfs.Checker.ProjectGraph) : Task<int> =
 
                             if ours <> expected && not unnamedField then
                                 different.Add $"%s{Path.GetFileName path} %s{k}: ours %s{show ours}, fork %s{show expected}"
-                    | Rfs.Checker.TurnFile.Signature(path, uses) ->
+                    | Rfs.Checker.TurnFile.Signature(path, _, uses) ->
                         let signature = uses.Source.Target :?> FileSignature
 
                         for k in keys do

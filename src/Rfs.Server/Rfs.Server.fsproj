@@ -12,6 +12,7 @@
     <Compile Include="Publisher.fs" />
     <Compile Include="Progress.fs" />
     <Compile Include="Features/Hover.fs" />
+    <Compile Include="Features/LastState.fs" />
     <Compile Include="Features/Completion.fs" />
     <Compile Include="Features/Definition.fs" />
     <Compile Include="Features/References.fs" />

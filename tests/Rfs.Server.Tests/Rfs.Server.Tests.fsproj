@@ -24,6 +24,7 @@
     <Compile Include="ReferencesGridTests.fs" />
     <Compile Include="ReferencesTests.fs" />
     <Compile Include="ReferencesIndexTests.fs" />
+    <Compile Include="LastStateUsesGridTests.fs" />
     <Compile Include="WhyTests.fs" />
     <Compile Include="RequestFeatureTests.fs" />
     <Compile Include="Program.fs" />

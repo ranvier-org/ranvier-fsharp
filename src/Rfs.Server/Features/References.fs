@@ -105,14 +105,14 @@ module References =
 
     /// The symbol under the cursor: a request node on the file (ProjectGraph.ReadFile), with only the check asked under
     /// the lock.
-    let private asked (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<Asked> =
+    let private asked (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
         graph.ReadFile(
             path,
             (fun view -> Hover.lookupOf view.Text line character),
             (fun view lookup ->
                 match lookup with
-                | Some lookup -> ask view.Result.CheckResults line lookup ct
-                | None -> Nothing),
+                | Some l -> struct (ask view.Result.CheckResults line l ct, view.Version, lookup)
+                | None -> struct (Nothing, view.Version, lookup)),
             ct
         )
 
@@ -157,7 +157,16 @@ module References =
                 |> Seq.distinct
                 |> Seq.length) > 1
 
-    let private everywhere (scope: Scope) (graph: ProjectGraph) (path: string) (key: string) (landed: string option) (spelled: string option) (ct: CancellationToken) : Task<Answer> =
+    /// The answer, and each file the turn read at its version (empty for Moved)
+    let private everywhere
+        (scope: Scope)
+        (graph: ProjectGraph)
+        (path: string)
+        (key: string)
+        (landed: string option)
+        (spelled: string option)
+        (ct: CancellationToken)
+        : Task<struct (Answer * LastState.FileAt[])> =
         task {
             let definersNow () =
                 match landed with
@@ -188,66 +197,163 @@ module References =
                       Extra = definers }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
-            | TurnRead.Gone -> return Answer.Moved
+            | TurnRead.Gone -> return struct (Answer.Moved, [||])
             | TurnRead.Read(definers, projects) ->
                 let files = projects |> Seq.collect snd |> List.ofSeq
 
-                let kept =
-                    [ for f in files do
-                          match f with
-                          | TurnFile.Indexed(_, _, uses) -> yield hitsOf key uses
-                          | _ -> () ]
+                let read =
+                    [| for g, turnFiles in projects do
+                           for f in turnFiles do
+                               match f with
+                               | TurnFile.Indexed(p, v, _)
+                               | TurnFile.Signature(p, v, _)
+                               | TurnFile.Skipped(p, v) -> LastState.fileAt g p v |]
 
-                let signatureHits =
-                    [ for f in files do
-                          match f with
-                          | TurnFile.Signature(_, uses) -> yield! fst (hitsOf key uses)
-                          | _ -> () ]
+                let found =
 
-                let definitions = kept |> List.collect (snd >> List.ofArray)
-                let isMember = (match key.Split('|')[1] with "member" | "property" -> true | _ -> false)
+                    let kept =
+                        [ for f in files do
+                              match f with
+                              | TurnFile.Indexed(_, _, uses) -> yield hitsOf key uses
+                              | _ -> () ]
 
-                // A member more generic than its signature has a key each side of it. From a use after the signature its
-                // definer shows no definition; from the implementation, a signature it says it is in has no such key.
-                let moreGeneric =
-                    isMember
-                    && (if definitions.IsEmpty then
-                            not definers.IsEmpty
-                        else
-                            definitions |> List.exists (fun (struct (r, _)) -> isSignature r.FileName)
-                            && not (signatureHits |> List.exists (fun (struct (_, definition, _)) -> definition)))
+                    let signatureHits =
+                        [ for f in files do
+                              match f with
+                              | TurnFile.Signature(_, _, uses) -> yield! fst (hitsOf key uses)
+                              | _ -> () ]
 
-                if moreGeneric || isTied key (kept |> List.map snd) then
-                    return Answer.Found []
-                else
-                    // A setter's own token is its own symbol, unless it is all the property has: then it is the property
-                    let wantsSetter = key.EndsWith setterSuffix
-                    let onlySetter = definitions |> List.forall (fun (struct (_, setter)) -> setter)
+                    let definitions = kept |> List.collect (snd >> List.ofArray)
+                    let isMember = (match key.Split('|')[1] with "member" | "property" -> true | _ -> false)
 
-                    let hits =
-                        [ for hits, _ in kept do
-                              for struct (r, definition, setter) in hits do
+                    // A member more generic than its signature has a key each side of it. From a use after the signature its
+                    // definer shows no definition; from the implementation, a signature it says it is in has no such key.
+                    let moreGeneric =
+                        isMember
+                        && (if definitions.IsEmpty then
+                                not definers.IsEmpty
+                            else
+                                definitions |> List.exists (fun (struct (r, _)) -> isSignature r.FileName)
+                                && not (signatureHits |> List.exists (fun (struct (_, definition, _)) -> definition)))
+
+                    if moreGeneric || isTied key (kept |> List.map snd) then
+                        Answer.Found []
+                    else
+                        // A setter's own token is its own symbol, unless it is all the property has: then it is the property
+                        let wantsSetter = key.EndsWith setterSuffix
+                        let onlySetter = definitions |> List.forall (fun (struct (_, setter)) -> setter)
+
+                        let hits =
+                            [ for hits, _ in kept do
+                                  for struct (r, definition, setter) in hits do
+                                      if onlySetter || setter = wantsSetter then
+                                          yield struct (r, definition) ]
+
+                        let inSignatures =
+                            [ for struct (r, definition, setter) in signatureHits do
                                   if onlySetter || setter = wantsSetter then
                                       yield struct (r, definition) ]
 
-                    let inSignatures =
-                        [ for struct (r, definition, setter) in signatureHits do
-                              if onlySetter || setter = wantsSetter then
-                                  yield struct (r, definition) ]
+                        Answer.Found(List.distinct (hits @ inSignatures))
 
-                    return Answer.Found(List.distinct (hits @ inSignatures))
+                return struct (found, read)
+        }
+
+    /// Every use of the symbol at the position, and the turn's files when the answer can be given again from them
+    let private findIn (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) =
+        task {
+            try
+                match! asked graph path line character ct with
+                | struct (Nothing, _, _) -> return struct (Answer.Found [], ValueNone)
+                | struct (InFile uses, _, _) -> return struct (Answer.Found uses, ValueNone)
+                | struct (Keyed(key, landed, spelled), version, lookup) ->
+                    let! struct (found, read) = everywhere scope graph path key landed spelled ct
+
+                    // The asking file in the turn must be at the text the symbol was asked of
+                    let asking =
+                        read
+                        |> Array.tryFindIndex (fun f ->
+                            String.Equals(Path.GetFullPath f.Path, Path.GetFullPath path, StringComparison.OrdinalIgnoreCase)
+                            && (match f.Graph.TryGetTarget() with
+                                | true, g -> obj.ReferenceEquals(g, graph)
+                                | _ -> false))
+
+                    match found, asking, lookup with
+                    | Answer.Found _, Some i, Some lookup when read[i].Version = version ->
+                        let files = Array.append [| read[i] |] (read |> Array.removeAt i)
+                        let entry: LastState.Entry<Answer> = { Files = files; Answer = found }
+                        return struct (found, ValueSome(struct (LastState.keyOf path version line lookup, entry)))
+                    | _ -> return struct (found, ValueNone)
+            with
+            | :? OperationCanceledException when not ct.IsCancellationRequested -> return struct (Answer.Moved, ValueNone)
+            // A file's #line directives stayed another parse's for as long as building its index waits for them
+            | :? SupersededLineDirectivesException when not ct.IsCancellationRequested -> return struct (Answer.Moved, ValueNone)
         }
 
     /// Every use of the symbol at the position.
     let find (scope: Scope) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<Answer> =
         task {
-            try
-                match! asked graph path line character ct with
-                | Nothing -> return Answer.Found []
-                | InFile uses -> return Answer.Found uses
-                | Keyed(key, landed, spelled) -> return! everywhere scope graph path key landed spelled ct
-            with
-            | :? OperationCanceledException when not ct.IsCancellationRequested -> return Answer.Moved
-            // A file's #line directives stayed another parse's for as long as building its index waits for them
-            | :? SupersededLineDirectivesException when not ct.IsCancellationRequested -> return Answer.Moved
+            let! struct (found, _) = findIn scope graph path line character ct
+            return found
         }
+
+    /// The settled answers references gave, for answers from the last state
+    type LastAnswers = LastState.Cache<Answer>
+
+    let private remapUses (remap: LastState.Remap) (answer: Answer) : Result<Answer, Refusal> =
+        match answer with
+        | Answer.Moved -> Error Refusal.Moved
+        | Answer.Found uses ->
+            let mapped = uses |> List.map (fun (struct (r, d)) -> remap r |> Result.map (fun r -> struct (r, d)))
+
+            match mapped |> List.tryPick (function Error e -> Some e | Ok _ -> None) with
+            | Some refusal -> Error refusal
+            | None -> Ok(Answer.Found(mapped |> List.choose (function Ok u -> Some u | Error _ -> None)))
+
+    /// <summary>
+    /// The uses from the last state while anything is pending (LastState.answer): the settled answer asked at the place
+    /// the cursor had, each use mapped to the latest texts, or a refusal. Reads no check.
+    /// </summary>
+    let internal fromLastState
+        (answers: LastAnswers)
+        (shapes: Hover.LastAnswers)
+        (busy: unit -> bool)
+        (pending: unit -> bool)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<LastState.Outcome<Answer>> =
+        LastState.answer answers shapes busy pending graph path line character remapUses ct
+
+    /// <summary>
+    /// Every use of the symbol at the position: the settled answer, given to `answers` too, or one from the last state
+    /// (fromLastState) while the settled one hasn't completed. Only for a client that shows the server's progress, which
+    /// is what marks such an answer.
+    /// </summary>
+    let answer
+        (answers: LastAnswers)
+        (shapes: Hover.LastAnswers)
+        (busy: unit -> bool)
+        (pending: unit -> bool)
+        (scope: Scope)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<Answer> =
+        LastState.race
+            (fun ct ->
+                task {
+                    let! struct (found, entry) = findIn scope graph path line character ct
+
+                    match entry with
+                    | ValueSome(struct (key, e)) -> answers.Add(key, e)
+                    | ValueNone -> ()
+
+                    return found
+                })
+            (fromLastState answers shapes busy pending graph path line character)
+            ct

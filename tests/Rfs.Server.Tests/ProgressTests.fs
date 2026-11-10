@@ -219,6 +219,77 @@ let private editAt (line: int) (from: int) (until': int) (text: string) : Edit =
     { Range = { Start = { Line = line; Character = from }; End = { Line = line; Character = until' } }
       Text = text }
 
+
+/// Holds every check of the graph that a dependency computation leads to, until the gate is set
+let private holdChecks (graph: Rfs.Checker.ProjectGraph) =
+    let gate = new ManualResetEventSlim false
+    let armed = ref true
+
+    graph.OnFlight(fun kind _ ct ->
+        if armed.Value && kind = "dependencies" then
+            gate.Wait ct)
+
+    gate, armed
+
+/// The references request at a 0-based position, its locations as text
+let private referencesAt (r: Run) (path: string) (line: int) (character: int) : Task<string list> =
+    let parameters =
+        JsonNode.Parse
+            $"""{{"textDocument":{{"uri":"%s{Paths.toUri path}"}},"position":{{"line":%d{line},"character":%d{character}}},"context":{{"includeDeclaration":true}}}}"""
+
+    task {
+        let! result, _ = r.Lsp.Request("textDocument/references", parameters)
+
+        return
+            [ for l in result.AsArray() do
+                  let range = l["range"]
+                  yield $"""%s{Path.GetFileName(Paths.ofUri (l["uri"].GetValue<string>()))} %s{range.ToJsonString()}""" ]
+            |> List.sort
+    }
+
+/// A references request during a held check, after the same one settled before an edit of another row
+let private referencesDuringHeldCheck (progress: bool) =
+    task {
+        use! r = start progress
+        do! load r
+
+        // Without the capability there is no status to wait on: the settled request below waits instead
+        if progress then
+            do! quiet r
+            do! openQuiet r a
+        else
+            do! r.Lsp.DidOpen(a, File.ReadAllText a)
+            do! r.Server.Publisher.Flushed()
+
+        // `scale`, whose uses are in A's rows 4 and 15 and in B: the edit is of row 17
+        let! settled = referencesAt r a 4 4 |> within
+        Expect.isGreaterThan settled.Length 2 "scale is used"
+        let graph = (r.Server.Workspace.ProjectOf a).Value
+        let gate, armed = holdChecks graph
+
+        try
+            do! r.Lsp.DidChange(a, 1, editAt 17 33 34 "3")
+            let asked = referencesAt r a 4 4
+            let! _ = Task.WhenAny(asked, Task.Delay(if progress then 20000 else 1500))
+
+            if progress then
+                Expect.isTrue asked.IsCompleted "answered from the last state while the check is held"
+                Expect.equal asked.Result settled "the answer before the edit"
+                Expect.equal r.Server.LastStateAnswers 1L "one answer from the last state"
+            else
+                Expect.isFalse asked.IsCompleted "without the capability it waits for the check"
+                Expect.equal r.Server.LastStateAnswers 0L "nothing from the last state"
+        finally
+            armed.Value <- false
+            gate.Set()
+
+        if progress then
+            do! quiet r
+
+        let! after = referencesAt r a 4 4 |> within
+        Expect.equal after settled "settled, the answer is unchanged"
+    }
+
 [<Tests>]
 let tests =
     testSequenced
@@ -480,4 +551,12 @@ let tests =
               Expect.equal (List.last seen) "end" "the period ends"
               Expect.isEmpty (r.Server.Workspace.OwnersOf d) "D left the project"
               do! settledStatus r
+          }
+
+          testTask "references during a held check answer at once from the last state, and the same once settled" {
+              do! referencesDuringHeldCheck true
+          }
+
+          testTask "without the capability references during a held check wait" {
+              do! referencesDuringHeldCheck false
           } ]

@@ -141,13 +141,33 @@ type LatestText =
       /// The latest `///` comments of each file asked for, ValueNone while its parse is pending
       Docs: FileDocs voption[] }
 
+/// A file as it stands against a text version it had (ProjectGraph.FilesNow)
+[<RequireQualifiedAccess; NoEquality; NoComparison>]
+type FileNow =
+    /// Its latest text is still that version
+    | Same
+    /// An implementation file with a newer text: the latest text and parse, and its last published result
+    | Changed of view: TextView * published: PublishedState voption
+    /// A signature file with a newer text
+    | SignatureChanged
+    /// Its project was disposed
+    | Gone
+
+/// Files read in one graph turn against text versions they had (ProjectGraph.FilesNow)
+[<NoEquality; NoComparison>]
+type FilesNow =
+    { Files: FileNow[]
+      /// What the caller's `busy` and `pending` read in the same turn
+      Busy: bool
+      Pending: bool }
+
 /// One file of a read made in one graph turn (ProjectGraph.ReadInOneTurn).
 [<RequireQualifiedAccess; NoComparison; NoEquality>]
 type TurnFile =
     /// An implementation file's index of its published result, which is for text version `version`
     | Indexed of path: string * version: int64 * uses: FileUses
-    /// A signature file's index of its latest check
-    | Signature of path: string * uses: FileUses
+    /// A signature file's index of its latest check, which is for text version `version`
+    | Signature of path: string * version: int64 * uses: FileUses
     /// Not read: its latest text, at `version`, doesn't contain the name asked for (TurnScope.Name)
     | Skipped of path: string * version: int64
 
@@ -819,7 +839,14 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// is what corrects them. A request node that reads the files' indexes (FileUses.DefinitionOf, SignatureDefinitionOf)
     /// in one graph turn, holding no lock: its answer is for the texts that turn has, which may be newer than the symbol's.
     /// </remarks>
-    member _.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+    member this.CurrentLocation(asking: string, landed: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+        task {
+            let! struct (found, _) = this.CurrentLocationAt(asking, landed, key, ct)
+            return found
+        }
+
+    /// CurrentLocation, with the text version of the range's file in the turn that read it (0 for no range)
+    member _.CurrentLocationAt(asking: string, landed: string, key: string, ct: CancellationToken) : Task<struct (FSharp.Compiler.Text.range option * int64)> =
         let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
         let isSignature (file: string) = file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
         let signature = Path.ChangeExtension(landed, ".fsi")
@@ -858,7 +885,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         let body (flight: CancellationToken) =
             match answer () with
-            | ValueSome found -> Task.FromResult found
+            | ValueSome(Some r) when holds r.FileName -> Task.FromResult(struct (Some r, Volatile.Read &requested[indexOf r.FileName]))
+            | ValueSome found -> Task.FromResult(struct (found, 0L))
             | ValueNone -> Request.waitForNextTurn flight
 
         task {
@@ -901,6 +929,53 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
             return! Request.run host body linked.Token
         }
+
+    /// <summary>
+    /// A request node: each of `files` (a graph on this one's host, a file of it and a text version it had) as it stands,
+    /// read in one graph turn with `busy` and `pending`, tracked reads of the host's graph. A changed implementation file
+    /// gives its latest text once parsed, and its last published result. Never waits for a check.
+    /// </summary>
+    member _.FilesNow(files: struct (ProjectGraph * string * int64)[], busy: unit -> bool, pending: unit -> bool, ct: CancellationToken) : Task<FilesNow> =
+        for struct (g, _, _) in files do
+            if not (obj.ReferenceEquals(g.Host, host)) then
+                invalidArg (nameof files) $"%s{g.Spec.ProjectFile} is on another host: one turn can't read it"
+
+        let body (flight: CancellationToken) =
+            let read = files |> Array.map (fun struct (g, f, version) -> g.FileNow(f, version))
+
+            if read |> Array.exists ValueOption.isNone then
+                Request.waitForNextTurn flight
+            else
+                Task.FromResult
+                    { Files = read |> Array.map _.Value
+                      Busy = busy ()
+                      Pending = pending () }
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
+    /// Graph thread, inside one turn: the file against `version`, or ValueNone while a newer text's parse is pending
+    member internal _.FileNow(file: string, version: int64) : FileNow voption =
+        if Volatile.Read &disposed <> 0 then
+            ValueSome FileNow.Gone
+        else
+            match byPath.TryGetValue(Path.GetFullPath file) with
+            | false, _ -> ValueSome FileNow.Gone
+            | true, _ ->
+                let i = indexOf file
+                let text = files[i].Text.Text.Value
+
+                if text.Version = version then ValueSome FileNow.Same
+                elif isSignatureFile files[i] then ValueSome FileNow.SignatureChanged
+                else
+                    let p = files[i].Text.Parsed.Value
+
+                    if text.Version <> Volatile.Read &requested[i] || p.Version <> text.Version then
+                        ValueNone
+                    else
+                        ValueSome(FileNow.Changed({ Parse = p.Parse; Text = p.Text; Version = p.Version }, (files[i] :?> IReadableFile).LastPublished()))
 
     /// Whether the project has the file
     member _.Holds(file: string) : bool =
@@ -991,7 +1066,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             elif not pending then
                 let file =
                     if isSignatureFile files[i] then
-                        readSettled i (fun f version -> (f :?> ISignatureFile).Uses version |> ValueOption.map (fun struct (_, u) -> TurnFile.Signature(path, u)))
+                        readSettled i (fun f version -> (f :?> ISignatureFile).Uses version |> ValueOption.map (fun struct (_, u) -> TurnFile.Signature(path, version, u)))
                     else
                         readSettled i (fun f version -> (f :?> IReadableFile).Uses version |> ValueOption.map (fun struct (u, _) -> TurnFile.Indexed(path, version, u)))
 
