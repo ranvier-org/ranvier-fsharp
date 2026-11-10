@@ -135,7 +135,7 @@ module Definition =
                         answer <- current
 
                         match current with
-                        | Some r when at <> 0L ->
+                        | Some r when at >= 0L ->
                             let ownerFiles = owner.FilesOf
                             // The range's file at the version its index was read at, and every file up to the last read
                             from <- [ owner, generation, Array.init read.Length (fun j -> struct (ownerFiles[j], read[j])) ]
@@ -185,6 +185,7 @@ module Definition =
         (shapes: Hover.LastAnswers)
         (busy: unit -> bool)
         (pending: unit -> bool)
+        (whenShown: unit -> Task)
         (ownersOf: string -> ProjectGraph list)
         (graph: ProjectGraph)
         (path: string)
@@ -193,6 +194,7 @@ module Definition =
         (ct: CancellationToken)
         : Task<range option> =
         LastState.race
+            whenShown
             (fun ct ->
                 task {
                     let! struct (found, entry) = atIn ownersOf graph path line character ct

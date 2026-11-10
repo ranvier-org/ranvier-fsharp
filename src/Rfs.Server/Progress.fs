@@ -59,6 +59,8 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     let mutable timer: Timer = null
     // 1 once a period's begin is written to the client, until its end is about to be: the mark is on screen
     let mutable showing = 0
+    // Completes when the mark shows; replaced when it goes
+    let mutable markShown = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -80,7 +82,10 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
             p.State <- Begun
 
             (progress p (JObject(JProperty("kind", "begin"), JProperty("title", Progress.Title), JProperty("message", p.Message))))
-                .ContinueWith(fun (sent: Task) -> if sent.IsCompletedSuccessfully && p.State = Begun then Interlocked.Exchange(&showing, 1) |> ignore)
+                .ContinueWith(fun (sent: Task) ->
+                    if sent.IsCompletedSuccessfully && p.State = Begun then
+                        Interlocked.Exchange(&showing, 1) |> ignore
+                        Volatile.Read(&markShown).TrySetResult() |> ignore)
         else
             Task.CompletedTask
 
@@ -131,7 +136,8 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
                 Notify(fun () ->
                     let was = p.State
                     p.State <- Ended
-                    Interlocked.Exchange(&showing, 0) |> ignore
+                    if Interlocked.Exchange(&showing, 0) = 1 then
+                        Volatile.Write(&markShown, TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
 
                     if was = Begun then
                         progress p (JObject(JProperty("kind", "end")))
@@ -209,6 +215,9 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     /// Whether a period's begin has reached the client and its end hasn't been sent: what marks an answer from the last
     /// state. Any thread.
     member _.ShowingNow() : bool = Volatile.Read &showing = 1
+
+    /// Completes once the mark shows (at once while it does). Any thread.
+    member _.WhenShown() : Task = Volatile.Read(&markShown).Task
 
     /// What the progress follows now. For tests.
     member _.Status() : Task<ProgressStatus> = host.Read(fun () -> status.Value)

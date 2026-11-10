@@ -168,6 +168,18 @@ module LastState =
                 ()
         }
 
+    /// A file to append each answer's phases to, from RFS_LAST_STATE_TRACE, for measuring
+    let private traceFile = Environment.GetEnvironmentVariable "RFS_LAST_STATE_TRACE"
+    let private traceGate = obj ()
+
+    let private trace (path: string) (line: int) (phases: (string * float) list) (outcome: string) =
+        if not (isNull traceFile) then
+            let text = phases |> List.map (fun (n, ms) -> $"%s{n}=%.1f{ms}") |> String.concat " "
+
+            let at = DateTime.UtcNow.ToString "o"
+            let file = Path.GetFileName path
+            lock traceGate (fun () -> File.AppendAllText(traceFile, $"%s{at} %s{file}:%d{line + 1} %s{outcome} %s{text}\n"))
+
     /// <summary>
     /// The answer asked at the place the cursor had in the state it was given on, with its ranges mapped by `remap`, or
     /// why there is none. `busy` (a reload under way) and `pending` (the progress has begun) are read in the first turn,
@@ -185,13 +197,22 @@ module LastState =
         (remap: Remap -> 'T -> Result<'T, Refusal>)
         (ct: CancellationToken)
         : Task<Outcome<'T>> =
+        let clock = Diagnostics.Stopwatch.StartNew()
+        let phases = List<string * float>()
+        let mark (name: string) = phases.Add(name, clock.Elapsed.TotalMilliseconds)
+
+        let traced (o: Outcome<'T>) =
+            trace path line (List.ofSeq phases) (match o with Outcome.Answered _ -> "answered" | Outcome.Settled -> "settled" | Outcome.Refused r -> $"%A{r}")
+            o
+
         task {
             let! latest = graph.LatestText(path, [||], busy, pending, ct)
+            mark "first-turn"
 
             if latest.Busy then
-                return Outcome.Refused Refusal.Reloading
+                return traced (Outcome.Refused Refusal.Reloading)
             elif not latest.Pending then
-                return Outcome.Settled
+                return traced Outcome.Settled
             else
                 let find (shape: FileShape) (version: int64) (l: int) (c: int) =
                     Hover.lookupIn shape l c |> Option.bind (fun lookup -> cache.Find(graph, keyOf path version l lookup) |> ValueOption.toOption)
@@ -216,8 +237,10 @@ module LastState =
                                 | Some entry -> Ok entry
                                 | None -> Error Refusal.NotAnswered
 
+                mark "cursor"
+
                 match found with
-                | Error refusal -> return Outcome.Refused refusal
+                | Error refusal -> return traced (Outcome.Refused refusal)
                 | Ok entry ->
                     let graphs =
                         entry.Graphs
@@ -227,10 +250,11 @@ module LastState =
                             | _ -> ValueNone)
 
                     if graphs |> Array.exists ValueOption.isNone then
-                        return Outcome.Refused Refusal.Moved
+                        return traced (Outcome.Refused Refusal.Moved)
                     else
                         let! now = graph.FilesNow(graphs |> Array.map _.Value, busy, pending, ct)
                         ct.ThrowIfCancellationRequested()
+                        mark "files-turn"
 
                         // Every graph at its generation, every file at the answer's version or pending on it
                         let stale =
@@ -262,14 +286,14 @@ module LastState =
                                     None)
 
                         if now.Busy then
-                            return Outcome.Refused Refusal.Reloading
+                            return traced (Outcome.Refused Refusal.Reloading)
                         elif not now.Pending then
-                            return Outcome.Settled
+                            return traced Outcome.Settled
                         elif askingNow <> Some latest.View.Version then
-                            return Outcome.Refused Refusal.Moved
+                            return traced (Outcome.Refused Refusal.Moved)
                         else
                             match stale with
-                            | Some refusal -> return Outcome.Refused refusal
+                            | Some refusal -> return traced (Outcome.Refused refusal)
                             | None ->
                                 let byPath = Dictionary<string, List<FileNow>>(StringComparer.OrdinalIgnoreCase)
 
@@ -306,11 +330,14 @@ module LastState =
                                                 | _ -> Error Refusal.Edited
                                             | _ -> Error Refusal.Moved
 
-                                match remap remapIn entry.Answer with
-                                | Error refusal -> return Outcome.Refused refusal
+                                let mapped = remap remapIn entry.Answer
+                                mark "mapped"
+
+                                match mapped with
+                                | Error refusal -> return traced (Outcome.Refused refusal)
                                 | Ok mapped ->
                                     cache.CountAnswered()
-                                    return Outcome.Answered mapped
+                                    return traced (Outcome.Answered mapped)
         }
 
     /// <summary>
@@ -318,7 +345,31 @@ module LastState =
     /// last-state answer that comes first cancels the settled one. Every refusal waits for the settled answer, as without
     /// it.
     /// </summary>
-    let internal race (settled: CancellationToken -> Task<'T>) (last: CancellationToken -> Task<Outcome<'T>>) (ct: CancellationToken) : Task<'T> =
+    /// <remarks>
+    /// While something is pending but the progress hasn't begun (Settled), the last-state answer is asked again once
+    /// `whenShown` completes: the begin follows the pending state by the progress's hold.
+    /// </remarks>
+    let internal race
+        (whenShown: unit -> Task)
+        (settled: CancellationToken -> Task<'T>)
+        (last: CancellationToken -> Task<Outcome<'T>>)
+        (ct: CancellationToken)
+        : Task<'T> =
+        let last (ct: CancellationToken) =
+            task {
+                let mutable found = ValueNone
+
+                while found.IsNone do
+                    match! last ct with
+                    | Outcome.Settled ->
+                        let shown = whenShown ()
+                        // Shown already, but not pending in that turn: ask again shortly
+                        if shown.IsCompleted then do! Task.Delay(50, ct) else do! shown.WaitAsync ct
+                    | o -> found <- ValueSome o
+
+                return found.Value
+            }
+
         task {
             use settledCts = CancellationTokenSource.CreateLinkedTokenSource ct
             use lastCts = CancellationTokenSource.CreateLinkedTokenSource ct

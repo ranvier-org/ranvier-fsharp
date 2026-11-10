@@ -361,7 +361,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
 
                         match feature with
                         | References ->
-                            let! found = References.answer uses shapes (fun () -> false) (fun () -> false) scope graph file t.Line t.Character CancellationToken.None |> wait
+                            let! found = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope graph file t.Line t.Character CancellationToken.None |> wait
 
                             match found with
                             | References.Answer.Found u -> oldUses[at] <- u
@@ -376,7 +376,7 @@ let private grid (promote: bool) (feature: Feature) (shape: Shape) : Task<Counts
                                                   yield showRange u.Range, u.IsFromDefinition ]
                             | None -> fcsUses[at] <- Set.empty
                         | Definition ->
-                            let! found = Definition.answer definitions shapes (fun () -> false) (fun () -> false) state.OwnersOf graph file t.Line t.Character CancellationToken.None |> wait
+                            let! found = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf graph file t.Line t.Character CancellationToken.None |> wait
                             oldDefinitions[at] <- found
 
                             fcsDefinitions[at] <-
@@ -637,7 +637,7 @@ let private extraTests =
                       let c = fileNamed state "C.fs"
                       let b = fileNamed state "B.fs"
                       let line, character = find shadowC "scale 3"
-                      let! first = Definition.answer definitions shapes (fun () -> false) (fun () -> false) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      let! first = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
                       Expect.equal (first |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "A.fs") "scale is A's"
                       // B gains a scale that C's `open Lib.B` makes the one meant, and the state settles with no request
                       state.Graph.SetText(b, shadowB + "\nlet scale x = x + 1\n") |> ignore
@@ -656,7 +656,7 @@ let private extraTests =
                       finally
                           gate.Set()
 
-                      let! settled = Definition.answer definitions shapes (fun () -> false) (fun () -> false) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
+                      let! settled = Definition.answer definitions shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) state.OwnersOf state.Graph c line character CancellationToken.None |> wait
                       Expect.equal (settled |> Option.map (fun r -> Path.GetFileName r.FileName)) (Some "B.fs") "settled, scale is B's"
                       return [ () ]
                   })
@@ -675,7 +675,7 @@ let private extraTests =
                       let graphs = [ state.Graph; appGraph ]
                       let scope = scopeOf graphs state.OwnersOf (fun g -> if obj.ReferenceEquals(g, appGraph) then [ appFile ] else state.Files)
                       let line, character = find app "fromApp + 1"
-                      let! first = References.answer uses shapes (fun () -> false) (fun () -> false) scope appGraph appFile line character CancellationToken.None |> wait
+                      let! first = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope appGraph appFile line character CancellationToken.None |> wait
                       Expect.equal (match first with References.Answer.Found u -> u.Length | _ -> 0) 2 "fromApp's two uses"
                       let before = appGraph.Restarts
                       let a = state.Files.Head
@@ -714,7 +714,7 @@ let private extraTests =
                       let r = state.Files.Head
                       let scope = scopeOf [ state.Graph ] state.OwnersOf (fun _ -> state.Files)
                       let line, character = find text "first = 1"
-                      let! _ = References.answer uses shapes (fun () -> false) (fun () -> false) scope state.Graph r line character CancellationToken.None |> wait
+                      let! _ = References.answer uses shapes (fun () -> false) (fun () -> false) (fun () -> Task.Delay Timeout.Infinite) scope state.Graph r line character CancellationToken.None |> wait
                       let! latest = state.Graph.LatestText(r, [||], (fun () -> false), CancellationToken.None) |> wait
                       let key = LastState.keyOf r latest.View.Version line (Hover.lookupOf text line character).Value
                       let held = (uses.Find(state.Graph, key)).Value

@@ -861,7 +861,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         }
 
     /// <summary>
-    /// CurrentLocation, with what it was read from in its turn: the version readSettled gave for the range's file (0 for
+    /// CurrentLocation, with what it was read from in its turn: the version readSettled gave for the range's file (-1 for
     /// no range), the text version of every file up to the last one read, and the graph's generation.
     /// </summary>
     member _.CurrentLocationAt
@@ -932,8 +932,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
                         match reads |> Seq.tryFind (fun (struct (j, _)) -> j = i) with
                         | Some(struct (_, v)) -> v
-                        | None -> 0L
-                    | _ -> 0L
+                        | None -> -1L
+                    | _ -> -1L
 
                 Task.FromResult(struct (found, version, inputs, restarts))
             | ValueNone -> Request.waitForNextTurn flight

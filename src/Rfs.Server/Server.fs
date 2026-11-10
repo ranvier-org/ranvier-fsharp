@@ -222,6 +222,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         | Some p -> p.ShowingNow() && publisher.CheckingNow()
         | None -> false
 
+    /// Completes once the progress that marks a last-state answer shows
+    member private _.WhenShown() : Task =
+        match progress with
+        | Some p -> p.WhenShown()
+        | None -> Task.Delay Timeout.Infinite
+
     /// After a change: the shape of the file's next parse, made once it lands
     member private _.Prepare(path: string) : unit =
         if canShowProgress then
@@ -456,7 +462,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                     let! found =
                         if canShowProgress then
-                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown workspace.OwnersOf graph path line character ct
+                            Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown this.WhenShown workspace.OwnersOf graph path line character ct
                         else
                             Definition.at workspace.OwnersOf graph path line character ct
 
@@ -521,7 +527,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                             let! found =
                                 if canShowProgress then
-                                    References.answer lastUses lastAnswers workspace.LoadingNow this.MarkShown scope graph path line character ct
+                                    References.answer lastUses lastAnswers workspace.LoadingNow this.MarkShown this.WhenShown scope graph path line character ct
                                 else
                                     References.find scope graph path line character ct
 

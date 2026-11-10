@@ -348,6 +348,7 @@ module References =
         (shapes: Hover.LastAnswers)
         (busy: unit -> bool)
         (pending: unit -> bool)
+        (whenShown: unit -> Task)
         (scope: Scope)
         (graph: ProjectGraph)
         (path: string)
@@ -356,6 +357,7 @@ module References =
         (ct: CancellationToken)
         : Task<Answer> =
         LastState.race
+            whenShown
             (fun ct ->
                 task {
                     let! struct (found, entry) = findIn true scope graph path line character ct
