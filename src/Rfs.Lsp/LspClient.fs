@@ -126,6 +126,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
     let diagnostics = Broadcast<int64 * string * int option * Diagnostic list>()
     let notifications = Broadcast<Received>()
     let serverRequests = ConcurrentQueue<JsonObject>()
+    let answers = ConcurrentDictionary<string, JsonNode -> Task<Result<JsonNode, JsonNode>>>()
     let mutable nextId = 0
     [<VolatileField>]
     let mutable settings: JsonNode = null
@@ -201,7 +202,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
 
     /// Server -> client requests are answered with empty results so the server never blocks on us;
     /// workspace/configuration gets the sections set with Configure.
-    let answer (request: JsonObject) =
+    let answerEmpty (request: JsonObject) : Task =
         let result: JsonNode =
             match request["method"].GetValue<string>() with
             | "workspace/configuration" ->
@@ -225,6 +226,32 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
         m["id"] <- request["id"].DeepClone()
         m["result"] <- result
         connection.Send m
+
+    /// An answer set with AnswerWith runs apart: one that takes its time must not hold the frames read after the request
+    let answer (request: JsonObject) : Task =
+        match answers.TryGetValue(request["method"].GetValue<string>()) with
+        | true, custom ->
+            let id = request["id"].DeepClone()
+            let parameters = request["params"]
+
+            task {
+                try
+                    let! (reply: Result<JsonNode, JsonNode>) = (custom: JsonNode -> Task<Result<JsonNode, JsonNode>>) parameters
+                    let m = message ()
+                    m["id"] <- id
+
+                    match reply with
+                    | Ok result -> m["result"] <- result
+                    | Error error -> m["error"] <- error
+
+                    do! connection.Send m
+                with _ ->
+                    ()
+            }
+            |> ignore
+
+            Task.CompletedTask
+        | _ -> answerEmpty request
 
     let handlePublish (received: Received) =
         let parameters = received.Message["params"]
@@ -439,6 +466,11 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
 
     /// Receive timestamp (Stopwatch ticks), file path, document version if the server sent one, diagnostics.
     member _.Diagnostics: IObservable<int64 * string * int option * Diagnostic list> = diagnostics
+
+    /// Answers the server's requests of `method` with `answer`'s result or error, in place of the empty result, without
+    /// holding the frames read meanwhile. For tests.
+    member _.AnswerWith(method: string, answer: JsonNode -> Task<Result<JsonNode, JsonNode>>) : unit =
+        answers[method] <- answer
 
     /// Every request the server sent, in order.
     member _.ServerRequests: JsonObject[] = serverRequests.ToArray()

@@ -3,26 +3,47 @@ namespace Rfs.Server
 open System
 open System.Diagnostics
 open System.IO
+open System.Threading
 open System.Threading.Tasks
 open Newtonsoft.Json.Linq
+open Ionide.LanguageServerProtocol.Types
 open Ranvier
 open Rfs.Checker
 
 /// What the status bar's progress says: nothing, or what is pending
 type ProgressStatus =
     | Settled
-    | Busy of title: string
+    | Busy of what: string
+
+/// Where a period's sends are. Only the outbox's consumer reads or writes it.
+type internal PeriodState =
+    | Creating
+    | Begun
+    | Ended
+
+/// One period of the progress: its token, its state and what it says. Only the outbox's consumer reads or writes them.
+type internal Period(token: string, what: string) =
+    member _.Token = token
+    member val State = Creating with get, set
+    member val Message = what with get, set
 
 /// <summary>
 /// One global work-done progress, created by the server, for as long as anything is pending: a project loading, a check
-/// under way for a row of the Publisher, or a project whose restart failed (named in the title until it is reloaded).
+/// under way for a row of the Publisher, or a project whose restart failed (named until it is reloaded).
 /// </summary>
 /// <remarks>
+/// <para>
 /// The status is one memo on the host's graph. Its effect notes what is wanted and when; the progress follows once the
-/// wanted status has held for <c>BeginHold</c> (to begin, or change title) or <c>EndHold</c> (to end), so a shorter flip
-/// sends nothing. A title change ends the progress and begins one with the new title. The sends go on the Publisher's
-/// outbox, in order with its lists: a period's create is awaited there before its begin, and when the client answers it
-/// with an error, or not within <c>CreateTimeout</c>, the period sends nothing more.
+/// wanted status has held for <c>BeginHold</c> (to begin, or to say something else) or <c>EndHold</c> (to end), so a
+/// shorter flip sends nothing. A period's title is fixed at its begin; what is pending is its message, and a change of
+/// it is a report in the same period.
+/// </para>
+/// <para>
+/// The sends go on the Publisher's outbox, in order with its lists, and none of them waits for the client. The create
+/// is sent and its item returns; once the client answers it, the begin is queued as an item of its own. The period's
+/// state decides what is sent: a begin only while it is creating, a report or an end only once begun. An end that comes
+/// first ends the period unbegun, and an error answer, or none within <c>CreateTimeout</c>, leaves it so.
+/// </para>
 /// </remarks>
 type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publisher, client: RanvierClient) =
     // Graph thread
@@ -32,57 +53,83 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
     let mutable wantedSince = 0L
     let mutable shown = Settled
     let mutable periods = 0
-    // The shown period's token, and whether its create succeeded, which the outbox's consumer sets and reads
-    let mutable period: (string * bool ref) option = None
+    let mutable changes = 0
+    let mutable closed = false
+    let mutable period: Period option = None
+    let mutable timer: Timer = null
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
-    let progress (token: string) (value: JObject) : Task =
-        let p = JObject(JProperty("token", token), JProperty("value", value))
-        client.Notify("$/progress", box p) |> Async.StartAsTask :> Task
+    let progress (p: Period) (value: JObject) : Task =
+        let body = JObject(JProperty("token", p.Token), JProperty("value", value))
+        client.Notify("$/progress", box body) |> Async.StartAsTask :> Task
 
     let statusNow () =
         match workspace.DeadNow() with
-        | _ :: _ as dead ->
-            Busy("Restart failed: " + String.Join(", ", dead |> List.map Path.GetFileName))
+        | _ :: _ as dead -> Busy("Restart failed: " + String.Join(", ", dead |> List.map (snd >> Path.GetFileName)))
         | [] ->
             if workspace.LoadingNow() then Busy "Loading projects"
             elif publisher.CheckingNow() then Busy "Checking"
             else Settled
 
+    /// Outbox's consumer
+    let beginPeriod (p: Period) : Task =
+        if p.State = Creating then
+            p.State <- Begun
+            progress p (JObject(JProperty("kind", "begin"), JProperty("title", Progress.Title), JProperty("message", p.Message)))
+        else
+            Task.CompletedTask
+
     /// Graph thread
-    let start (title: string) =
+    let start (what: string) =
         periods <- periods + 1
-        let token = $"rfs/progress/%d{periods}"
-        let created = ref false
-        period <- Some(token, created)
+        let p = Period($"rfs/progress/%d{periods}", what)
+        period <- Some p
 
         publisher.Enqueue(
             Notify(fun () ->
-                task {
-                    try
-                        let! answer = (client.CreateProgress token |> Async.StartAsTask).WaitAsync Progress.CreateTimeout
+                (client.CreateProgress p.Token |> Async.StartAsTask)
+                    .WaitAsync(Progress.CreateTimeout)
+                    .ContinueWith(fun (answer: Task<Result<unit, Ionide.LanguageServerProtocol.JsonRpc.Error>>) ->
+                        if answer.IsCompletedSuccessfully then
+                            match answer.Result with
+                            | Ok() -> publisher.Enqueue(Notify(fun () -> beginPeriod p))
+                            | Error e -> log $"the client refused the progress token: %s{e.Message}"
+                        else
+                            log $"creating the progress token failed: %O{answer.Exception}")
+                |> ignore
 
-                        match answer with
-                        | Ok() ->
-                            created.Value <- true
-                            do! progress token (JObject(JProperty("kind", "begin"), JProperty("title", title)))
-                        | Error e -> log $"the client refused the progress token: %s{e.Message}"
-                    with ex ->
-                        log $"creating the progress token failed: %s{ex.Message}"
-                })
+                Task.CompletedTask)
         )
+
+    /// Graph thread
+    let report (what: string) =
+        match period with
+        | Some p ->
+            publisher.Enqueue(
+                Notify(fun () ->
+                    p.Message <- what
+
+                    if p.State = Begun then
+                        progress p (JObject(JProperty("kind", "report"), JProperty("message", what)))
+                    else
+                        Task.CompletedTask)
+            )
+        | None -> ()
 
     /// Graph thread
     let finish () =
         match period with
-        | Some(token, created) ->
+        | Some p ->
             period <- None
 
             publisher.Enqueue(
                 Notify(fun () ->
-                    if created.Value then
-                        progress token (JObject(JProperty("kind", "end")))
+                    let was = p.State
+                    p.State <- Ended
+
+                    if was = Begun then
+                        progress p (JObject(JProperty("kind", "end")))
                     else
                         Task.CompletedTask)
             )
@@ -93,35 +140,37 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
         | Busy _ -> Progress.BeginHold
         | Settled -> Progress.EndHold
 
+    /// Graph thread: once one more change is wanted, after `after`. The one timer is re-armed, so a burst leaves one.
+    let wake (after: TimeSpan) =
+        if not closed then
+            timer.Change(after, Timeout.InfiniteTimeSpan) |> ignore
+
     /// Graph thread: makes the progress follow the wanted status once it has held long enough, else wakes when it will
     /// have
-    let rec follow () =
-        if wanted <> shown then
+    let follow () =
+        if not closed && wanted <> shown then
             let need = holdFor wanted
             let held = Stopwatch.GetElapsedTime wantedSince
 
             if held >= need then
-                finish ()
-
-                match wanted with
-                | Busy title -> start title
-                | Settled -> ()
+                match shown, wanted with
+                | Settled, Busy what -> start what
+                | Busy _, Busy what -> report what
+                | Busy _, Settled -> finish ()
+                | Settled, Settled -> ()
 
                 shown <- wanted
             else
                 wake (need - held)
 
-    and wake (after: TimeSpan) =
-        Task
-            .Delay(after)
-            .ContinueWith(fun (_: Task) ->
+    do
+        timer <-
+            new Timer(fun _ ->
                 try
                     host.Post follow
                 with :? ObjectDisposedException ->
                     ())
-        |> ignore
 
-    do
         host
             .Read(fun () ->
                 root <-
@@ -134,22 +183,88 @@ type internal Progress(host: GraphHost, workspace: Workspace, publisher: Publish
                             if now <> wanted then
                                 wanted <- now
                                 wantedSince <- Stopwatch.GetTimestamp()
+                                changes <- changes + 1
                                 wake (holdFor now))
 
                         owner))
             .Wait()
 
-    /// How long something must have been pending before the progress begins, or its title changes
+    /// The title of every period; its message says what is pending
+    static member Title: string = "F#"
+
+    /// How long something must have been pending before the progress begins, or says something else
     static member BeginHold: TimeSpan = TimeSpan.FromMilliseconds 100.
 
     /// How long everything must have settled before the progress ends
     static member EndHold: TimeSpan = TimeSpan.FromMilliseconds 100.
 
-    /// How long the client may take to answer a create; the outbox's later sends wait behind it
+    /// How long the client may take to answer a create before its period is given up
     static member CreateTimeout: TimeSpan = TimeSpan.FromSeconds 10.
 
     /// What the progress follows now. For tests.
     member _.Status() : Task<ProgressStatus> = host.Read(fun () -> status.Value)
+
+    /// How many times the wanted status changed. For tests.
+    member _.Changes() : Task<int> = host.Read(fun () -> changes)
+
+    /// Ends a period that is shown, on the outbox before it closes, and begins nothing more. Call it before the
+    /// Publisher's Dispose.
+    member _.Dispose() =
+        try
+            host
+                .Read(fun () ->
+                    closed <- true
+                    timer.Dispose()
+
+                    match shown with
+                    | Busy _ -> finish ()
+                    | Settled -> ()
+
+                    shown <- Settled
+                    root.Dispose())
+                .Wait(TimeSpan.FromSeconds 5.)
+            |> ignore
+        with
+        | :? ObjectDisposedException
+        | :? AggregateException -> ()
+
+    interface IDisposable with
+        member this.Dispose() = this.Dispose()
+
+/// <summary>
+/// One <c>window/showMessage</c> (Warning) for each project whose restart failed, naming it, whatever the client's
+/// capabilities: the progress says so too, but only to a client that declared it. Once per graph: a reload makes a new
+/// one.
+/// </summary>
+type internal RestartNotices(host: GraphHost, workspace: Workspace, publisher: Publisher, client: RanvierClient) =
+    // Graph thread
+    let mutable root: Owner = Unchecked.defaultof<_>
+    let mutable told: ProjectGraph list = []
+
+    do
+        host
+            .Read(fun () ->
+                root <-
+                    createRoot (fun owner ->
+                        createEffect (fun () ->
+                            let dead = workspace.DeadNow()
+
+                            for graph, project in dead do
+                                if not (told |> List.exists (fun g -> obj.ReferenceEquals(g, graph))) then
+                                    let text =
+                                        $"%s{Path.GetFileName project} could not be checked again after a reference changed. Reload the project to check it."
+
+                                    publisher.Enqueue(
+                                        Notify(fun () ->
+                                            client.WindowShowMessage { Type = MessageType.Warning; Message = text }
+                                            |> Async.StartAsTask
+                                            :> Task)
+                                    )
+
+                            told <- dead |> List.map fst)
+
+                        owner))
+            .Wait()
 
     member _.Dispose() =
         try

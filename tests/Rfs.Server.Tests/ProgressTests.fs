@@ -2,6 +2,7 @@ module Rfs.Server.Tests.ProgressTests
 
 open System
 open System.Collections.Concurrent
+open System.Diagnostics
 open System.IO
 open System.Text.Json.Nodes
 open System.Threading
@@ -11,15 +12,22 @@ open Rfs.Lsp
 open Rfs.Server
 open Rfs.Server.Tests
 open Rfs.Server.Tests.PublishTests
+open Rfs.Server.Tests.PublishFixTests
 
 /// A server initialized by hand, with or without `window.workDoneProgress`, and what it sent about progress
 type private Run =
     { Lsp: LspClient
       Server: RanvierServer
       Owner: IDisposable
-      /// "create", "begin <title>", "report" or "end", in arrival order; a create is noted before the first progress of its
-      /// token
-      Events: ConcurrentQueue<string> }
+      /// "create", "begin <message>", "report <message>" or "end", in arrival order; a create is noted before the first
+      /// progress of its token
+      Events: ConcurrentQueue<string>
+      /// Each begin's title
+      Titles: ConcurrentQueue<string>
+      /// Each window/showMessage, as "<type> <message>"
+      Messages: ConcurrentQueue<string>
+      /// When each file's list arrived, Stopwatch ticks
+      Publishes: ConcurrentQueue<string * int64> }
 
     member r.Seen = List.ofSeq r.Events
 
@@ -31,16 +39,21 @@ type private Run =
             r.Owner.Dispose()
             ValueTask()
 
-let private start (progress: bool) : Task<Run> =
+let private startIn (root: string) (progress: bool) (prepare: LspClient -> unit) : Task<Run> =
     task {
         let! lsp, owner, server = TestServer.startCapturing ()
+        prepare lsp
         let events = ConcurrentQueue<string>()
+        let titles = ConcurrentQueue<string>()
+        let messages = ConcurrentQueue<string>()
+        let publishes = ConcurrentQueue<string * int64>()
         let noted = ConcurrentDictionary<string, bool>()
 
         lsp.Notifications.Subscribe
             { new IObserver<Received> with
                 member _.OnNext r =
-                    if r.Message["method"].GetValue<string>() = "$/progress" then
+                    match r.Message["method"].GetValue<string>() with
+                    | "$/progress" ->
                         let p = r.Message["params"]
                         let token = p["token"].ToJsonString()
 
@@ -53,9 +66,25 @@ let private start (progress: bool) : Task<Run> =
                         if created && noted.TryAdd(token, true) then
                             events.Enqueue "create"
 
-                        match p["value"].["kind"].GetValue<string>() with
-                        | "begin" -> events.Enqueue $"""begin %s{p["value"].["title"].GetValue<string>()}"""
+                        let value = p["value"]
+
+                        let message () =
+                            match value["message"] with
+                            | null -> ""
+                            | m -> m.GetValue<string>()
+
+                        match value["kind"].GetValue<string>() with
+                        | "begin" ->
+                            titles.Enqueue(value["title"].GetValue<string>())
+                            events.Enqueue $"begin %s{message ()}"
+                        | "report" -> events.Enqueue $"report %s{message ()}"
                         | kind -> events.Enqueue kind
+                    | "window/showMessage" ->
+                        let p = r.Message["params"]
+                        messages.Enqueue $"""%d{p["type"].GetValue<int>()} %s{p["message"].GetValue<string>()}"""
+                    | "textDocument/publishDiagnostics" ->
+                        publishes.Enqueue(LspClient.NormalizePath(Paths.ofUri (r.Message["params"].["uri"].GetValue<string>())), r.ReceivedAt)
+                    | _ -> ()
 
                 member _.OnError _ = ()
                 member _.OnCompleted() = () }
@@ -64,42 +93,62 @@ let private start (progress: bool) : Task<Run> =
         let capabilities = if progress then """{"window":{"workDoneProgress":true}}""" else "{}"
 
         let parameters =
-            JsonNode.Parse $"""{{"processId":null,"rootUri":"%s{Paths.toUri depsDir}","capabilities":%s{capabilities}}}"""
+            JsonNode.Parse $"""{{"processId":null,"rootUri":"%s{Paths.toUri root}","capabilities":%s{capabilities}}}"""
 
         let! _ = lsp.Request("initialize", parameters) |> within
         do! lsp.Notify("initialized", JsonObject())
         let! running = server |> within
         // Initialized runs after the notification is read: the next request is answered after it
-        let! _ = lsp.Request("fsharp/workspacePeek", JsonNode.Parse $"""{{"Directory":"%s{depsDir.Replace("\\", "\\\\")}","Deep":0,"ExcludedDirs":[]}}""") |> within
+        let peek = JsonObject()
+        peek["Directory"] <- JsonValue.Create root
+        peek["Deep"] <- JsonValue.Create 0
+        peek["ExcludedDirs"] <- JsonArray()
+        let! _ = lsp.Request("fsharp/workspacePeek", peek) |> within
 
         return
             { Lsp = lsp
               Server = running
               Owner = owner
-              Events = events }
+              Events = events
+              Titles = titles
+              Messages = messages
+              Publishes = publishes }
     }
 
-let private load (r: Run) : Task =
+let private start (progress: bool) = startIn depsDir progress ignore
+
+let private loadProject (r: Run) (project: string) : Task =
     task {
         let parameters =
-            JsonNode.Parse $"""{{"TextDocuments":[{{"Uri":"%s{Paths.toUri depsProject}"}}]}}"""
+            JsonNode.Parse $"""{{"TextDocuments":[{{"Uri":"%s{Paths.toUri project}"}}]}}"""
 
         let! _ = r.Lsp.Request("fsharp/workspaceLoad", parameters) |> within
         ()
     }
 
+let private load (r: Run) = loadProject r depsProject
+
+let private until (what: string) (r: Run) (check: unit -> Task<bool>) : Task =
+    task {
+        let deadline = DateTime.UtcNow.AddSeconds 60.
+        let mutable ok = false
+
+        while not ok do
+            let! now = check ()
+            ok <- now
+
+            if not ok then
+                if DateTime.UtcNow > deadline then
+                    let! status = r.Server.ProgressStatus()
+                    failtest $"timed out waiting for %s{what}: seen %A{r.Seen}, status %A{status}"
+
+                do! Task.Delay 10
+    }
+
 /// Waits for the events to end with an end, then for a quiet that would let any further one through
 let private settledEvents (r: Run) =
     task {
-        let deadline = DateTime.UtcNow.AddSeconds 60.
-
-        while not (r.Seen <> [] && List.last r.Seen = "end") do
-            if DateTime.UtcNow > deadline then
-                let! status = r.Server.ProgressStatus()
-                failtest $"timed out waiting for the progress to end: seen %A{r.Seen}, status %A{status}"
-
-            do! Task.Delay 25
-
+        do! until "the progress to end" r (fun () -> Task.FromResult(r.Seen <> [] && List.last r.Seen = "end"))
         do! Task.Delay 500
         return r.Seen
     }
@@ -107,14 +156,12 @@ let private settledEvents (r: Run) =
 /// Waits until nothing is pending and no progress is shown: a load may have been too short to show one
 let private quiet (r: Run) =
     task {
-        let mutable settled = false
-
-        while not settled do
-            let! status = r.Server.ProgressStatus() |> within
-            settled <- status = Some ProgressStatus.Settled && (r.Seen = [] || List.last r.Seen = "end")
-
-            if not settled then
-                do! Task.Delay 25
+        do!
+            until "quiet" r (fun () ->
+                task {
+                    let! status = r.Server.ProgressStatus()
+                    return status = Some ProgressStatus.Settled && (r.Seen = [] || List.last r.Seen = "end")
+                })
 
         do! Task.Delay 500
     }
@@ -124,6 +171,53 @@ let private settledStatus (r: Run) =
         let! status = r.Server.ProgressStatus() |> within
         Expect.equal status (Some ProgressStatus.Settled) "nothing is pending after the end"
     }
+
+/// How many times the status the progress follows changed
+let private changes (r: Run) = r.Server.ProgressChanges()
+
+/// Holds loading until the progress has seen it, and returns the hold
+let private holdSeen (r: Run) : Task<IDisposable> =
+    task {
+        let! before = changes r
+        let held = r.Server.Workspace.HoldLoading()
+        do! until "the hold seen" r (fun () -> task { let! n = changes r in return n > before })
+        return held
+    }
+
+/// Ends `held` and waits until the progress has seen it
+let private releaseSeen (r: Run) (held: IDisposable) : Task =
+    task {
+        let! before = changes r
+        held.Dispose()
+        do! until "the release seen" r (fun () -> task { let! n = changes r in return n > before })
+    }
+
+/// Holds the parse of `path` in `graph`'s next flight for it, until the returned gate is set
+let private holdParse (graph: Rfs.Checker.ProjectGraph) (path: string) =
+    let hold = new ManualResetEventSlim false
+    let armed = ref true
+
+    graph.OnFlight(fun kind file _ ->
+        if armed.Value && kind = "parse" && String.Equals(file, path, StringComparison.OrdinalIgnoreCase) then
+            armed.Value <- false
+            hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+    hold
+
+let private closeDocument (r: Run) (path: string) =
+    r.Lsp.Notify("textDocument/didClose", JsonNode.Parse $"""{{"textDocument":{{"uri":"%s{Paths.toUri path}"}}}}""")
+
+/// Opens `path` and waits until its open has settled and shows nothing
+let private openQuiet (r: Run) (path: string) =
+    task {
+        do! r.Lsp.DidOpen(path, File.ReadAllText path)
+        do! r.Server.Publisher.Flushed()
+        do! quiet r
+    }
+
+let private editAt (line: int) (from: int) (until': int) (text: string) : Edit =
+    { Range = { Start = { Line = line; Character = from }; End = { Line = line; Character = until' } }
+      Text = text }
 
 [<Tests>]
 let tests =
@@ -138,6 +232,7 @@ let tests =
               let! seen = settledEvents r
               Expect.equal seen [ "create"; "begin Loading projects"; "end" ] "one period, its token created first"
               Expect.equal r.Creates.Length 1 "one token"
+              Expect.equal (List.ofSeq r.Titles) [ "F#" ] "the title is fixed; the message says what is pending"
               do! settledStatus r
           }
 
@@ -145,28 +240,40 @@ let tests =
               use! r = start true
               do! load r
               do! quiet r
-              do! r.Lsp.DidOpen(a, File.ReadAllText a)
-              do! r.Server.Publisher.Flushed()
-              do! Task.Delay 500
-              let graph = (r.Server.Workspace.ProjectOf a).Value
+              do! openQuiet r a
               let before = r.Seen.Length
-              let hold = new ManualResetEventSlim false
-              let armed = ref true
-
-              graph.OnFlight(fun kind path _ ->
-                  if armed.Value && kind = "parse" && String.Equals(path, a, StringComparison.OrdinalIgnoreCase) then
-                      armed.Value <- false
-                      hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
-
-              let edit: Edit =
-                  { Range = { Start = { Line = 2; Character = 16 }; End = { Line = 2; Character = 18 } }
-                    Text = "11" }
-
-              do! r.Lsp.DidChange(a, 1, edit)
-              do! eventually "a begin" (fun () -> r.Seen |> List.skip before |> List.exists (fun e -> e.StartsWith "begin"))
+              let hold = holdParse (r.Server.Workspace.ProjectOf a).Value a
+              do! r.Lsp.DidChange(a, 1, editAt 2 16 18 "11")
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen |> List.skip before |> List.exists (fun e -> e.StartsWith "begin")))
               hold.Set()
               let! seen = settledEvents r
               Expect.equal (seen |> List.skip before) [ "create"; "begin Checking"; "end" ] "the edit's period"
+              do! settledStatus r
+          }
+
+          testTask "a change of what is pending is a report in the same period" {
+              use! r = start true
+              do! load r
+              do! quiet r
+              do! openQuiet r a
+              let before = r.Seen.Length
+              let creates = r.Creates.Length
+              let held = r.Server.Workspace.HoldLoading()
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length > before + 1))
+              let hold = holdParse (r.Server.Workspace.ProjectOf a).Value a
+              do! r.Lsp.DidChange(a, 1, editAt 2 16 18 "11")
+              do! Task.Delay 300
+              held.Dispose()
+              do! until "a report" r (fun () -> Task.FromResult(r.Seen |> List.exists (fun e -> e.StartsWith "report")))
+              hold.Set()
+              let! seen = settledEvents r
+
+              Expect.equal
+                  (seen |> List.skip before)
+                  [ "create"; "begin Loading projects"; "report Checking"; "end" ]
+                  "one period, its message following what is pending"
+
+              Expect.equal (r.Creates.Length - creates) 1 "one token"
               do! settledStatus r
           }
 
@@ -183,16 +290,121 @@ let tests =
 
           testTask "a flip shorter than the hold sends nothing" {
               use! r = start true
+              let! first = changes r
 
               for _ in 1..5 do
-                  let held = r.Server.Workspace.HoldLoading()
-                  do! Task.Delay 10
+                  let! (held: IDisposable) = holdSeen r
                   held.Dispose()
                   do! Task.Delay 20
 
               do! Task.Delay 500
+              let! last = changes r
+              Expect.isGreaterThanOrEqual (last - first) 10 "the status was Busy, and settled, five times"
               Expect.isEmpty r.Seen "no progress"
               Expect.isEmpty r.Creates "no token created"
+          }
+
+          testTask "settling for less than the hold keeps one period" {
+              use! r = start true
+              let held = r.Server.Workspace.HoldLoading()
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length >= 2))
+              do! releaseSeen r held
+              let again = r.Server.Workspace.HoldLoading()
+              do! Task.Delay 300
+              Expect.equal r.Seen [ "create"; "begin Loading projects" ] "still the one period"
+              again.Dispose()
+              let! seen = settledEvents r
+              Expect.equal seen [ "create"; "begin Loading projects"; "end" ] "one period"
+              Expect.equal r.Creates.Length 1 "one token"
+          }
+
+          testTask "a slow create holds back no diagnostics" {
+              let answered = ref 0L
+
+              let slow (_: JsonNode) =
+                  task {
+                      do! Task.Delay 3000
+                      Volatile.Write(&answered.contents, Stopwatch.GetTimestamp())
+                      return Ok(null: JsonNode)
+                  }
+
+              use! r = start true
+              do! load r
+              do! quiet r
+              r.Lsp.AnswerWith("window/workDoneProgress/create", slow)
+              let creates = r.Creates.Length
+              let before = r.Seen.Length
+              let held = r.Server.Workspace.HoldLoading()
+              do! until "the create" r (fun () -> Task.FromResult(r.Creates.Length > creates))
+              let flushedAt = Stopwatch.StartNew()
+              do! r.Lsp.DidOpen(a, File.ReadAllText a)
+              do! r.Server.Publisher.Flushed()
+              let flushed = flushedAt.Elapsed
+              let own = LspClient.NormalizePath a
+
+              do!
+                  until "A's list" r (fun () ->
+                      Task.FromResult(r.Publishes |> Seq.exists (fun (p, _) -> String.Equals(p, own, StringComparison.OrdinalIgnoreCase))))
+
+              let _, arrived = r.Publishes |> Seq.find (fun (p, _) -> String.Equals(p, own, StringComparison.OrdinalIgnoreCase))
+              Expect.equal (Volatile.Read &answered.contents) 0L "A's list arrived before the create was answered"
+              Expect.isLessThan flushed (TimeSpan.FromSeconds 2.) $"the outbox did not wait for the answer (%O{flushed})"
+              do! until "the begin" r (fun () -> Task.FromResult(r.Seen |> List.skip before |> List.exists (fun e -> e.StartsWith "begin")))
+              Expect.isGreaterThan (Volatile.Read &answered.contents) arrived "the begin followed the answer"
+              held.Dispose()
+              let! seen = settledEvents r
+              Expect.equal (seen |> List.skip before) [ "create"; "begin Loading projects"; "end" ] "the period, begun once answered"
+          }
+
+          testTask "a create answered with an error sends nothing for its period" {
+              let refuse = ref true
+
+              let answer (_: JsonNode) =
+                  if refuse.Value then
+                      Task.FromResult(Error(JsonNode.Parse """{"code":-32603,"message":"refused"}"""))
+                  else
+                      Task.FromResult(Ok(null: JsonNode))
+
+              use! r = startIn depsDir true (fun lsp -> lsp.AnswerWith("window/workDoneProgress/create", answer))
+              let held = r.Server.Workspace.HoldLoading()
+              do! until "the create" r (fun () -> Task.FromResult(r.Creates.Length = 1))
+              do! Task.Delay 400
+              held.Dispose()
+              do! Task.Delay 500
+              Expect.isEmpty r.Seen "no progress for the refused period"
+              refuse.Value <- false
+              let again = r.Server.Workspace.HoldLoading()
+              do! Task.Delay 400
+              again.Dispose()
+              let! seen = settledEvents r
+              Expect.equal seen [ "create"; "begin Loading projects"; "end" ] "the next period is shown"
+              Expect.equal r.Creates.Length 2 "a token per period"
+          }
+
+          // The library ends the run on `shutdown` without calling the server's Shutdown, and closes the connection
+          // before the server is disposed, so these dispose the server while the connection is open
+          testTask "disposing the server ends a period begun, on the connection still open" {
+              use! r = start true
+              let _held = r.Server.Workspace.HoldLoading()
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length >= 2))
+              (r.Server :> IDisposable).Dispose()
+              do! until "the end" r (fun () -> Task.FromResult(List.last r.Seen = "end"))
+              Expect.equal r.Seen [ "create"; "begin Loading projects"; "end" ] "ended on dispose"
+          }
+
+          testTask "a create answered while the server is disposed begins nothing" {
+              let slow (_: JsonNode) =
+                  task {
+                      do! Task.Delay 1000
+                      return Ok(null: JsonNode)
+                  }
+
+              use! r = startIn depsDir true (fun lsp -> lsp.AnswerWith("window/workDoneProgress/create", slow))
+              let _held = r.Server.Workspace.HoldLoading()
+              do! until "the create" r (fun () -> Task.FromResult(r.Creates.Length = 1))
+              (r.Server :> IDisposable).Dispose()
+              do! Task.Delay 2000
+              Expect.isEmpty r.Seen "no begin, so no end owed"
           }
 
           testTask "a failed restart is shown, naming the project, until a reload succeeds" {
@@ -204,13 +416,68 @@ let tests =
               graph.FailRestart(InvalidOperationException "an injected restart fault")
 
               do!
-                  eventually "the failure shown" (fun () ->
-                      r.Seen |> List.skip before |> List.exists (fun e -> e.StartsWith "begin" && e.Contains "Deps.fsproj"))
+                  until "the failure shown" r (fun () ->
+                      Task.FromResult(r.Seen |> List.skip before |> List.exists (fun e -> e.StartsWith "begin" && e.Contains "Deps.fsproj")))
 
               do! Task.Delay 500
               Expect.equal (List.last r.Seen) "begin Restart failed: Deps.fsproj" "shown while the project is dead"
               do! r.Server.Workspace.Reload depsProject |> within
               let! seen = settledEvents r
               Expect.equal (List.last seen) "end" "cleared by the reload"
+              do! settledStatus r
+          }
+
+          testTask "without the capability a failed restart is one warning naming the project" {
+              use! r = start false
+              do! load r
+              let graph = r.Server.Workspace.Projects.Head
+              graph.FailRestart(InvalidOperationException "an injected restart fault")
+              do! until "the warning" r (fun () -> Task.FromResult(r.Messages |> Seq.exists (fun m -> m.Contains "Deps.fsproj")))
+              graph.FailRestart(InvalidOperationException "a second injected restart fault")
+              do! r.Server.Publisher.Flushed()
+              do! Task.Delay 500
+              let warnings = r.Messages |> Seq.filter (fun m -> m.Contains "Deps.fsproj") |> List.ofSeq
+              Expect.equal warnings.Length 1 "once per graph"
+              Expect.stringStarts warnings.Head "2 " "a Warning"
+              Expect.isEmpty r.Seen "no progress"
+              Expect.isEmpty r.Creates "no token created"
+          }
+
+          testTask "a close during a check ends the progress" {
+              use! r = start true
+              do! load r
+              do! quiet r
+              do! openQuiet r a
+              let before = r.Seen.Length
+              let hold = holdParse (r.Server.Workspace.ProjectOf a).Value a
+              do! r.Lsp.DidChange(a, 1, editAt 2 16 18 "11")
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length > before + 1))
+              do! closeDocument r a
+              do! r.Server.Publisher.Barrier()
+              hold.Set()
+              let! seen = settledEvents r
+              Expect.equal (seen |> List.skip before) [ "create"; "begin Checking"; "end" ] "the period ends"
+              do! settledStatus r
+          }
+
+          testTask "a file leaving its project during a check ends the progress" {
+              let dir = copyFixtureDir "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let d = Path.Combine(dir, "D.fs")
+              use! r = startIn dir true ignore
+              do! loadProject r project
+              do! quiet r
+              do! openQuiet r d
+              let before = r.Seen.Length
+              let hold = holdParse (r.Server.Workspace.ProjectOf d).Value d
+              do! r.Lsp.DidChange(d, 1, editAt 4 24 25 "2")
+              do! until "a begin" r (fun () -> Task.FromResult(r.Seen.Length > before + 1))
+              File.WriteAllText(project, (File.ReadAllText project).Replace("""    <Compile Include="D.fs" />""", ""))
+              let reloading = r.Server.Workspace.Reload project
+              hold.Set()
+              do! reloading |> within
+              let! seen = settledEvents r
+              Expect.equal (List.last seen) "end" "the period ends"
+              Expect.isEmpty (r.Server.Workspace.OwnersOf d) "D left the project"
               do! settledStatus r
           } ]

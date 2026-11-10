@@ -24,6 +24,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let workspace = new Workspace(host, client)
     let documents = Documents(host)
     let publisher = new Publisher(host, workspace, client, documents)
+    let notices = new RestartNotices(host, workspace, publisher, client)
 
     do
         workspace.OnLoaded(fun graph ->
@@ -85,7 +86,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
+            // Before the outbox closes: a period shown gets its end
             progress |> Option.iter _.Dispose()
+            notices.Dispose()
+
+            // And sent before the shutdown is answered: the connection may close after the answer
+            try
+                publisher.Flushed().Wait(TimeSpan.FromSeconds 2.) |> ignore
+            with _ ->
+                ()
+
             publisher.Dispose()
             workspace.Dispose()
             host.Dispose()
@@ -200,6 +210,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         match progress with
         | Some p -> task { let! s = p.Status() in return Some s }
         | None -> Task.FromResult None
+
+    /// How many times the status the progress follows changed; 0 without the capability. For tests.
+    member internal _.ProgressChanges() : Task<int> =
+        match progress with
+        | Some p -> p.Changes()
+        | None -> Task.FromResult 0
 
     member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
         async {

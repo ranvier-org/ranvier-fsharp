@@ -11,11 +11,11 @@ open Rfs.Lsp
 open Rfs.Server
 open Rfs.Server.Tests.PublishTests
 
-let private fixturesRoot = Path.GetDirectoryName depsDir
-let private repoRoot = Path.GetDirectoryName(Path.GetDirectoryName fixturesRoot)
+let internal fixturesRoot = Path.GetDirectoryName depsDir
+let internal repoRoot = Path.GetDirectoryName(Path.GetDirectoryName fixturesRoot)
 
 /// A copy of a fixture directory without obj and bin, in a temp root of its own, so it restores and loads on its own
-let private copyFixtureDir (name: string) : string =
+let internal copyFixtureDir (name: string) : string =
     let root = Path.Combine(Path.GetTempPath(), "rfs-pub-" + Guid.NewGuid().ToString("N").Substring(0, 8))
     let target = Path.Combine(root, name)
     Directory.CreateDirectory target |> ignore
