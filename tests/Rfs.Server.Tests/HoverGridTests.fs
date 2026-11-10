@@ -379,6 +379,36 @@ let w = 1
 """
 
     let overloadsLater = "module Lib.D\n\nopen Lib.C\n\nlet v = \"y\".Foo(2) + \"y\".Foo(\"z\").Length\n"
+
+    // The use row isn't shifted, so it keeps referring to Foo(string) at its old place, where Foo(int)'s new name starts
+    let overloadOnto =
+        normalizedText
+            """module Lib.C
+
+type System.String with
+    member s.Foo(x: int) = x
+    /// Foo of string
+    member s.Foo(x: string) = x
+
+
+let u = "x".Foo(1) + "x".Foo("y").Length
+let w = 1
+"""
+
+    let overloadOntoAfter =
+        normalizedText
+            """module Lib.C
+
+type System.String with
+    /// Foo of int
+    /// more
+    member s.Foo(x: int) = x
+    member s.Foo(x: string) = x
+
+let u = "x".Foo(1) + "x".Foo("y").Length
+let w = 1
+"""
+
     let insertAbove = edits keptUse [ "type System.String with", "\ntype System.String with" ]
     let files = [ "C.fs", keptUse; "D.fs", keptUseLater ]
 
@@ -404,6 +434,9 @@ let w = 1
       { Name = "an extension overload's doc grown onto the next one's place"
         Files = [ "C.fs", overloads; "D.fs", overloadsLater ]
         Steps = [ "two doc lines on Foo of int", [ "C.fs", edits overloads [ "/// Foo of int\n", "/// Foo of int\n    /// more\n    /// more again\n" ] ] ] }
+      { Name = "an extension overload onto the next one's place, the line count kept"
+        Files = [ "C.fs", overloadOnto; "D.fs", overloadsLater ]
+        Steps = [ "Foo of int's doc in, a blank line out", [ "C.fs", overloadOntoAfter ] ] }
       { Name = "A's doc out and an undocumented C in, the line count kept"
         Files = files
         Steps =
@@ -658,6 +691,35 @@ let tests =
 
               expectNoDifferences results
           }
+
+          for shape in keptUseScenarios |> List.filter (fun s -> s.Name.StartsWith "B's name moved" || s.Name.Contains "line count kept") do
+              yield
+               testTask $"a repeat hover on the same result renders no signature again, an extension's place or an old value's included: %s{shape.Name}" {
+                  let! results =
+                      run true shape (fun state ->
+                          task {
+                              let results = ResizeArray()
+                              let placedBefore = state.Implementations |> List.sumBy Hover.placedSignaturesRendered
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              let first = state.Implementations |> List.sumBy Hover.signaturesRendered
+                              let placed = state.Implementations |> List.sumBy Hover.placedSignaturesRendered
+                              Expect.isGreaterThan placed placedBefore $"%s{state.Step}: a first hover named an extension by its place"
+
+                              for file in state.Implementations do
+                                  let! r = compareFile state state.Graph file state.Reference
+                                  results.Add r
+
+                              let again = state.Implementations |> List.sumBy Hover.signaturesRendered
+                              Expect.equal again first $"%s{state.Step}: the second hovers rendered %d{again - first} signatures"
+                              return List.ofSeq results
+                          })
+
+                  expectNoDifferences results
+              }
 
           yield
            testTask "a hover whose docs' file changes while it reads answers for the new texts" {

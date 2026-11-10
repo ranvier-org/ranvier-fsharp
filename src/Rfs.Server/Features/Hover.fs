@@ -207,6 +207,12 @@ module Hover =
     /// keeps it. Nothing in a signature depends on a `///` comment.
     let private signatures = ConditionalWeakTable<obj, ConcurrentDictionary<struct (int * int * string * string), Signature>>()
 
+    /// Signatures naming an `@` owner, by the published result (FileView.Identity) and the position in the file. While
+    /// one result is published its rows, their places and the environment `At` checks a stale row in are fixed, so a
+    /// signature with an extension's place, or the one `At` renders for `@?`, holds until the result is replaced.
+    let private placedSignatures =
+        ConditionalWeakTable<obj, ConcurrentDictionary<struct (int * int * string * string), Signature>>()
+
     let private rendered = ConcurrentDictionary<string, int64>(StringComparer.OrdinalIgnoreCase)
 
     /// How many signatures have been rendered for hovers in the file. For tests.
@@ -214,6 +220,18 @@ module Hover =
         match rendered.TryGetValue path with
         | true, n -> n
         | _ -> 0L
+
+    let private placedRendered = ConcurrentDictionary<string, int64>(StringComparer.OrdinalIgnoreCase)
+
+    /// How many signatures rendered for hovers in the file named an `@` owner. For tests.
+    let internal placedSignaturesRendered (path: string) =
+        match placedRendered.TryGetValue path with
+        | true, n -> n
+        | _ -> 0L
+
+    /// The tooltip parts at the 0-based line, as a hover asks for them. It reads the check, so it runs inside a read.
+    let private partsAt (check: FSharpCheckFileResults) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
+        check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
 
     let private signatureOf (path: string) (view: FileView) (line: int) (lineStr: string, names: string list, endColumn: int) : Signature =
         let owner, row =
@@ -225,7 +243,7 @@ module Hover =
 
         let render (check: FSharpCheckFileResults) =
             rendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
-            check.GetToolTipParts(line + 1, endColumn, lineStr, names, FSharpTokenTag.Identifier)
+            partsAt check line (lineStr, names, endColumn)
 
         let placed (predicate: string -> bool) ((_, sources): Signature) =
             sources
@@ -233,25 +251,41 @@ module Hover =
                 | Some s -> s.Owners @ s.InheritOwners |> List.exists (fun o -> predicate o.Path)
                 | None -> false)
 
-        let key = struct (row, endColumn, lineStr, String.Join("\n", names))
+        let joined = String.Join("\n", names)
+        let key = struct (row, endColumn, lineStr, joined)
+        let placedKey = struct (line, endColumn, lineStr, joined)
 
-        let signature =
-            match cache.TryGetValue key with
-            | true, s -> s
-            | _ ->
+        let cachedPlaced () =
+            match placedSignatures.TryGetValue view.Identity with
+            | true, byResult ->
+                match byResult.TryGetValue placedKey with
+                | true, s -> ValueSome s
+                | _ -> ValueNone
+            | _ -> ValueNone
+
+        match cache.TryGetValue key with
+        | true, s -> s
+        | _ ->
+            match cachedPlaced () with
+            | ValueSome s -> s
+            | ValueNone ->
                 let s = render view.Result.CheckResults
 
                 // An `@` owner is the place of an extension's value as the check has it now. A kept row's result can
-                // outlive that: the row that makes the value can be checked again, or shifted, after it. So it isn't kept.
+                // outlive that: the row that makes the value can be checked again, or shifted, after it. So it is kept
+                // by the published result only.
                 if not (placed (fun p -> p.StartsWith "@") s) then
                     cache.TryAdd(key, s) |> ignore
-
-                s
-
-        // `@?` is a value a kept row still refers to after the row that made it was checked again: no key names it in the
-        // parse. Checked again in the current environment (RowView.at), as any query reading its names would be, the row
-        // refers to the current value, which a binding of the check makes and whose place is in the parse.
-        if placed (fun p -> p = "@?") signature then render (view.At (line + 1) endColumn) else signature
+                    s
+                else
+                    // `@?` is a value a kept row still refers to after the row that made it was checked again: no key
+                    // names it in the parse. Checked again in the current environment (RowView.at), as any query reading
+                    // its names would be, the row refers to the current value, which a binding of the check makes and
+                    // whose place is in the parse.
+                    placedRendered.AddOrUpdate(path, 1L, (fun _ n -> n + 1L)) |> ignore
+                    let s = if placed (fun p -> p = "@?") s then render (view.At (line + 1) endColumn) else s
+                    placedSignatures.GetValue(view.Identity, fun _ -> ConcurrentDictionary()).TryAdd(placedKey, s) |> ignore
+                    s
 
     /// The tooltip with each element's documentation made from the current comments of the declarations it is read
     /// from, as `commentOf` gives them
@@ -290,9 +324,11 @@ module Hover =
 
     /// <summary>
     /// Hovers at the position of `path`, once the graph has settled on the file's latest text (a request node,
-    /// ProjectGraph.ReadFile). The signature is the check's, cached by the declaration result and position; the documentation is
-    /// made from the comments of the latest parse of each file it is read from (ProjectGraph.DocsInTurn), in this project,
-    /// a later file, or another project `owners` names: a `///` edit is seen at once, with no check of anything.
+    /// ProjectGraph.ReadFile). The signature is the check's, cached by the declaration result and position, or by the
+    /// published result when it names an extension by its place (`@`, signatureOf). The documentation is made from the
+    /// comments of the files it is read from: the asking file's from the parse its result is of, read with it, and each
+    /// other file's from its latest parse (ProjectGraph.DocsInTurn), in this project, a later file, or another project
+    /// `owners` names. A `///` edit is seen at once, with no check of anything.
     /// </summary>
     /// <remarks>
     /// Only the check is asked under the lock, which holds off the file's checks: the tokenizer reads the file from the
@@ -330,9 +366,10 @@ module Hover =
 
                     do! afterSignature path
 
-                    // The docs in one turn with the signature's result still published: an edit that lands between
-                    // them reads the file again
-                    // With no file of the workspace to read, every doc is the check's: no turn
+                    // Other files' docs in one turn with the signature's result still published: an edit of the asking
+                    // file, or one that unsettles it, landing between them reads the file again. The asking file's docs
+                    // are of the parse read with the signature, so an edit of it after the read needs nothing more.
+                    // With no other file of the workspace to read, no turn
                     let! read = if held.Length = 0 then Task.FromResult(ValueSome [||]) else graph.DocsInTurn(path, identity, held, ct)
                     let own =
                         sources
@@ -361,3 +398,68 @@ module Hover =
             }
 
         attempt ()
+
+    /// The name of the first `let` or `member` binding near the top of the text, as a hover would ask for it
+    let private firstLookup (text: string) : (int * (string * string list * int)) option =
+        let lines = text.Split '\n'
+        let binding = Regex(@"^\s*(?:let|member)\s+(?:(?:inline|private|internal|mutable|rec|static)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)")
+
+        seq {
+            for line in 0 .. min (lines.Length - 1) 400 do
+                match binding.Match lines[line] with
+                | m when m.Success -> yield line, m.Groups[1].Index
+                | _ -> ()
+        }
+        |> Seq.truncate 16
+        |> Seq.tryPick (fun (line, character) -> lookupOf text line character |> Option.map (fun l -> line, l))
+
+    /// 0 not warmed, 1 warming, 2 warmed
+    let mutable private warmed = 0
+
+    /// <summary>
+    /// Once in a process, compiles what a first hover runs: the tooltip parts of a binding's name, a file's comment walk,
+    /// and a docs read of another file (ProjectGraph.DocsInTurn). On a real file of `graph`, whose answer is dropped.
+    /// </summary>
+    /// <remarks>
+    /// The parts are rendered inside the read, under the file's lock, as a hover's are: holding it costs a file's checks
+    /// and hovers one render, once. The docs read takes no lock and comes after it. A warm-up that renders nothing, or
+    /// fails, leaves the next project's load to try again.
+    /// </remarks>
+    let warm (graph: ProjectGraph) (files: string list) : Task =
+        if Interlocked.CompareExchange(&warmed, 1, 0) <> 0 then
+            Task.CompletedTask
+        else
+            Task.Run<unit>(fun () ->
+                task {
+                    let mutable done' = false
+
+                    try
+                        try
+                            match files |> List.filter (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))) with
+                            | [] -> ()
+                            | file :: rest ->
+                                let! found =
+                                    graph.ReadFile(
+                                        file,
+                                        (fun text -> firstLookup text.Text, docsOfParse text.Parse),
+                                        (fun view (lookup, docs) ->
+                                            lookup |> Option.map (fun (line, l) -> partsAt view.Result.CheckResults line l, view.Identity, docs)),
+                                        CancellationToken.None
+                                    )
+
+                                match found with
+                                | None -> ()
+                                | Some(parts, identity, docs) ->
+                                    format (compose (FileDocs.CommentOf(fun _ -> ValueSome docs)) parts) |> ignore
+
+                                    match rest with
+                                    | other :: _ -> do! graph.DocsInTurn(file, identity, [| graph, other |], CancellationToken.None) :> Task
+                                    | [] -> ()
+
+                                    done' <- true
+                        with ex ->
+                            eprintfn "[ranvierautocomplete] hover warm-up failed: %O" ex
+                    finally
+                        Volatile.Write(&warmed, (if done' then 2 else 0))
+                })
+            :> Task
