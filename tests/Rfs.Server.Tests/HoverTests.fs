@@ -198,9 +198,13 @@ let tests =
                   do! s.Lsp.DidChange(efs, i, replace s efs $"let g = f %d{i}" $"let g = f %d{i + 1}")
                   hovers.Add(hoverText s efs at)
 
+              // Answered from the last state while an edit is pending, marked: f's row is kept, so the tooltip is the same
+              let unmarked (t: string option) =
+                  t |> Option.map (fun t -> if t.StartsWith(Hover.StaleMark + "\n\n") then t.Substring((Hover.StaleMark + "\n\n").Length) else t)
+
               for h in hovers do
                   let! actual = h |> within
-                  Expect.equal actual reference "an answer for a settled text: f keeps its signature's name and docs"
+                  Expect.equal (unmarked actual) reference "an answer for a settled text, or the same one marked: f keeps its signature's name and docs"
           }
 
           testTask "hover shows the documentation of a referenced assembly's member" {
