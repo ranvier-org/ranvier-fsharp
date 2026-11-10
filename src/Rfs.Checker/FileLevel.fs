@@ -70,6 +70,9 @@ type internal IReadableFile =
     abstract Readable: version: int64 -> Readable voption
     /// The index of that published result's uses, once built. A read starts the build (see WholeFile.usesNode).
     abstract Uses: version: int64 -> struct (FileUses * Readable) voption
+    /// The last result readable at the file's text of its time, kept while a newer one is pending. Kept current by
+    /// every read of the file's settled state; None until one was published.
+    abstract LastPublished: unit -> PublishedState voption
 
 /// A signature file's node, read for what its text says now.
 type internal ISignatureFile =
@@ -373,6 +376,42 @@ module internal WholeFile =
                       Identity = box r })
             | ValueNone -> ValueNone
 
+        let samePublished =
+            { new System.Collections.Generic.IEqualityComparer<PublishedState voption> with
+                member _.Equals(a, b) =
+                    match a, b with
+                    | ValueSome x, ValueSome y -> obj.ReferenceEquals(x.Identity, y.Identity)
+                    | ValueNone, ValueNone -> true
+                    | _ -> false
+
+                member _.GetHashCode _ = 0 }
+
+        // The last readable result: a read while a newer one is pending gives the one before it
+        let lastPublished =
+            createMemoWithComparer samePublished (fun previous ->
+                match (try readableAt file.Text.Value.Version with NotReadyException _ -> ValueNone) with
+                | ValueSome r ->
+                    ValueSome
+                        { Identity = r.Identity
+                          Text = r.Parsed.Text
+                          Parse = r.Parsed.Parse
+                          Whole = r.Lock.IsNone
+                          Rows =
+                            match r.Declarations with
+                            | ValueSome(f, _) -> f.Checks |> Array.map (fun (_, c) -> struct (box c.Result, c.Decl.Range.StartLine, c.Decl.Range.EndLine))
+                            | ValueNone -> [||] }
+                | ValueNone ->
+                    match previous with
+                    | ValueSome p -> p
+                    | ValueNone -> ValueNone)
+
+        /// Every read of the settled state reads lastPublished too, so it moves with what is published
+        let touch () =
+            try
+                lastPublished.Value |> ignore
+            with NotReadyException _ ->
+                ()
+
         /// The published result and the lock it is read under, with readableAt's guards. Nothing of the declaration state
         /// besides: what an index's flight reads, its node keeps until it runs again, and release doesn't run it.
         let resultAt (version: int64) : struct (FileResult * AsyncReaderWriterLock voption) voption =
@@ -545,6 +584,8 @@ module internal WholeFile =
             member _.Current = isCurrent
 
             member _.Settled version =
+                touch ()
+
                 match current version with
                 | ValueSome(ByDeclaration(_, f)) -> finishedAt version f |> ValueOption.map _.FileResult.Diagnostics
                 | ValueSome(Kept k) -> keptAt version k |> ValueOption.map _.Diagnostics
@@ -664,7 +705,11 @@ module internal WholeFile =
             member _.Activate() = activate ()
 
           interface IReadableFile with
-              member _.Readable version = readableAt version
+              member _.Readable version =
+                  touch ()
+                  readableAt version
+
+              member _.LastPublished() = lastPublished.Value
 
               member _.Uses version =
                   readableAt version

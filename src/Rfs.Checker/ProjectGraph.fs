@@ -134,6 +134,10 @@ type LatestText =
     { View: TextView
       /// The file's result is settled on this text
       Settled: bool
+      /// The file's last published result in the same turn, kept while a newer one is pending; None before the first
+      Published: PublishedState voption
+      /// What the caller's `busy` read in the same turn, such as a reload under way
+      Busy: bool
       /// The latest `///` comments of each file asked for, ValueNone while its parse is pending
       Docs: FileDocs voption[] }
 
@@ -865,9 +869,10 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// <summary>
     /// A request node: the file's latest text and its parse, once parsed, read in one graph turn with whether the file's
     /// result is settled on that text (as ReadFile waits for) and the latest `///` comments of each of `docsOf` (a graph
-    /// on this one's host, and its file), ValueNone for one whose parse is pending. Never waits for a check.
+    /// on this one's host, and its file), ValueNone for one whose parse is pending, its last published result, and
+    /// `busy`, a tracked read of the host's graph. Never waits for a check.
     /// </summary>
-    member _.LatestText(file: string, docsOf: (ProjectGraph * string)[], ct: CancellationToken) : Task<LatestText> =
+    member _.LatestText(file: string, docsOf: (ProjectGraph * string)[], busy: unit -> bool, ct: CancellationToken) : Task<LatestText> =
         let i = indexOf file
 
         if isSignatureFile files[i] then
@@ -888,6 +893,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 Task.FromResult
                     { View = { Parse = p.Parse; Text = p.Text; Version = p.Version }
                       Settled = settled
+                      Published = (files[i] :?> IReadableFile).LastPublished()
+                      Busy = busy ()
                       Docs = docsOf |> Array.map (fun (g: ProjectGraph, f) -> g.DocsNow f) }
 
         task {

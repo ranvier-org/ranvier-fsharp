@@ -510,3 +510,90 @@ let tests =
                               gate.Set()
                       })
           } ]
+
+/// Holds every check of the graph that a dependency computation leads to, until released
+let private holdChecks (graph: ProjectGraph) =
+    let gate = new ManualResetEventSlim(false)
+
+    graph.OnFlight(fun kind _ ct ->
+        if kind = "dependencies" then
+            gate.Wait ct)
+
+    gate
+
+/// Hovers B's `counted` settled, then with A edited and the checks held: answered from the last state, marked, until a
+/// reload is under way, when it waits. Gives the graph weakly, B and the position.
+let private hoverBeforeReload (workspace: Workspace) (answers: Hover.LastAnswers) (dir: string) =
+    task {
+        let a = Path.Combine(dir, "A.fs")
+        let b = Path.Combine(dir, "B.fs")
+        let graph = (workspace.ProjectOf b).Value
+        let text = File.ReadAllText b
+        let index = text.IndexOf("counted", StringComparison.Ordinal)
+        let before = text.Substring(0, index)
+        let line, character = before.Split('\n').Length - 1, index - (before.LastIndexOf '\n' + 1)
+        let hover ct = Hover.answer answers workspace.LoadingNow workspace.OwnersOf graph b line character ct
+        let! settled = hover CancellationToken.None |> within
+        Expect.isSome settled "the settled hover answers"
+
+        let gate = holdChecks graph
+        graph.SetText(a, File.ReadAllText a + "\nlet added = 1\n") |> ignore
+
+        try
+            let! marked = hover CancellationToken.None |> fun t -> t.WaitAsync(TimeSpan.FromSeconds 20.)
+            Expect.equal marked (settled |> Option.map (fun t -> Hover.StaleMark + "\n\n" + t)) "pending, B answers from the last state"
+
+            // A reload under way, read in the turn of the read: it refuses, and the hover waits for the check
+            use _ = workspace.HoldLoading()
+            let! last = Hover.fromLastState answers workspace.LoadingNow graph b line character CancellationToken.None |> within
+            Expect.equal last (Hover.LastAnswer.Refused Refusal.Reloading) "a reload under way refuses"
+            let waiting = hover CancellationToken.None
+            let! _ = Task.WhenAny(waiting, Task.Delay 1500)
+            Expect.isFalse waiting.IsCompleted "a hover during a reload waits for the check"
+            gate.Set()
+            let! after = waiting |> within
+            Expect.equal after settled "once checked, the hover is the settled one, unmarked"
+        finally
+            gate.Set()
+
+        return WeakReference graph, b, line, character
+    }
+
+[<Tests>]
+let lastStateReload =
+    testSequenced
+    <| testList
+        "LastStateReload"
+        [ testTask "a reload refuses answers from the last state, and its new graph has none of the old graph's" {
+              let dir = copyFixture "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let answers = Hover.LastAnswers()
+
+              do!
+                  withWorkspace None (fun workspace _ ->
+                      task {
+                          let! _ = workspace.Load [ project ] |> within
+                          let! old, b, line, character = hoverBeforeReload workspace answers dir
+                          do! workspace.Reload project |> within
+                          let graph = (workspace.ProjectOf b).Value
+                          Expect.isFalse (obj.ReferenceEquals(graph, old.Target)) "a reload makes a new graph"
+                          let! _ = graph.AllDiagnostics() |> within
+                          let a = Path.Combine(dir, "A.fs")
+                          let gate = holdChecks graph
+                          graph.SetText(a, File.ReadAllText a + "\nlet again = 2\n") |> ignore
+
+                          try
+                              let! last = Hover.fromLastState answers workspace.LoadingNow graph b line character CancellationToken.None |> within
+
+                              match last with
+                              | Hover.LastAnswer.Marked(m, _) -> failtest $"the new graph answered from the old graph's answers: %s{m}"
+                              | Hover.LastAnswer.Settled -> failtest "settled while held"
+                              | Hover.LastAnswer.Refused _ -> ()
+                          finally
+                              gate.Set()
+
+                          // Whether the old graph is collected says nothing of the cache here: a reload with no hover keeps
+                          // it alive too. LastStateGrid's "nothing of the cache keeps a graph alive" checks the cache.
+                          ()
+                      })
+          } ]

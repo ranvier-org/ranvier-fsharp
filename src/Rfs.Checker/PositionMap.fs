@@ -26,17 +26,35 @@ type RowShape =
         && a.StartColumn = b.StartColumn
 
 /// A file's text with its rows, as position safety reads it. No compiler object: it outlives the result it is of.
+[<NoEquality; NoComparison>]
 type FileShape =
     { Text: string
       Lines: string[]
       /// Empty for a file checked whole
       Rows: RowShape[]
       /// A `rec` module or namespace anywhere in the parse
-      Recursive: bool }
+      Recursive: bool
+      /// The lexer state each line starts in, lexed once from the top as Hover's tokenizer carries it
+      States: Lazy<FSharpTokenizerLexState[]> }
+
+/// A file's last published result as the graph has it (ProjectGraph.LatestText): what an answer from the last state is
+/// mapped against. Read it within a request and drop it: it holds the result.
+[<NoEquality; NoComparison>]
+type PublishedState =
+    { /// FileView.Identity of the result
+      Identity: obj
+      Text: string
+      Parse: FSharpParseFileResults
+      /// A whole check's result
+      Whole: bool
+      /// Each declaration's result (FileView.RowAt's object) with its first and last 1-based line; empty where RowAt
+      /// gives none, as for a file checked whole
+      Rows: struct (obj * int * int)[] }
 
 /// Why a position of the new text has no place in the old one: each means wait for the check
 [<RequireQualifiedAccess>]
 type Refusal =
+    /// The file has published no result yet
     | NoSnapshot
     | Reloading
     | CheckedWhole
@@ -50,6 +68,8 @@ type Refusal =
     | LexerState
     | NotAnswered
     | DocsChanged
+    /// The text or the published result changed between the reads of one answer
+    | Moved
 
 /// A position of the old text
 [<Struct>]
@@ -83,6 +103,50 @@ module PositionMap =
 
     let private split (text: string) = text.Split '\n' |> Array.map _.TrimEnd('\r')
 
+    /// What a line starts in: a string or block comment still open, else Initial (as Hover's tokenizer carries it)
+    let carried (next: FSharpTokenizerLexState) =
+        match FSharpLineTokenizer.ColorStateOfLexState next with
+        | FSharpTokenizerColorState.String
+        | FSharpTokenizerColorState.VerbatimString
+        | FSharpTokenizerColorState.TripleQuoteString
+        | FSharpTokenizerColorState.Comment
+        | FSharpTokenizerColorState.StringInComment
+        | FSharpTokenizerColorState.VerbatimStringInComment
+        | FSharpTokenizerColorState.TripleQuoteStringInComment -> next
+        | _ -> FSharpTokenizerLexState.Initial
+
+    /// The tokenizer Hover lexes with: no defines, as FSAC's
+    let tokenizer () = FSharpSourceTokenizer([], Some "hover.fs", None)
+
+    /// The lexer state each line starts in, lexed once from the top
+    let lexStates (lines: string[]) : FSharpTokenizerLexState[] =
+        let tokenizer = tokenizer ()
+        let states = Array.zeroCreate lines.Length
+        let mutable state = FSharpTokenizerLexState.Initial
+
+        for i in 0 .. lines.Length - 1 do
+            states[i] <- state
+            let line = tokenizer.CreateLineTokenizer lines[i]
+            let mutable more = true
+
+            while more do
+                match line.ScanToken state with
+                | Some _, next -> state <- next
+                | None, next ->
+                    state <- carried next
+                    more <- false
+
+        states
+
+    let private make (text: string) (rows: RowShape[]) (recursive: bool) =
+        let lines = split text
+
+        { Text = text
+          Lines = lines
+          Rows = rows
+          Recursive = recursive
+          States = lazy (lexStates lines) }
+
     /// The shape of a parse made by DeclarationChecker.Parse. `byDeclaration` false gives no rows.
     let shapeOf (text: string) (parse: FSharpParseFileResults) (byDeclaration: bool) : FileShape =
         let rows =
@@ -100,44 +164,10 @@ module PositionMap =
             else
                 [||]
 
-        { Text = text
-          Lines = split text
-          Rows = rows
-          Recursive = isRecursive parse.ParseTree }
+        make text rows (isRecursive parse.ParseTree)
 
-    /// The text alone, for a text whose rows are never read: an identical text needs none
-    let textOnly (text: string) : FileShape =
-        { Text = text; Lines = split text; Rows = [||]; Recursive = false }
-
-    /// What a line starts in: a string or block comment still open, else Initial (as Hover's tokenizer carries it)
-    let private carried (next: FSharpTokenizerLexState) =
-        match FSharpLineTokenizer.ColorStateOfLexState next with
-        | FSharpTokenizerColorState.String
-        | FSharpTokenizerColorState.VerbatimString
-        | FSharpTokenizerColorState.TripleQuoteString
-        | FSharpTokenizerColorState.Comment
-        | FSharpTokenizerColorState.StringInComment
-        | FSharpTokenizerColorState.VerbatimStringInComment
-        | FSharpTokenizerColorState.TripleQuoteStringInComment -> next
-        | _ -> FSharpTokenizerLexState.Initial
-
-    /// The lexer state line `target` (0-based) starts in, lexed from the top
-    let lexStateAt (lines: string[]) (target: int) : FSharpTokenizerLexState =
-        let tokenizer = FSharpSourceTokenizer([], Some "position.fs", None)
-        let mutable state = FSharpTokenizerLexState.Initial
-
-        for i in 0 .. target - 1 do
-            let line = tokenizer.CreateLineTokenizer lines[i]
-            let mutable more = true
-
-            while more do
-                match line.ScanToken state with
-                | Some _, next -> state <- next
-                | None, next ->
-                    state <- carried next
-                    more <- false
-
-        state
+    /// The text alone, for a text whose rows are never read
+    let textOnly (text: string) : FileShape = make text [||] false
 
     let private isLineDirective (t: string) =
         t.StartsWith "#line"
@@ -223,8 +253,8 @@ module PositionMap =
                         elif not (String.Equals(current.Lines[line], old.Lines[oldLine], StringComparison.Ordinal)) then
                             Error Refusal.Edited
                         else
-                            let a = lexStateAt current.Lines line
-                            let b = lexStateAt old.Lines oldLine
+                            let a = current.States.Value[line]
+                            let b = old.States.Value[oldLine]
 
                             if a.PosBits <> b.PosBits || a.OtherBits <> b.OtherBits then
                                 Error Refusal.LexerState

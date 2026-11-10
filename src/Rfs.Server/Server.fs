@@ -24,6 +24,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let workspace = new Workspace(host, client)
     let documents = Documents(host)
     let publisher = new Publisher(host, workspace, client, documents)
+    // The hovers given on settled results, for answers from the last state while a check is pending
+    let lastAnswers = Hover.LastAnswers()
     let notices = new RestartNotices(host, workspace, publisher, client)
 
     do
@@ -440,7 +442,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
                     let! text =
-                        Hover.answer (fun () -> workspace.IsLoading) workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+                        Hover.answer lastAnswers workspace.LoadingNow workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
 
                     return
                         text
