@@ -290,7 +290,21 @@ let private collideScenario, renameScenario =
       Steps = [ "a doc edit", [ "C.fs", edits collide [ "/// second block's Foo", "/// the other Foo"; "/// module value x of Foo", "/// Foo's module value x" ] ] ] },
     { Name = "an extension block renamed"
       Files = [ "C.fs", collide; "D.fs", collideLater ]
-      Steps = [ "the first block's member renamed", [ "C.fs", renamed ]; "a doc edit", [ "C.fs", docs ] ] }
+      Steps =
+        [ "the first block's member renamed", [ "C.fs", renamed ]
+          "a doc edit", [ "C.fs", docs ]
+          "a third block added",
+          [ "C.fs",
+            edits
+                docs
+                [ "open Ext\n", "    type System.String with\n        /// third block's Foo\n        member s.Foo(x: float) = s.Length + int x\n\nopen Ext\n" ] ]
+          "the middle block removed",
+          [ "C.fs",
+            edits
+                docs
+                [ "    type System.String with\n        /// the only Foo\n        member s.Foo(x: string) = s + x\n", ""
+                  "(\"a\".Foo \"b\").Length", "0"
+                  "open Ext\n", "    type System.String with\n        /// third block's Foo\n        member s.Foo(x: float) = s.Length + int x\n\nopen Ext\n" ] ] ] }
 
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
@@ -457,9 +471,7 @@ let tests =
           }
 
           yield
-           // Pending: the kept second block counts its own member's place among the module's extensions as its check saw
-           // them, the first block's old `Foo` included, while the parse has one `Foo` (the re-review's open shape)
-           ptestTask "hover equals FCS at every token after an extension block's member is renamed (by declaration)" {
+           testTask "hover equals FCS at every token after an extension block's member is renamed (by declaration)" {
               let! results =
                   run true renameScenario (fun state ->
                       task {

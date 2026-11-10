@@ -26,6 +26,9 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
 
     member _.Count = docs.Count
 
+    /// Whether the file has a declaration at `path`
+    member _.Has(path: string) = docs.ContainsKey path
+
     static member Empty = empty
 
     static member OfParse(input: ParsedInput) : FileDocs =
@@ -92,6 +95,13 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
                     | _ -> flags
 
                 addMember typePath (tagOf flags name) doc
+
+                // And by where its name starts, for a declaration named by its place in the asking file's own check
+                match pat with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    let id = List.last ids
+                    add $"@%d{id.idRange.StartLine},%d{id.idRange.StartColumn}" doc
+                | _ -> ()
             | None, _ -> ()
 
         let fields (typePath: string) (fs: SynField list) =
@@ -239,5 +249,7 @@ type FileDocs private (docs: IReadOnlyDictionary<string, XmlDoc>) =
     static member CommentOf(docsOf: string -> FileDocs voption) : FSharpDocOwner -> XmlDoc voption =
         fun owner ->
             match docsOf owner.FileName with
+            // A place the parse has no member at: the doc the check has, never none
+            | ValueSome docs when owner.Path.StartsWith "@" && not (docs.Has owner.Path) -> ValueNone
             | ValueSome docs -> ValueSome(docs.Comment owner.Path)
             | ValueNone -> ValueNone
