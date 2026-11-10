@@ -3,6 +3,7 @@ module Rfs.Server.Tests.CrossProjectTests
 open System
 open System.Diagnostics
 open System.IO
+open System.Text.Json.Nodes
 open System.Threading
 open System.Threading.Tasks
 open Expecto
@@ -201,4 +202,34 @@ let tests =
               libGraph.SetText(libSource, File.ReadAllText(libSource).Replace("let f (x: int) : int = x + 1", "let f (x: int) : string = string x")) |> ignore
               let! broken = graph.Diagnostics use' |> within
               Expect.isNonEmpty broken "App reads Lib in memory"
+          } ]
+
+[<Tests>]
+let burstTests =
+    testSequenced
+    <| testList
+        "Workspace graph bursts"
+        [ testTask "a branch switch's burst of watched-file changes reloads each project once" {
+              Fixtures.build appProject
+              let created = System.Collections.Concurrent.ConcurrentQueue<string>()
+              let! (s: Session) = startSessionWith multiDir [ appProject ] true ignore
+              use _ = (s :> IAsyncDisposable)
+              do! openAll s [ useFs ]
+              do! eventually "App's first publish" (fun () -> (publishesOf s useFs).Length > 0)
+              s.Server.Workspace.OnGraphCreated(fun g -> created.Enqueue(Path.GetFileName g.Spec.ProjectFile))
+              let props = Path.Combine(multiDir, "Directory.Build.props")
+
+              let notify (path: string) =
+                  s.Lsp.Notify("workspace/didChangeWatchedFiles", JsonNode.Parse($$"""{"changes":[{"uri":{{JsonValue.Create(Paths.toUri path).ToJsonString()}},"type":2}]}"""))
+
+              // What a checkout reports, one notification at a time
+              for path in [ libProject; useFs; appProject; props; libFs ] do
+                  do! notify path
+
+              do! eventually "both reloaded" (fun () -> created |> Seq.contains "Lib.fsproj" && created |> Seq.contains "App.fsproj")
+              do! eventually "App's publish after the reload" (fun () -> (s.Server.Workspace.ProjectOf useFs).IsSome)
+              let! _ = (s.Server.Workspace.ProjectOf useFs).Value.Diagnostics useFs |> within
+              do! Task.Delay 3000
+              let counts = created |> Seq.countBy id |> Map.ofSeq
+              Expect.equal counts (Map [ "App.fsproj", 1; "Lib.fsproj", 1 ]) "each project reloads once"
           } ]

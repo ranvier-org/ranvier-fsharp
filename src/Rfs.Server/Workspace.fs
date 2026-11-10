@@ -454,14 +454,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     ()
         }
 
-    let reload (project: string) : Task<unit> =
+    /// Reloads `projects` and every project that references one of them, each once: a branch switch or a root props
+    /// change names several, and one project's reload would otherwise reload what references it once per project
+    /// named (N3).
+    let reload (projects: string list) : Task<unit> =
         task {
-            let project = Path.GetFullPath project
+            let roots = projects |> List.map Path.GetFullPath |> List.distinctBy (fun p -> p.ToUpperInvariant())
+            let isRoot (p: string) = roots |> List.exists (fun r -> String.Equals(r, p, StringComparison.OrdinalIgnoreCase))
+            let all = snapshot ()
 
             // A referencing project's context holds the old graph's assembly, and disposing it disposes theirs: they
             // are hidden with it, and load again after it, on its new graph or, if it no longer loads, the file on disk
-            let referencing =
-                let all = snapshot ()
+            let referencingOf (project: string) =
                 let found = List<string>()
 
                 let rec visit (file: string) =
@@ -474,21 +478,35 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 visit project
                 List.ofSeq found
 
-            for p in project :: referencing do
+            let byRoot = roots |> List.map (fun r -> r, referencingOf r)
+
+            let referencing =
+                byRoot
+                |> List.collect snd
+                |> List.filter (isRoot >> not)
+                |> List.distinctBy (fun p -> p.ToUpperInvariant())
+
+            for p in roots @ referencing do
                 match remove p with
                 | Some e -> (e.Graph :> IDisposable).Dispose()
                 | None -> ()
 
-            ProjectSpec.invalidate project
+            for p in roots do
+                ProjectSpec.invalidate p
+
             let visited = HashSet<string>(StringComparer.OrdinalIgnoreCase)
             let results = Dictionary<string, LoadResult>(StringComparer.OrdinalIgnoreCase)
             do! notifyWorkspace (Responses.workspaceLoad false)
-            do! visit visited results project
 
-            // A referencing project's spec holds the `-r:` this project's output gave it. While this one does not load,
-            // evaluating them would fail too: they keep their specs, and the file on disk
-            if isLoaded project then
-                for p in referencing do
+            for p in roots do
+                do! visit visited results p
+
+            // A referencing project's spec holds the `-r:` its references' outputs gave it. While one of those does not
+            // load, evaluating it would fail too: it keeps its spec, and the file on disk
+            for p in referencing do
+                let named = byRoot |> List.filter (fun (_, refs) -> refs |> List.exists (fun x -> String.Equals(x, p, StringComparison.OrdinalIgnoreCase)))
+
+                if named |> List.forall (fun (r, _) -> isLoaded r) then
                     ProjectSpec.invalidate p
 
             for p in referencing do
@@ -527,7 +545,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     member internal _.OnGraphCreated(hook: ProjectGraph -> unit) : unit = onGraphCreated <- hook
 
     /// Disposes the project's graph, evaluates the project again and creates a new graph with the open texts applied
-    member _.Reload(project: string) : Task<unit> = exclusively (fun () -> reload project)
+    member _.Reload(project: string) : Task<unit> = exclusively (fun () -> reload [ project ])
 
     /// A document the editor opened (or changed): its text is the file's, and goes to the graphs of the projects with it
     /// Returns each graph with the internal version of the text.
@@ -619,6 +637,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         exclusively (fun () ->
             task {
                 let toReload = List<string>()
+                let onDisk = List<string * string>()
 
                 for path, deleted in changes do
                     let path = Path.GetFullPath path
@@ -654,20 +673,28 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
 
                             if belongs && not (toReload.Contains e.Spec.ProjectFile) then
                                 toReload.Add e.Spec.ProjectFile
-                    elif (ext = ".fs" || ext = ".fsi") && not deleted then
-                        // One critical section with Open, so the disk text cannot overtake a text opened meanwhile
-                        lock gate (fun () ->
-                            if not (openTexts.ContainsKey path) then
-                                for e in snapshot () do
-                                    if isSource e.Spec path then
-                                        try
-                                            e.Graph.SetText(path, File.ReadAllText path) |> ignore
-                                        with
-                                        | :? IOException
-                                        | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}")
+                    elif (ext = ".fs" || ext = ".fsi") && not deleted && not (onDisk |> Seq.exists (fun (p, _) -> String.Equals(p, path, StringComparison.OrdinalIgnoreCase))) then
+                        try
+                            onDisk.Add((path, File.ReadAllText path))
+                        with
+                        | :? IOException
+                        | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}"
 
-                for p in toReload do
-                    do! reload p
+                // Every closed file's disk text in one graph item, so the graphs settle once for all of them (N6). One
+                // critical section with Open, so the disk text cannot overtake a text opened meanwhile.
+                if onDisk.Count > 0 then
+                    do!
+                        host.Read(fun () ->
+                            lock gate (fun () ->
+                                Ranvier.Api.batch (fun () ->
+                                    for path, text in onDisk do
+                                        if not (openTexts.ContainsKey path) then
+                                            for e in snapshot () do
+                                                if isSource e.Spec path then
+                                                    e.Graph.SetText(path, text) |> ignore)))
+
+                if toReload.Count > 0 then
+                    do! reload (List.ofSeq toReload)
             })
 
     member _.Dispose() =

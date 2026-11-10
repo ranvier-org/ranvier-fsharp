@@ -92,6 +92,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let mutable epoch = 0L
     let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let mutable onClose: string -> unit = ignore
+    let mutable diskPasses = 0
 
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
@@ -361,10 +362,13 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
             | [] -> dropRow path
             | _ -> closedRow path d.Uri owners
 
-    let diskChangedNow (path: string) =
-        match (documents.TryFind path).IsNone, workspace.OwnersOf path with
-        | true, (_ :: _ as owners) -> closedRow path "" owners
-        | _ -> ()
+    let diskChangedNow (paths: string list) =
+        diskPasses <- diskPasses + 1
+
+        for path in paths do
+            match (documents.TryFind path).IsNone, workspace.OwnersOf path with
+            | true, (_ :: _ as owners) -> closedRow path "" owners
+            | _ -> ()
 
     let loadedNow (graph: ProjectGraph) =
         for doc in documents.All do
@@ -427,8 +431,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         onClose path
         post (fun () -> closeNow path diskText)
 
-    /// A file that is not open changed on disk and the graphs have its new text: the open documents hear what that changed
-    member _.DiskChanged(path: string) : unit = post (fun () -> diskChangedNow path)
+    /// Files that are not open changed on disk and the graphs have their new texts: the open documents hear what that
+    /// changed, in one pass for all of them
+    member _.DiskChanged(paths: string list) : unit = post (fun () -> diskChangedNow paths)
 
     /// A project has loaded: its open documents were given their texts, so they are promoted and published
     member _.Loaded(graph: ProjectGraph) : unit = post (fun () -> loadedNow graph)
@@ -473,6 +478,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
     /// Runs `hook` with the path in `Close`, after the disk is read and before the close is posted. For tests.
     member internal _.OnClose(hook: string -> unit) : unit = onClose <- hook
+
+    /// How many passes over files changed on disk ran. For tests.
+    member internal _.DiskPasses() : Task<int> = host.Read(fun () -> diskPasses)
 
     /// How many rows and last lists the publisher keeps. For tests.
     member internal _.Retained() : Task<int> =

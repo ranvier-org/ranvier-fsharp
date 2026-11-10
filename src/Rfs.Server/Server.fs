@@ -28,6 +28,35 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     do
         workspace.OnLoaded publisher.Loaded
 
+    /// Applies one batch of watched-file changes, off the graph thread
+    let applyWatched (changes: (string * bool) list) : Task =
+        task {
+            try
+                do! workspace.FilesChanged changes
+                publisher.DiskChanged [ for path, deleted in changes do if not deleted then yield path ]
+            with ex ->
+                eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
+        }
+
+    // Graph thread: the watched-file changes not yet applied, and how many notifications brought them. A burst (a branch
+    // switch, a git pull) is applied as one batch once the notifications have been quiet for a while, so each project
+    // reloads once and the files changed settle once.
+    let watched = Collections.Generic.List<string * bool>()
+    let mutable arrivals: Ranvier.Signal<int> = Unchecked.defaultof<_>
+
+    do
+        host.Post(fun () ->
+            Ranvier.Api.createRoot (fun _ ->
+                arrivals <- Ranvier.Api.createSignal 0
+                let quiet = Ranvier.TimedCombinators.debounce (RanvierServer.WatchDelay()) (fun () -> arrivals.Value) host.Graph
+
+                Ranvier.Api.createEffect (fun () ->
+                    if quiet.Value > 0 && watched.Count > 0 then
+                        let batch = List.ofSeq watched
+                        watched.Clear()
+                        Task.Run(fun () -> applyWatched batch) |> ignore))
+            |> ignore)
+
     let mutable rootPath: string option = None
     let mutable automaticInit = false
     let mutable peekDepth = 2
@@ -123,6 +152,17 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             |> Async.Start
         else
             eprintfn "[ranvierautocomplete] the client cannot register file watchers: changes on disk it does not report go unseen"
+
+    /// How long watched-file notifications must be quiet before their changes are applied: `RFS_WATCH_DEBOUNCE_MS`,
+    /// else 200 ms
+    static member WatchDelay() : TimeSpan =
+        match Environment.GetEnvironmentVariable "RFS_WATCH_DEBOUNCE_MS" with
+        | null
+        | "" -> TimeSpan.FromMilliseconds 200.
+        | text ->
+            match Double.TryParse text with
+            | true, ms when ms >= 0. -> TimeSpan.FromMilliseconds ms
+            | _ -> TimeSpan.FromMilliseconds 200.
 
     member _.Client = client
     member _.Host = host
@@ -274,11 +314,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     let changes =
                         [ for c in p.Changes -> Paths.ofUri c.Uri, (c.Type = FileChangeType.Deleted) ]
 
-                    do! workspace.FilesChanged changes |> Async.AwaitTask
-
-                    for path, deleted in changes do
-                        if not deleted then
-                            publisher.DiskChanged path
+                    host.Post(fun () ->
+                        watched.AddRange changes
+                        arrivals.Value <- arrivals.Value + 1)
                 with ex ->
                     eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
             }

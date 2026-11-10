@@ -711,4 +711,29 @@ let workspaceGraphTests =
               second.FailRestart(InvalidOperationException "an injected restart fault")
               do! eventually "X's fault" (fun () -> s.Server.Publisher.Faulted x |> fun t -> t.Result)
               do! eventually "S without X's error" (fun () -> not (lastOf s shared |> List.exists foreign))
+          }
+
+          testTask "closed files changed on disk together settle in one pass" {
+              let dir = copyFixtureDir "Deps"
+              let project = Path.Combine(dir, "Deps.fsproj")
+              let aFile = Path.Combine(dir, "A.fs")
+              let bFile = Path.Combine(dir, "B.fs")
+              let cFile = Path.Combine(dir, "C.fs")
+              let! s = startSessionWith dir [ project ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ cFile ]
+              do! eventually "C's publish" (fun () -> hasVersion s cFile 0)
+              let! passes = s.Server.Publisher.DiskPasses()
+              File.AppendAllText(aFile, "\n// a\n")
+              File.AppendAllText(bFile, "\n// b\n")
+
+              let change (path: string) = $$"""{"uri":{{JsonValue.Create(Paths.toUri path).ToJsonString()}},"type":2}"""
+              do! s.Lsp.Notify("workspace/didChangeWatchedFiles", JsonNode.Parse($$"""{"changes":[{{change aFile}},{{change bFile}}]}"""))
+              do! eventually "the pass" (fun () -> s.Server.Publisher.DiskPasses().Result > passes)
+              do! Task.Delay 1000
+              let! after = s.Server.Publisher.DiskPasses()
+              Expect.equal (after - passes) 1 "one pass for both files"
+              let graph = (s.Server.Workspace.ProjectOf cFile).Value
+              let! _ = graph.Diagnostics cFile |> within
+              ()
           } ]
