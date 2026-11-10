@@ -77,8 +77,9 @@ module internal GraphTurn =
 /// with it what it reported. After a load, a closed row follows its owners, or goes with them.
 /// </para>
 /// <para>
-/// A check or graph that fails, for a row's file, publishes nothing new for it and is logged. It touches no other row:
-/// no row waits on the shared host, so nothing a fault aborts there reaches it.
+/// A check or graph that fails, for a row's file, publishes nothing new for it and is logged. What it reported to
+/// other files goes from their lists (its own last list stays): a fault leaves no finding that will never be replaced.
+/// It touches no other row: no row waits on the shared host, so nothing a fault aborts there reaches it.
 /// </para>
 /// </remarks>
 type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, documents: Documents) =
@@ -213,7 +214,8 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         found.Groups
         |> Seq.exists (fun (KeyValue(t, l)) -> not l.IsEmpty && not (isSame t path) && (documents.TryFind t).IsSome)
 
-    /// A row's value: what its file's check found, kept from the last settled check while the next one is pending.
+    /// A row's value: what its file's check found, kept from the last settled check while the next one is pending. A
+    /// failed check keeps only the file's own group: what it reported to other files could never be replaced.
     let finding (item: unit -> Row) : unit -> Found =
         let mutable last = Found.None
 
@@ -233,6 +235,13 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                     | ex ->
                         faulted.Add r.Path |> ignore
                         log $"%s{r.Path}: no diagnostics to publish, its check failed: %O{ex}"
+                        let own = Dictionary<string, Rfs.Lsp.Diagnostic list>(StringComparer.OrdinalIgnoreCase)
+
+                        match last.Groups.TryGetValue r.Path with
+                        | true, l -> own[r.Path] <- l
+                        | _ -> ()
+
+                        last <- { Groups = own; Current = false }
                         ValueNone
 
                 match settled with

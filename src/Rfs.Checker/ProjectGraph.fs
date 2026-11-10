@@ -216,6 +216,22 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     let mutable turnFileHook: TurnFile -> unit = ignore
     // Graph thread. A restart disposes the nodes first, so one that fails leaves nothing that could ever settle.
     let mutable restartFailure: exn = null
+    // Work of this project that failed on the graph thread: a guarded effect of its nodes, or its posted work. Its own
+    // waits end with it, and no other project's (N2).
+    let mutable faults = 0
+    let mutable lastFault: exn = null
+
+    let fault (ex: exn) =
+        lastFault <- ex
+        Interlocked.Increment &faults |> ignore
+
+    let post (work: unit -> unit) =
+        host.Post(fun () ->
+            try
+                work ()
+            with ex ->
+                fault ex
+                reraise ())
 
     let restarting (work: unit -> unit) =
         try
@@ -228,8 +244,33 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
             reraise ()
 
-    // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle
-    let settled (read: unit -> 'T voption) = host.WhenSettled(read, lifetime.Token)
+    // This project's faults and those of the projects it references, whose assemblies its files wait for
+    let faultsSeen () =
+        Volatile.Read &faults
+        + (ProjectNodes.closure references (fun (g: ProjectGraph) -> g.References) |> List.sumBy _.FaultCount)
+
+    // Every wait ends when the graph is disposed: its nodes are gone, so a wait on them could never settle. Apart from
+    // the host's faults: one that a fault of this project, or of one it references, may have stranded fails with it.
+    let settledWith (token: CancellationToken) (read: unit -> 'T voption) =
+        let since = faultsSeen ()
+
+        host.WhenSettled(
+            (fun () ->
+                let found =
+                    try
+                        read ()
+                    with NotReadyException _ when faultsSeen () > since ->
+                        ValueNone
+
+                match found with
+                | ValueNone when faultsSeen () > since ->
+                    raise (GraphFailedException($"work of %s{spec.ProjectFile}", lastFault))
+                | found -> found),
+            token,
+            true
+        )
+
+    let settled (read: unit -> 'T voption) = settledWith lifetime.Token read
 
     let byPath =
         let d = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
@@ -325,13 +366,23 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 if linked.IsEmpty then
                     Task.FromResult [||]
                 else
-                    host.WhenSettled(fun () ->
-                        let all = linked |> List.map (fun (_, g: ProjectGraph) -> g.SettledAssembly())
+                    // Apart from the host's faults: only those of the projects it waits for fail it
+                    let faultsOf () = linked |> List.sumBy (fun (_, g: ProjectGraph) -> g.FaultCount)
+                    let since = faultsOf ()
 
-                        if all |> List.forall _.IsSome then
-                            ValueSome(all |> List.map _.Value |> Array.ofList)
-                        else
-                            ValueNone)
+                    host.WhenSettled(
+                        (fun () ->
+                            let all = linked |> List.map (fun (_, g: ProjectGraph) -> g.SettledAssembly())
+
+                            if all |> List.forall _.IsSome then
+                                ValueSome(all |> List.map _.Value |> Array.ofList)
+                            elif faultsOf () > since then
+                                raise (GraphFailedException($"settling the references of %s{spec.ProjectFile}", InvalidOperationException "a referenced project failed"))
+                            else
+                                ValueNone),
+                        CancellationToken.None,
+                        true
+                    )
 
             let allocated = GC.GetTotalAllocatedBytes true
             let started = Diagnostics.Stopwatch.GetTimestamp()
@@ -355,6 +406,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 host.Read(fun () ->
                     let owner, files = ProjectNodes.build project texts wanted
                     let graph = new ProjectGraph(host, project, spec, files, owner, directs, seen, wanted)
+                    graph.Attach()
                     graph.Link(options, linked |> List.map fst)
 
                     for r in directs do
@@ -581,7 +633,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         // A disposed graph checks nothing
         if Volatile.Read &disposed = 0 then
-            host.Post(fun () -> files[i].Text.SetText(text, version))
+            post (fun () -> files[i].Text.SetText(text, version))
 
         version
 
@@ -853,8 +905,18 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 a.Projects
                 b.Projects
 
+        // Each project's faults when the read first saw it: a later one may have stranded the read, and fails it
+        let faultsAt = Dictionary<ProjectGraph, int>(HashIdentity.Reference)
+
         let step () =
             let before = scope ()
+
+            for g, _ in before.Projects do
+                match faultsAt.TryGetValue g with
+                | true, n when g.FaultCount > n ->
+                    raise (GraphFailedException($"work of %s{g.Spec.ProjectFile}", InvalidOperationException "a project the read reads failed"))
+                | true, _ -> ()
+                | _ -> faultsAt[g] <- g.FaultCount
 
             if before.Projects |> Array.exists (fun (g, _) -> g.IsDisposed) then
                 ValueSome TurnRead.Gone
@@ -885,7 +947,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 else
                     ValueSome(TurnRead.Read(before.Extra, read))
 
-        host.WhenSettled(step, ct)
+        host.WhenSettled(step, ct, true)
 
     /// How many indexes of a file's uses were built.
     member _.UsesBuilt: int64 = project.UsesBuilt
@@ -957,7 +1019,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     member _.Promote(file: string) : unit =
         let i = indexOf file
 
-        host.Post(fun () ->
+        post (fun () ->
             wanted.Add i |> ignore
             files[i].Promote())
 
@@ -966,7 +1028,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     member _.Demote(file: string) : unit =
         let i = indexOf file
 
-        host.Post(fun () ->
+        post (fun () ->
             wanted.Remove i |> ignore
             files[i].Demote())
 
@@ -979,11 +1041,11 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         if ct.CanBeCanceled then
             let linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
-            let wait = host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), linked.Token)
+            let wait = settledWith linked.Token (fun () -> readSettled i (fun f version -> f.Promoted version))
             wait.ContinueWith((fun (_: Task) -> linked.Dispose()), TaskScheduler.Default) |> ignore
             wait
         else
-            host.WhenSettled((fun () -> readSettled i (fun f version -> f.Promoted version)), lifetime.Token)
+            settled (fun () -> readSettled i (fun f version -> f.Promoted version))
 
     /// Every implementation file's FileResult (FinishFile's while it is checked by declaration, CheckFile's while it
     /// is checked whole) once all files are settled on their latest texts.
@@ -1112,7 +1174,15 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     member internal _.Context: ProjectContext = project.Context
 
     /// Fails as a restart does when it throws. For tests.
-    member internal _.FailRestart(ex: exn) : unit = host.Post(fun () -> restarting (fun () -> raise ex))
+    member internal _.FailRestart(ex: exn) : unit = post (fun () -> restarting (fun () -> raise ex))
+
+    /// How many times work of the project failed on the graph thread (its effects, its posted work). Any thread.
+    member internal _.FaultCount: int = Volatile.Read &faults
+
+    /// Makes the project's own work report its faults to its waits. Graph thread, before anything of it runs.
+    member private _.Attach() =
+        project.Post <- post
+        project.Fault <- fault
 
     /// Awaits `hook` in each ReadFile after the file settled and before it takes the lock. For tests.
     member internal _.OnReadSettled(hook: unit -> Task) : unit = afterSettle <- hook

@@ -1047,7 +1047,7 @@ module internal FileNodes =
 
         // Walks the file: a closed window is passed over, a flagged row that leads none starts one, and nothing is known
         // after a window that has not closed. A window whose leader is no longer flagged goes.
-        GraphEffects.guarded (fun () ->
+        GraphEffects.guardedFor (fun ex -> project.Fault ex) (fun () ->
             if driven.Value then
                 let order = shared.Order.Value
                 let known = windows.Value
@@ -1187,7 +1187,7 @@ module internal FileNodes =
         let premiseChecked = HashSet<RowCheck>(HashIdentity.Reference)
         let unresolved = createSignal (ValueNone: DeclSetup voption)
 
-        GraphEffects.guarded (fun () ->
+        GraphEffects.guardedFor (fun ex -> project.Fault ex) (fun () ->
             if driven.Value then
                 let version = file.Text.Value.Version
 

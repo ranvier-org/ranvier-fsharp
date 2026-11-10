@@ -11,7 +11,9 @@ open Ranvier
 [<ReferenceEquality>]
 type private Waiter =
     { Step: unit -> bool
-      Abort: exn -> unit }
+      Abort: exn -> unit
+      /// Ends with its own faults only (a project's), never with the host's
+      Apart: bool }
 
 /// Work on the graph thread failed, so what a parked wait is waiting for may never come.
 type GraphFailedException(what: string, inner: exn) =
@@ -40,6 +42,18 @@ module internal GraphEffects =
                 GraphThread.Report ex
                 reraise ())
 
+    /// A guarded effect whose failure also reaches `owner` (its project's waits)
+    let guardedFor (owner: exn -> unit) (body: unit -> unit) =
+        createEffect (fun () ->
+            try
+                body ()
+            with
+            | NotReadyException _ -> reraise ()
+            | ex ->
+                GraphThread.Report ex
+                owner ex
+                reraise ())
+
 /// <summary>
 /// A Ranvier graph with a dedicated owner thread that pumps its inbox.
 /// </summary>
@@ -60,7 +74,8 @@ module internal GraphEffects =
 /// <para>
 /// After any of these, the <c>WhenSettled</c> calls still parked once the waiters have run fault with
 /// <c>GraphFailedException</c>: what the failure left undone may be what they wait for, and nothing else would end
-/// them. The host is shared, so this reaches parked calls of other projects too. Later calls wait as usual.
+/// them. Later calls wait as usual. A call made apart (a project's wait, which checks its own project's faults) is not
+/// ended by them: the host is shared, and a fault of one project must fail nothing of another's.
 /// </para>
 /// <para>
 /// Once <c>Dispose</c> begins, work still in the inbox does not run: queued <c>Read</c>s fault with
@@ -117,9 +132,9 @@ type GraphHost private (name: string) =
 
             let parked =
                 lock gate (fun () ->
-                    let all = waiters.ToArray()
-                    waiters.Clear()
-                    all)
+                    let shared = waiters.FindAll(fun w -> not w.Apart).ToArray()
+                    waiters.RemoveAll(fun w -> not w.Apart) |> ignore
+                    shared)
 
             for w in parked do
                 w.Abort ex
@@ -255,6 +270,11 @@ type GraphHost private (name: string) =
     /// with <c>read</c>'s exception, is canceled by <c>cancellationToken</c>, and faults with
     /// <c>ObjectDisposedException</c> if the host is disposed first.
     member this.WhenSettled(read: unit -> 'T voption, cancellationToken: CancellationToken) : Task<'T> =
+        this.WhenSettled(read, cancellationToken, false)
+
+    /// As the other overloads; `apart` keeps the call out of the host's faults: it ends only by `read` (which checks
+    /// the faults it depends on), cancellation or disposal.
+    member _.WhenSettled(read: unit -> 'T voption, cancellationToken: CancellationToken, apart: bool) : Task<'T> =
         let completion =
             TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
 
@@ -276,7 +296,8 @@ type GraphHost private (name: string) =
 
         let waiter =
             { Step = step
-              Abort = fun ex -> completion.TrySetException ex |> ignore }
+              Abort = fun ex -> completion.TrySetException ex |> ignore
+              Apart = apart }
 
         let registered =
             lock gate (fun () ->

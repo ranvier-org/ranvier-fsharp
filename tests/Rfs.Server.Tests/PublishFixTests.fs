@@ -554,7 +554,7 @@ let rowTests =
               // The closed row went with the reload, so nothing of the publisher holds the replaced graph
               do! dropTrace s.Server.Host
               Expect.isTrue (collected old) "the replaced graph is collected"
-          } 
+          }
           testTask "an open file's diagnostics in another open file go when a reload drops it" {
               let! (s, aFile, cFile, project, message) = foreignSession false
               use _ = disposing s
@@ -601,4 +601,114 @@ let rowTests =
                   host.Post(fun () -> signal.Value <- 1)
                   do! eventually "the count" (fun () -> seen.Count = 1)
                   Expect.equal (seen.ToArray()) [| 1 |] $"the count includes the adoption (counting effect made first: %b{countingFirst})"
+          } ]
+
+/// A held parse of `path` in `graph`: set the event to release it
+let private holdParse (graph: Rfs.Checker.ProjectGraph) (path: string) : ManualResetEventSlim * bool ref =
+    let hold = new ManualResetEventSlim false
+    let entered = ref false
+    let armed = ref true
+
+    graph.OnFlight(fun kind file _ ->
+        if armed.Value && kind = "parse" && file.EndsWith(Path.GetFileName path) then
+            armed.Value <- false
+            entered.Value <- true
+            hold.Wait(TimeSpan.FromSeconds 60.) |> ignore)
+
+    hold, entered
+
+[<Tests>]
+let workspaceGraphTests =
+    testSequenced
+    <| testList
+        "Workspace graph"
+        [ testTask "a fault in one project fails none of another's waits" {
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              // Two declarations, so X is checked by declaration and has Results
+              File.WriteAllText(x, "module X\n\nlet y : int = S.value\n\nlet w = 2\n")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let first = (s.Server.Workspace.OwnersOf shared).Head
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              let! _ = second.WhenPromoted(x, CancellationToken.None) |> within
+              let hold, entered = holdParse second x
+              do! s.Lsp.DidChange(x, 1, replace s x "let y : int" "let y : string")
+              do! eventually "X's parse" (fun () -> entered.Value)
+              do! s.Server.Publisher.Barrier()
+
+              // Every kind of wait on P2, parked while X is held
+              let settled = second.SettledDiagnostics x
+              let diagnostics = second.Diagnostics x
+              let all = second.AllDiagnostics()
+              let promoted = second.WhenPromoted(x, CancellationToken.None)
+              let results = second.Results x
+
+              // The first context's wait of a project that references P2
+              let p3 = Path.Combine(root, "p3")
+              Directory.CreateDirectory p3 |> ignore
+              let z = Path.Combine(p3, "Z.fs")
+              File.WriteAllText(z, "module Z\n\nlet z : int = 1\n")
+
+              let output =
+                  second.Spec.OtherOptions
+                  |> List.tryPick (fun o -> if o.StartsWith "-o:" then Some(o.Substring 3) else None)
+                  |> Option.defaultValue (Path.Combine(Path.GetDirectoryName p2, "P2.dll"))
+
+              let spec3 =
+                  { second.Spec with
+                      ProjectFile = Path.Combine(p3, "P3.fsproj")
+                      SourceFiles = [ z ]
+                      OtherOptions = (second.Spec.OtherOptions |> List.filter (fun o -> not (o.StartsWith "-o:"))) @ [ "-o:" + Path.Combine(p3, "P3.dll"); "-r:" + output ]
+                      ReferencedProjects = [ p2 ]
+                      ReferencedFrameworks = [ "" ]
+                      GeneratedFiles = [] }
+
+              let created = Rfs.Checker.ProjectGraph.Create(s.Server.Host, spec3, [ second ])
+              do! Task.Delay 300
+              first.FailRestart(InvalidOperationException "an injected restart fault")
+              do! s.Server.Publisher.Barrier()
+              do! s.Server.Publisher.Barrier()
+              do! Task.Delay 300
+              hold.Set()
+
+              let succeeds (what: string) (t: Task) =
+                  task {
+                      try
+                          do! t.WaitAsync(TimeSpan.FromSeconds 60.)
+                      with ex ->
+                          failtest $"%s{what} failed: %s{ex.Message}"
+                  }
+
+              do! succeeds "SettledDiagnostics" settled
+              do! succeeds "Diagnostics" diagnostics
+              do! succeeds "AllDiagnostics" all
+              do! succeeds "WhenPromoted" promoted
+              do! succeeds "Results" results
+              do! succeeds "the first context's wait" created
+              let! graph3 = created
+              (graph3 :> IDisposable).Dispose()
+              do! eventually "X's version 1" (fun () -> hasVersion s x 1)
+              // The failed project's own waits fail with it
+              let! (own: Task) = Task.WhenAny(first.Diagnostics shared :> Task, Task.Delay 30000)
+              Expect.isTrue own.IsFaulted "a wait of the failed project fails"
+          }
+
+          testTask "a faulted file's findings leave the other files' lists" {
+              // X, in P2, reports an error in S, which P1 publishes; then P2 fails, and P1 goes on
+              let root, p1, p2, shared = sharedFixture ()
+              let x = Path.Combine(Path.GetDirectoryName p2, "X.fs")
+              File.WriteAllText(x, $"module X\n\nlet y : int = S.value\n\n# 1 \"%s{shared}\"\nmodule Foreign =\n    let bad : string = 1\n")
+              let! s = startSessionWith root [ p1; p2 ] true ignore |> within
+              use _ = disposing s
+              do! openAll s [ shared; x ]
+              do! eventually "the open publishes" (fun () -> hasVersion s shared 0 && hasVersion s x 0)
+              let foreign (d: Diagnostic) = d.Message.Contains "string"
+              do! eventually "X's error in S" (fun () -> lastOf s shared |> List.exists foreign)
+              let second = (s.Server.Workspace.ProjectOf x).Value
+              second.FailRestart(InvalidOperationException "an injected restart fault")
+              do! eventually "X's fault" (fun () -> s.Server.Publisher.Faulted x |> fun t -> t.Result)
+              do! eventually "S without X's error" (fun () -> not (lastOf s shared |> List.exists foreign))
           } ]

@@ -216,6 +216,9 @@ type internal ProjectShared(ctx: ProjectContext) =
     /// Runs work on the graph thread after the current run, as GraphHost.Post. Set once the host is known.
     member val Post: (unit -> unit) -> unit = ignore with get, set
 
+    /// Tells the project's waits that work of the project failed on the graph thread. Set by its graph.
+    member val Fault: exn -> unit = ignore with get, set
+
     member _.AddFinishTicks(ticks: int64) = Interlocked.Add(&finishTicks, ticks) |> ignore
 
     /// Runs off the graph thread, with the memo's kind, its path and the flight's token, as an async memo's work starts.
