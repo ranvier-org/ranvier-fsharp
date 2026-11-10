@@ -101,6 +101,7 @@ module private ProjectNodes =
 type TextView =
     { Parse: FSharpParseFileResults
       Text: string
+      Docs: FileDocs
       /// The graph's version of the text (the one `SetText` returned)
       Version: int64 }
 
@@ -109,6 +110,7 @@ type FileView =
     { Result: FileResult
       Parse: FSharpParseFileResults
       Text: string
+      Docs: FileDocs
       /// The graph's version of the text (the one `SetText` returned)
       Version: int64
       /// The signatures the result was set up from
@@ -767,10 +769,13 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// file, which has no FileResult.
     /// </remarks>
     member this.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, ct: CancellationToken) : Task<'T> =
-        this.ReadFile(file, prepare, read, false, ct)
+        this.ReadFile(file, prepare, read, false, None, ct)
 
     /// ReadFile, with FileView.Inputs and Generation filled when `inputs` (empty and -1 otherwise)
-    member _.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, inputs: bool, ct: CancellationToken) : Task<'T> =
+    member this.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, inputs: bool, ct: CancellationToken) : Task<'T> =
+        this.ReadFile(file, prepare, read, inputs, None, ct)
+
+    member _.ReadFile(file: string, prepare: TextView -> 'P, read: FileView -> 'P -> 'T, inputs: bool, onUnsettled: (unit -> unit) option, ct: CancellationToken) : Task<'T> =
         let wantsInputs = inputs
         let i = indexOf file
 
@@ -779,12 +784,18 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
         let readable () = readSettled i (fun f version -> (f :?> IReadableFile).Readable version)
 
+        let fireUnsettled () =
+            match onUnsettled with
+            | Some f -> f ()
+            | None -> ()
+
         let view (r: Readable) (inputs: int64[]) (generation: int64) (checks: CancellationToken) =
             { Inputs = inputs
               Generation = generation
               Result = r.Result
               Parse = r.Parsed.Parse
               Text = r.Parsed.Text
+              Docs = r.Parsed.Docs
               Version = r.Parsed.Version
               Before = r.Key.Before
               Identity = r.Identity
@@ -810,8 +821,17 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                     | ValueNone -> r.Result.CheckResults }
 
         let body (flight: CancellationToken) : Task<'T> =
-            match readable () with
-            | ValueNone -> Request.waitForNextTurn flight
+            let readReadable () =
+                try
+                    readable ()
+                with NotReadyException _ ->
+                    fireUnsettled ()
+                    ValueNone
+
+            match readReadable () with
+            | ValueNone ->
+                fireUnsettled ()
+                Request.waitForNextTurn flight
             | ValueSome r ->
                 let hook = afterSettle
                 // In the turn readSettled applied them in: file i's result is of these texts
@@ -822,15 +842,22 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                     task {
                         do! hook ()
                         let v = view r inputs generation flight
-                        let prepared = prepare ({ Parse = v.Parse; Text = v.Text; Version = v.Version }: TextView)
+                        let prepared = prepare ({ Parse = v.Parse; Text = v.Text; Docs = v.Docs; Version = v.Version }: TextView)
 
                         let answer () = ValueSome(read v prepared)
 
                         let inEffect () =
                             host.Read(fun () ->
                                 match (try readable () with NotReadyException _ -> ValueNone) with
-                                | ValueSome a -> obj.ReferenceEquals(a.Identity, r.Identity)
-                                | ValueNone -> false)
+                                | ValueSome a ->
+                                    if obj.ReferenceEquals(a.Identity, r.Identity) then
+                                        true
+                                    else
+                                        fireUnsettled ()
+                                        false
+                                | ValueNone ->
+                                    fireUnsettled ()
+                                    false)
 
                         let! found =
                             match r.Lock with
@@ -839,7 +866,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
 
                         match found with
                         | ValueSome v -> return v
-                        | ValueNone -> return! Request.waitForNextTurn flight
+                        | ValueNone ->
+                            fireUnsettled ()
+                            return! Request.waitForNextTurn flight
                     })
 
         task {
@@ -983,7 +1012,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                     | ValueNone -> false
 
                 Task.FromResult
-                    { View = { Parse = p.Parse; Text = p.Text; Version = p.Version }
+                    { View = { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
                       Settled = settled
                       Published = (files[i] :?> IReadableFile).LastPublished()
                       Busy = busy ()
@@ -1057,7 +1086,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                     if p.Version <> text.Version then
                         ValueNone
                     else
-                        ValueSome(FileNow.Changed({ Parse = p.Parse; Text = p.Text; Version = p.Version }, (files[i] :?> IReadableFile).LastPublished()))
+                        ValueSome(FileNow.Changed({ Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }, (files[i] :?> IReadableFile).LastPublished()))
 
     /// Whether the project has the file
     member _.Holds(file: string) : bool =

@@ -59,6 +59,7 @@ type PublishedState =
       Version: int64
       Text: string
       Parse: FSharpParseFileResults
+      Docs: FileDocs
       /// A whole check's result
       Whole: bool
       /// Each declaration's result (FileView.RowAt's object) with its first and last 1-based line; empty where RowAt

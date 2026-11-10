@@ -396,6 +396,7 @@ module internal WholeFile =
                           Version = r.Parsed.Version
                           Text = r.Parsed.Text
                           Parse = r.Parsed.Parse
+                          Docs = r.Parsed.Docs
                           Whole = r.Lock.IsNone
                           Rows =
                             match r.Declarations with

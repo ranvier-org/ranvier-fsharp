@@ -299,7 +299,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     let mutable loading = 0
     let lifetime = new CancellationTokenSource()
     let mutable onGraphCreated: ProjectGraph -> unit = ignore
-    let mutable onLoaded: ProjectGraph -> unit = ignore
+    let mutable onLoaded: ProjectGraph -> Task = fun _ -> Task.CompletedTask
     let mutable onLoadEndHook: unit -> unit = ignore
     let mutable beforeLoadEnd: unit -> Task = fun () -> Task.CompletedTask
 
@@ -445,7 +445,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 do! notifyWorkspace (Responses.project spec)
 
                 try
-                    onLoaded graph
+                    do! onLoaded graph
                 with ex ->
                     log $"%s{spec.ProjectFile}: publishing after the load failed: %O{ex}"
 
@@ -665,7 +665,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                   yield e.Graph, e.Graph.SetText(path, text) ]
 
     /// Runs `hook` for each graph that has loaded and settled, after its open documents' texts are set.
-    member internal _.OnLoaded(hook: ProjectGraph -> unit) : unit = onLoaded <- hook
+    member internal _.OnLoaded(hook: ProjectGraph -> Task) : unit = onLoaded <- hook
 
     /// Whether a load or reload is under way or queued: the snapshot may lack projects it hides meanwhile
     member _.IsLoading: bool = Volatile.Read &loading > 0

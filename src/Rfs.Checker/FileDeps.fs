@@ -43,6 +43,7 @@ type internal Parsed =
     { Version: int64
       Text: string
       Parse: FSharpParseFileResults
+      Docs: FileDocs
       /// The declarations the parse splits into: set only by a promoted file's declaration nodes, empty otherwise
       Declarations: ParsedDeclaration[]
       /// The text before the first declaration: the file's module or namespace header (the whole text while
@@ -423,15 +424,17 @@ type internal FileText(project: ProjectShared, path: string, initial: string, ve
                     project.ThrowIfSuperseded("parse", ct)
                     project.FlightHook "parse.checked" path ct
                     let parse = project.Measure("parse", fun () -> DeclarationChecker.Parse(ctx, path, t.Text))
+                    let docs = FileDocs.OfParse parse.ParseTree
 
                     { Version = t.Version
                       Text = t.Text
                       Parse = parse
+                      Docs = docs
                       Declarations = [||]
                       Prologue = t.Text })))
 
     // The comments of the latest parse: plain data, which no check reads
-    let docs = createMemoWithComparer HashIdentity.Reference (fun _ -> FileDocs.OfParse parsed.Value.Parse.ParseTree)
+    let docs = createMemoWithComparer HashIdentity.Reference (fun _ -> parsed.Value.Docs)
 
     member _.Path = path
     member _.Text = text

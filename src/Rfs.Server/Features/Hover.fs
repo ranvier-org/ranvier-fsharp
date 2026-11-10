@@ -367,13 +367,6 @@ module Hover =
     let internal compose (commentOf: FSharpDocOwner -> FSharp.Compiler.Xml.XmlDoc voption) (signature: Signature) : ToolTipText =
         fst (composeWithMiss (fun _ -> false) commentOf signature)
 
-    /// The comments of a parse, once per parse: the asking file's docs come from the parse its published result is of,
-    /// as the read gave it, so they need no graph turn
-    let private parsedDocs = ConditionalWeakTable<FSharpParseFileResults, FileDocs>()
-
-    let private docsOfParse (parse: FSharpParseFileResults) =
-        parsedDocs.GetValue(parse, fun p -> FileDocs.OfParse p.ParseTree)
-
     /// Runs between a hover's signature and its docs, with the file. For tests.
     let mutable internal afterSignature: string -> Task = fun _ -> Task.CompletedTask
 
@@ -513,6 +506,7 @@ module Hover =
         (path: string)
         (line: int)
         (character: int)
+        (onUnsettled: (unit -> unit) option)
         (ct: CancellationToken)
         : Task<string option> =
         let rec attempt () =
@@ -533,13 +527,15 @@ module Hover =
                                     | ValueSome(struct (result, first)) -> struct (result, line + 1 - first)
                                     | ValueNone -> struct (view.Identity, line)
 
-                                s, view.Identity, view.Parse, struct (owner, l))),
+                                s, view.Identity, view.Docs, struct (owner, l))),
+                        false,
+                        onUnsettled,
                         ct
                     )
 
                 match signature with
                 | None -> return None
-                | Some(((_, sources) as signature), identity, parse, struct (struct (owner, relative), lookup)) ->
+                | Some(((_, sources) as signature), identity, docsOfAsking, struct (struct (owner, relative), lookup)) ->
                     let held =
                         sources
                         |> List.choose id
@@ -577,7 +573,7 @@ module Hover =
                             docs[file] <- d
 
                         if own then
-                            docs[path] <- docsOfParse parse
+                            docs[path] <- docsOfAsking
 
                         let comments = ResizeArray()
 
@@ -625,7 +621,7 @@ module Hover =
 
     /// Hovers at the position of `path` once the graph has settled on the file's latest text (settledHover).
     let at (owners: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<string option> =
-        settledHover ValueNone owners graph path line character ct
+        settledHover ValueNone owners graph path line character None ct
 
     /// What a hover from the last state found: a refusal, which means wait for the check, or the answer with the place
     /// in the old text it is of
@@ -726,7 +722,7 @@ module Hover =
                                             | ValueNone -> pending <- true
 
                                         // The asking file's are of the published result's parse
-                                        docs[path] <- docsOfParse published.Parse
+                                        docs[path] <- published.Docs
                                         let commentOf = FileDocs.CommentOf(fun file -> match docs.TryGetValue file with | true, d -> ValueSome d | _ -> ValueNone)
 
                                         let same =
@@ -755,36 +751,45 @@ module Hover =
         (character: int)
         (ct: CancellationToken)
         : Task<string option> =
-        task {
-            use cts = CancellationTokenSource.CreateLinkedTokenSource ct
-            let settled = settledHover (ValueSome answers) owners graph path line character cts.Token
-            settled.ContinueWith(fun (t: Task<_>) -> t.Exception |> ignore) |> ignore
+        if not (answers.HasAnswered path) then
+            settledHover (ValueSome answers) owners graph path line character None ct
+        else
+            task {
+                use cts = CancellationTokenSource.CreateLinkedTokenSource ct
+                let lastTcs = TaskCompletionSource<LastAnswer>()
+                let mutable lastStarted = 0
 
-            let last =
-                task {
-                    try
-                        return! fromLastState answers busy graph path line character cts.Token
-                    with
-                    | :? OperationCanceledException -> return LastAnswer.Refused Refusal.NotAnswered
-                    | e ->
-                        // Nothing from the last state: the settled hover answers, or fails, as without it
-                        Diagnostics.Trace.WriteLine $"Rfs.Server: a hover from the last state failed: %O{e}"
-                        return LastAnswer.Refused Refusal.NotAnswered
-                }
+                let startLastState () =
+                    if Interlocked.Exchange(&lastStarted, 1) = 0 then
+                        Task.Run(fun () ->
+                            task {
+                                try
+                                    let! ans = fromLastState answers busy graph path line character cts.Token
+                                    lastTcs.TrySetResult ans |> ignore
+                                with
+                                | :? OperationCanceledException ->
+                                    lastTcs.TrySetResult (LastAnswer.Refused Refusal.NotAnswered) |> ignore
+                                | e ->
+                                    Diagnostics.Trace.WriteLine $"Rfs.Server: a hover from the last state failed: %O{e}"
+                                    lastTcs.TrySetResult (LastAnswer.Refused Refusal.NotAnswered) |> ignore
+                            } :> Task) |> ignore
 
-            let! first = Task.WhenAny(settled :> Task, last :> Task)
+                let settled = settledHover (ValueSome answers) owners graph path line character (Some startLastState) cts.Token
+                settled.ContinueWith(fun (t: Task<_>) -> t.Exception |> ignore) |> ignore
 
-            if not (obj.ReferenceEquals(first, settled)) && not settled.IsCompleted then
-                match last.Result with
-                | LastAnswer.Marked(markdown, _) ->
+                let! first = Task.WhenAny(settled :> Task, lastTcs.Task :> Task)
+
+                if not (obj.ReferenceEquals(first, settled)) && not settled.IsCompleted then
+                    match lastTcs.Task.Result with
+                    | LastAnswer.Marked(markdown, _) ->
+                        cts.Cancel()
+                        return Some markdown
+                    | _ -> return! settled
+                else
+                    let! found = settled
                     cts.Cancel()
-                    return Some markdown
-                | _ -> return! settled
-            else
-                let! found = settled
-                cts.Cancel()
-                return found
-        }
+                    return found
+            }
 
     /// The name of the first `let` or `member` binding near the top of the text, as a hover would ask for it
     let private firstLookup (text: string) : (int * (string * string list * int)) option =
@@ -828,7 +833,7 @@ module Hover =
                                 let! found =
                                     graph.ReadFile(
                                         file,
-                                        (fun text -> firstLookup text.Text, docsOfParse text.Parse),
+                                        (fun text -> firstLookup text.Text, text.Docs),
                                         (fun view (lookup, docs) ->
                                             lookup |> Option.map (fun (line, l) -> partsAt view.Result.CheckResults line l, view.Identity, docs)),
                                         CancellationToken.None
@@ -839,14 +844,10 @@ module Hover =
                                 | Some(parts, identity, docs) ->
                                     format (compose (FileDocs.CommentOf(fun _ -> ValueSome docs)) parts) |> ignore
 
-                                    let others =
-                                        rest
-                                        |> List.filter (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)))
-                                        |> Array.ofList
-                                        |> Array.map (fun f -> graph, f)
-
-                                    if not (Array.isEmpty others) then
-                                        do! graph.DocsInTurn(file, identity, others, CancellationToken.None) :> Task
+                                    match rest |> List.tryFind (fun f -> not (f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))) with
+                                    | None -> ()
+                                    | Some other ->
+                                        do! graph.DocsInTurn(file, identity, [| graph, other |], CancellationToken.None) :> Task
 
                                     done' <- true
                         with ex ->

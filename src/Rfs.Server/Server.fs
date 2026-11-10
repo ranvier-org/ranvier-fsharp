@@ -35,8 +35,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     do
         workspace.OnLoaded(fun graph ->
-            publisher.Loaded graph
-            Hover.warm graph (workspace.FilesOf graph) |> ignore)
+            task {
+                publisher.Loaded graph
+                do! Hover.warm graph (workspace.FilesOf graph)
+            } :> Task)
 
     /// Applies one batch of watched-file changes, off the graph thread; then ends `held`, the loading the batch's
     /// project changes held while they waited (FilesChanged holds it from its start)
