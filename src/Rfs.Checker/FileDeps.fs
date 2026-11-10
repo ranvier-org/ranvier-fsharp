@@ -571,19 +571,23 @@ module internal Setup =
     /// it can still be superseded.
     let runWhileDirectivesCurrent (project: ProjectShared) (ct: CancellationToken) (run: unit -> 'R) : 'R =
         let clock = System.Diagnostics.Stopwatch.StartNew()
+        let mutable result = ValueNone
 
-        let rec attempt () =
+        // A loop, not a retry from the handler: the handler runs before the throw's frames unwind, so each retry
+        // from it would keep the whole refused check's stack
+        while result.IsNone do
             // A superseded flight's check would only queue behind the current one at the file's lock
             ct.ThrowIfCancellationRequested()
 
             try
-                run ()
+                result <- ValueSome(run ())
             with :? SupersededLineDirectivesException when not ct.IsCancellationRequested && clock.Elapsed < DirectiveWait ->
                 project.CountDirectiveRetry()
-                Thread.Sleep 5
-                attempt ()
 
-        attempt ()
+            if result.IsNone then
+                Thread.Sleep 5
+
+        result.Value
 
     /// FS0039 (UndefinedName: every "is not defined"), and a record label not found
     let private unresolvedCodes = set [ 39; 1129 ]

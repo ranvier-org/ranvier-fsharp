@@ -288,4 +288,62 @@ let tests =
               let! diagnostics = s.Graph.AllDiagnostics() |> settle
               let! diff = oracleDiff s diagnostics
               Expect.isEmpty diff "the final state equals a full check"
+          }
+
+          // A retry inside the handler keeps every refused attempt's frames: about 2000 within DirectiveWait overflow
+          test "a refused check is tried again at the same stack depth" {
+              let project = ProjectShared(Unchecked.defaultof<_>)
+              let refusals = 40
+              let depths = ResizeArray<int>()
+
+              let result =
+                  Setup.runWhileDirectivesCurrent project CancellationToken.None (fun () ->
+                      depths.Add(Diagnostics.StackTrace().FrameCount)
+
+                      if depths.Count <= refusals then
+                          raise (SupersededLineDirectivesException "stale directives")
+
+                      depths.Count)
+
+              Expect.equal result (refusals + 1) "answered once the refusals ended"
+              Expect.equal project.DirectiveRetries (int64 refusals) "each refusal counted once"
+              Expect.equal (Seq.max depths) (Seq.min depths) $"every attempt at the first's depth: %A{depths}"
+          }
+
+          test "a check refused past the wait fails with the refusal" {
+              let project = ProjectShared(Unchecked.defaultof<_>)
+              let clock = Diagnostics.Stopwatch.StartNew()
+              let attempts = ref 0
+
+              Expect.throwsT<SupersededLineDirectivesException>
+                  (fun () ->
+                      Setup.runWhileDirectivesCurrent project CancellationToken.None (fun () ->
+                          attempts.Value <- attempts.Value + 1
+                          raise (SupersededLineDirectivesException "stale directives"))
+                      |> ignore)
+                  "the refusal surfaces once the wait is over"
+
+              Expect.isGreaterThanOrEqual clock.Elapsed Setup.DirectiveWait "it waited out DirectiveWait"
+              Expect.equal project.DirectiveRetries (int64 (attempts.Value - 1)) "every attempt but the last counted"
+          }
+
+          test "a cancelled check stops trying" {
+              let project = ProjectShared(Unchecked.defaultof<_>)
+              use cts = new CancellationTokenSource()
+              let attempts = ref 0
+
+              Expect.throwsT<SupersededLineDirectivesException>
+                  (fun () ->
+                      Setup.runWhileDirectivesCurrent project cts.Token (fun () ->
+                          attempts.Value <- attempts.Value + 1
+
+                          if attempts.Value = 3 then
+                              cts.Cancel()
+
+                          raise (SupersededLineDirectivesException "stale directives"))
+                      |> ignore)
+                  "a refusal under a cancelled token is not tried again"
+
+              Expect.equal attempts.Value 3 "no attempt after the cancel"
+              Expect.equal project.DirectiveRetries 2L "two retries before it"
           } ]
