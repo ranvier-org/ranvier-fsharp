@@ -18,6 +18,9 @@
     <Compile Include="Features/Definition.fs" />
     <Compile Include="Features/References.fs" />
     <Compile Include="Features/SemanticTokens.fs" />
+    <Compile Include="Features/Folding.fs" />
+    <Compile Include="Features/SelectionRange.fs" />
+    <Compile Include="Features/DocumentSymbols.fs" />
     <Compile Include="Features/Why.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />

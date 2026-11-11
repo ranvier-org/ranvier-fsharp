@@ -8,6 +8,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+open FSharp.Compiler.Tokenization
 open Ionide.LanguageServerProtocol.Types
 open Newtonsoft.Json.Linq
 open Rfs.Checker
@@ -91,23 +92,59 @@ module Completion =
 
         n
 
-    /// The items at the 0-based line and character of the text, in FSAC's order. Empty inside a string.
-    let itemsOf (check: FSharpCheckFileResults) (parse: FSharpParseFileResults) (text: string) (line: int) (character: int) : DeclarationListItem[] =
+    let private keywordItems: CompletionItem[] =
+        FSharpKeywords.KeywordsWithDescription
+        |> List.distinctBy fst
+        |> List.mapi (fun id (kw, desc) ->
+            { CompletionItem.Create kw with
+                Data = None
+                Kind = Some CompletionItemKind.Keyword
+                Detail = Some kw
+                Documentation = Some(U2.C2 { Kind = MarkupKind.Markdown; Value = desc })
+                InsertText = Some kw
+                SortText = Some(sprintf "1000000%d" id)
+                FilterText = Some kw })
+        |> List.toArray
+
+    let private itemsAndShouldKeywords
+        (check: FSharpCheckFileResults)
+        (parse: FSharpParseFileResults)
+        (text: string)
+        (line: int)
+        (character: int)
+        : DeclarationListItem[] * bool =
         let lines = text.Split '\n'
 
         if line < 0 || line >= lines.Length then
-            [||]
+            [||], false
         else
             let lineStr = lines[line].TrimEnd '\r'
             let pos = Position.mkPos (line + 1) character
 
             if inString pos parse.ParseTree then
-                [||]
+                [||], false
             else
                 let longName = QuickParse.GetPartialLongNameEx(lineStr, character - 1)
                 let context = ParsedInput.TryGetCompletionContext(pos, parse.ParseTree, lineStr)
                 let found = check.GetDeclarationListInfo(Some parse, pos.Line, lineStr, longName, completionContextAtPos = (pos, context))
-                Array.sortWith order found.Items
+                let sorted = Array.sortWith order found.Items
+                let beforePartialIdx = character - longName.PartialIdent.Length - 1
+
+                let isAfterDot =
+                    not (List.isEmpty longName.QualifyingIdents)
+                    || (beforePartialIdx >= 0 && beforePartialIdx < lineStr.Length && lineStr[beforePartialIdx] = '.')
+
+                let shouldKeywords =
+                    sorted.Length > 0
+                    && not found.IsForType
+                    && not found.IsError
+                    && not isAfterDot
+
+                sorted, shouldKeywords
+
+    /// The items at the 0-based line and character of the text, in FSAC's order. Empty inside a string.
+    let itemsOf (check: FSharpCheckFileResults) (parse: FSharpParseFileResults) (text: string) (line: int) (character: int) : DeclarationListItem[] =
+        itemsAndShouldKeywords check parse text line character |> fst
 
     /// The column a list at the 0-based character reads its names from (FSharpCheckerResults' `loc`), which is what picks
     /// the row that answers: at a row's start, the one before it.
@@ -149,9 +186,12 @@ module Completion =
 
         result.Value.Value
 
+    let private itemsAndKeywordsAt (view: FileView) (line: int) (character: int) =
+        itemsAndShouldKeywords (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
+
     /// The items at the 0-based line and character of the read's text, through FileView.CheckResultsAt.
     let itemsAt (view: FileView) (line: int) (character: int) =
-        itemsOf (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
+        itemsAndKeywordsAt view line character |> fst
 
     /// What an item carries for its resolve.
     let dataOf (path: string) (line: int) (character: int) : JToken =
@@ -165,20 +205,37 @@ module Completion =
             SortText = Some(sprintf "%06d" id)
             FilterText = Some d.NameInList }
 
+    /// Completion items at the position of `path`, optionally appending F# keywords when `keywordsAutocomplete` is enabled
+    /// and the cursor is in a non-dot, non-type, non-string expression context.
+    let atWithKeywords
+        (keywordsAutocomplete: bool)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<CompletionItem[]> =
+        task {
+            let! declItems, shouldKeywords =
+                graph.ReadFile(
+                    path,
+                    (fun view -> onLargeStack (fun () -> itemsAndKeywordsAt view line character)),
+                    ct
+                )
+
+            let mapped = declItems |> Array.mapi (itemOf path line character)
+
+            if keywordsAutocomplete && shouldKeywords then
+                return Array.append mapped keywordItems
+            else
+                return mapped
+        }
+
     /// The list at the position of `path`, once the graph has settled on the file's latest text: a request node
     /// (ProjectGraph.ReadFile), run again on a new text. The lookup holds off the file's checks; a kept row may be
     /// checked again in it (FileView.CheckResultsAt). The items carry their names: reading them reads no typed tree.
     let at (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<CompletionItem[]> =
-        task {
-            let! items =
-                graph.ReadFile(
-                    path,
-                    (fun view -> onLargeStack (fun () -> itemsAt view line character)),
-                    ct
-                )
-
-            return items |> Array.mapi (itemOf path line character)
-        }
+        atWithKeywords false graph path line character ct
 
     /// Where an item came from, when it says.
     let positionOf (item: CompletionItem) : (string * int * int) option =

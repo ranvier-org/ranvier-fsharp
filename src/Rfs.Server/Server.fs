@@ -370,9 +370,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         HoverProvider = Some(U2.C1 true)
                         DefinitionProvider = Some(U2.C1 true)
                         ReferencesProvider = Some(U2.C1 true)
+                        DocumentSymbolProvider = Some(U2.C1 true)
+                        FoldingRangeProvider = Some(U3.C1 true)
+                        SelectionRangeProvider = Some(U3.C1 true)
                         CompletionProvider =
                             Some
-                                { TriggerCharacters = Some [| "."; "'" |]
+                                { TriggerCharacters = Some [| "."; "'"; "{" |]
                                   AllCommitCharacters = None
                                   ResolveProvider = Some true
                                   CompletionItem = None
@@ -511,7 +514,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentCompletion(p: CompletionParams) =
             reading "completion" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
-                    let! items = Completion.at graph path (int p.Position.Line) (int p.Position.Character) ct
+                    let kwEnabled = (Volatile.Read &config).KeywordsAutocomplete
+
+                    let! items =
+                        Completion.atWithKeywords
+                            kwEnabled
+                            graph
+                            path
+                            (int p.Position.Line)
+                            (int p.Position.Character)
+                            ct
 
                     return
                         Some(
@@ -550,8 +562,11 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentDocumentColor(_) = notImplemented
         member _.TextDocumentDocumentHighlight(_) = notImplemented
         member _.TextDocumentDocumentLink(_) = notImplemented
-        member _.TextDocumentDocumentSymbol(_) = notImplemented
-        member _.TextDocumentFoldingRange(_) = notImplemented
+        member _.TextDocumentDocumentSymbol(p: DocumentSymbolParams) =
+            readingAny "documentSymbol" None (fun () -> Paths.ofUri p.TextDocument.Uri) DocumentSymbols.hierarchical
+
+        member _.TextDocumentFoldingRange(p: FoldingRangeParams) =
+            readingAny "foldingRange" None (fun () -> Paths.ofUri p.TextDocument.Uri) Folding.ranges
         member _.TextDocumentFormatting(_) = notImplemented
         member _.TextDocumentHover(p: HoverParams) =
             reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
@@ -621,7 +636,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 | _ -> return answer |> Result.bind id
             }
         member _.TextDocumentRename(_) = notImplemented
-        member _.TextDocumentSelectionRange(_) = notImplemented
+        member _.TextDocumentSelectionRange(p: SelectionRangeParams) =
+            readingAny "selectionRange" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                SelectionRange.atPositions graph path p.Positions ct)
         member _.TextDocumentSemanticTokensFull(p: SemanticTokensParams) =
             readingAny "semanticTokens/full" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 SemanticTokens.full tokenCache graph path ct)
@@ -739,6 +756,9 @@ module Server =
               "textDocument/references"
               "textDocument/completion"
               "completionItem/resolve"
+              "textDocument/documentSymbol"
+              "textDocument/foldingRange"
+              "textDocument/selectionRange"
               "textDocument/semanticTokens/full"
               "textDocument/semanticTokens/full/delta"
               "textDocument/semanticTokens/range" ]
