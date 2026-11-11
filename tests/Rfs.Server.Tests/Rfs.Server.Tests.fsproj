@@ -27,6 +27,7 @@
     <Compile Include="LastStateUsesGridTests.fs" />
     <Compile Include="WhyTests.fs" />
     <Compile Include="RequestFeatureTests.fs" />
+    <Compile Include="SemanticTokensAndConfigTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

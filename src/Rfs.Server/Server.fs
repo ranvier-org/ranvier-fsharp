@@ -86,12 +86,39 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             |> ignore
 
     let mutable rootPath: string option = None
+    let configGate = obj ()
+    let mutable config = FSharpConfig.Default
+    let tokenCache = SemanticTokens.TokenDeltaCache()
     let mutable automaticInit = false
     let mutable peekDepth = 2
     let mutable excludedDirs: string list = [ ".git"; "node_modules"; ".ionide" ]
+    let mutable canPullConfiguration = false
     let mutable canRegisterWatchers = false
     let mutable canShowProgress = false
     let mutable progress: Progress option = None
+
+    let updateConfig (token: JToken) =
+        lock configGate (fun () ->
+            let updated = FSharpConfig.UpdateFromJson (Volatile.Read &config) token
+            Volatile.Write(&config, updated)
+            automaticInit <- updated.AutomaticWorkspaceInit
+            peekDepth <- updated.WorkspaceModePeekDeepLevel
+            excludedDirs <- updated.ExcludeProjectDirectories)
+
+    let pullConfiguration () =
+        async {
+            if canPullConfiguration then
+                try
+                    let req: ConfigurationParams =
+                        { Items = [| { ScopeUri = None; Section = Some "FSharp" } |] }
+
+                    match! (client :> ILspClient).WorkspaceConfiguration req with
+                    | Ok items when not (isNull items) && items.Length > 0 ->
+                        updateConfig items[0]
+                    | _ -> ()
+                with ex ->
+                    eprintfn "[ranvierautocomplete] workspace/configuration failed: %O" ex
+        }
 
     let dispose () =
         if Threading.Interlocked.Exchange(&disposed, 1) = 0 then
@@ -119,7 +146,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     /// the library cancels the async itself. The edits before the request may still be queued; its answer is for the text
     /// they leave.
 
-    let reading (what: string) (none: 'T) (path: unit -> string) (run: ProjectGraph -> string -> CancellationToken -> Task<'T>) : Async<LspResult<'T>> =
+    let readingCore
+        (allowSignature: bool)
+        (what: string)
+        (none: 'T)
+        (path: unit -> string)
+        (run: ProjectGraph -> string -> CancellationToken -> Task<'T>)
+        : Async<LspResult<'T>> =
         async {
             let! ct = Async.CancellationToken
 
@@ -127,7 +160,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
                 let path = path ()
 
-                match (if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then [] else workspace.OwnersOf path) with
+                let owners =
+                    if not allowSignature && path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                        []
+                    else
+                        workspace.OwnersOf path
+
+                match owners with
                 | [] -> return Ok none
                 | graph :: _ ->
                     let! answer = run graph path ct |> Async.AwaitTask
@@ -147,6 +186,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     eprintfn "[ranvierautocomplete] %s failed: %O" what e
                     return internalError e.Message
         }
+
+    let reading what none path run = readingCore false what none path run
+    let readingAny what none path run = readingCore true what none path run
 
     /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
     let automaticLoad (root: string) =
@@ -209,6 +251,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         with set (delay: TimeSpan) = watchDelay <- delay
 
     member _.Client = client
+    member _.Config: FSharpConfig = Volatile.Read &config
     member _.Host = host
     member _.Workspace = workspace
     member internal _.Documents = documents
@@ -297,19 +340,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     | None -> p.RootPath |> Option.map Path.GetFullPath
 
                 match p.InitializationOptions with
-                | Some options when options.HasValues ->
-                    match options["AutomaticWorkspaceInit"] with
-                    | null -> ()
-                    | v -> automaticInit <- v.ToObject<bool>()
+                | Some options -> updateConfig options
+                | None -> ()
 
-                    match options["WorkspaceModePeekDeepLevel"] with
-                    | null -> ()
-                    | v -> peekDepth <- v.ToObject<int>()
-
-                    match options["ExcludeProjectDirectories"] with
-                    | null -> ()
-                    | v -> excludedDirs <- [ for d in v -> d.ToObject<string>() ]
-                | _ -> ()
+                canPullConfiguration <-
+                    p.Capabilities.Workspace
+                    |> Option.bind _.Configuration
+                    |> Option.defaultValue false
 
                 canRegisterWatchers <-
                     p.Capabilities.Workspace
@@ -339,7 +376,15 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                   AllCommitCharacters = None
                                   ResolveProvider = Some true
                                   CompletionItem = None
-                                  WorkDoneProgress = None } }
+                                  WorkDoneProgress = None }
+                        SemanticTokensProvider =
+                            Some(
+                                U2.C1
+                                    { Legend = SemanticTokens.legend
+                                      Range = Some(U2.C1 true)
+                                      Full = Some(U2.C2 { Delta = Some true })
+                                      WorkDoneProgress = Some false }
+                            ) }
 
                 return
                     Ok
@@ -353,6 +398,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     progress <- Some(new Progress(host, workspace, publisher, client, this.ProgressBeginHold))
 
                 registerWatchers ()
+                pullConfiguration () |> Async.Start
 
                 match rootPath, automaticInit with
                 | Some root, true ->
@@ -404,14 +450,26 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.TextDocumentDidClose(p: DidCloseTextDocumentParams) =
             try
-                publisher.Close(Paths.ofUri p.TextDocument.Uri)
+                let path = Paths.ofUri p.TextDocument.Uri
+                tokenCache.Remove path
+                publisher.Close path
             with ex ->
                 eprintfn "[ranvierautocomplete] didClose failed: %O" ex
 
             ignoreNotification
 
         member _.TextDocumentDidSave(_) = ignoreNotification
-        member _.WorkspaceDidChangeConfiguration(_) = ignoreNotification
+
+        member _.WorkspaceDidChangeConfiguration(p: DidChangeConfigurationParams) =
+            try
+                if not (isNull (box p)) && not (isNull p.Settings) then
+                    updateConfig p.Settings
+
+                pullConfiguration () |> Async.Start
+            with ex ->
+                eprintfn "[ranvierautocomplete] didChangeConfiguration failed: %O" ex
+
+            ignoreNotification
         member _.WorkspaceDidChangeWatchedFiles(p: DidChangeWatchedFilesParams) =
             async {
                 try
@@ -560,9 +618,17 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             }
         member _.TextDocumentRename(_) = notImplemented
         member _.TextDocumentSelectionRange(_) = notImplemented
-        member _.TextDocumentSemanticTokensFull(_) = notImplemented
-        member _.TextDocumentSemanticTokensFullDelta(_) = notImplemented
-        member _.TextDocumentSemanticTokensRange(_) = notImplemented
+        member _.TextDocumentSemanticTokensFull(p: SemanticTokensParams) =
+            readingAny "semanticTokens/full" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                SemanticTokens.full tokenCache graph path ct)
+
+        member _.TextDocumentSemanticTokensFullDelta(p: SemanticTokensDeltaParams) =
+            readingAny "semanticTokens/full/delta" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                SemanticTokens.fullDelta tokenCache graph path p.PreviousResultId ct)
+
+        member _.TextDocumentSemanticTokensRange(p: SemanticTokensRangeParams) =
+            readingAny "semanticTokens/range" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                SemanticTokens.range graph path p.Range ct)
         member _.TextDocumentSignatureHelp(_) = notImplemented
         member _.TextDocumentTypeDefinition(_) = notImplemented
         member _.TextDocumentWillSave(_) = ignoreNotification
@@ -668,7 +734,10 @@ module Server =
               "textDocument/definition"
               "textDocument/references"
               "textDocument/completion"
-              "completionItem/resolve" ]
+              "completionItem/resolve"
+              "textDocument/semanticTokens/full"
+              "textDocument/semanticTokens/full/delta"
+              "textDocument/semanticTokens/range" ]
 
     let private handlings () =
         defaultRequestHandlings ()

@@ -18,6 +18,9 @@ type RanvierClient(sendServerNotification: ClientNotificationSender, sendServerR
     override _.ClientRegisterCapability(p: RegistrationParams) =
         sendServerRequest.Send "client/registerCapability" (box p)
 
+    override _.WorkspaceConfiguration(p: ConfigurationParams) =
+        sendServerRequest.Send "workspace/configuration" (box p)
+
     /// `window/workDoneProgress/create` for `token`
     member _.CreateProgress(token: string) : Async<Result<unit, JsonRpc.Error>> =
         sendServerRequest.Send "window/workDoneProgress/create" (box (Newtonsoft.Json.Linq.JObject(Newtonsoft.Json.Linq.JProperty("token", token))))
