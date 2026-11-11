@@ -538,7 +538,6 @@ module SignatureHelp =
                                         |> Array.tryFind (fun item -> item.MainDescription.Text = o.Label)
                                         |> Option.orElseWith (fun () ->
                                             if composedItems.Length = raw.Overloads.Length then Some composedItems[idx]
-                                            elif composedItems.Length = 1 then Some composedItems[0]
                                             else None)
                                         |> Option.bind (fun item -> Hover.docText item.XmlDoc)
                                         |> Option.orElse o.FallbackDoc

@@ -31,6 +31,7 @@ module Declaration =
         (check: FSharpCheckFileResults)
         (line: int)
         (lineStr: string, names: string list, endColumn: int)
+        (ct: CancellationToken)
         : FoundDecl =
         match check.GetDeclarationLocation(line + 1, endColumn, lineStr, names, preferFlag = true) with
         | FindDeclResult.DeclFound range when not (range.FileName.EndsWith(Range.rangeStartup.FileName, StringComparison.Ordinal)) ->
@@ -38,7 +39,7 @@ module Declaration =
             | Some u when (u.Symbol :? FSharpParameter) -> DeclNowhere
             | Some u when (match u.Symbol with :? FSharpEntity as e -> e.IsNamespace | _ -> false) ->
                 let isHeader =
-                    check.GetAllUsesOfAllSymbolsInFile()
+                    check.GetAllUsesOfAllSymbolsInFile ct
                     |> Seq.exists (fun d ->
                         d.IsFromDefinition
                         && d.Range.EndLine = line + 1
@@ -48,7 +49,7 @@ module Declaration =
                 match DeclarationChecker.SymbolKey u.Symbol with
                 | Some key when isHeader ->
                     let signature =
-                        check.GetAllUsesOfAllSymbolsInFile()
+                        check.GetAllUsesOfAllSymbolsInFile ct
                         |> Seq.tryPick (fun d ->
                             match d.IsFromDefinition, d.Symbol.SignatureLocation with
                             | true, Some r when r.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) -> Some r.FileName
@@ -65,7 +66,7 @@ module Declaration =
                         |> Option.map _.FileName
                         |> Option.orElseWith (fun () ->
                             if String.Equals(Path.GetFullPath range.FileName, Path.GetFullPath u.FileName, StringComparison.OrdinalIgnoreCase) then
-                                check.GetAllUsesOfAllSymbolsInFile()
+                                check.GetAllUsesOfAllSymbolsInFile ct
                                 |> Seq.tryPick (fun d ->
                                     match d.IsFromDefinition, d.Symbol.SignatureLocation with
                                     | true, Some r when r.FileName.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) -> Some r.FileName
@@ -152,7 +153,7 @@ module Declaration =
                         (fun view -> Hover.lookupOf view.Text line character),
                         (fun view lookup ->
                             match lookup with
-                            | Some l -> findInFs view.Result.CheckResults line l
+                            | Some l -> findInFs view.Result.CheckResults line l ct
                             | None -> DeclNowhere),
                         ct
                     )

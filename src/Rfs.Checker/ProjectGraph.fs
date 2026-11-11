@@ -1425,7 +1425,9 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 ValueNone
 
         let answer () : FSharp.Compiler.Text.range option voption =
-            if holds implementation && not (isSignatureFile files[indexOf implementation]) then
+            let current = currentFiles ()
+
+            if holds implementation && not (isSignatureFile current[indexOf implementation]) then
                 readImpl implementation
             elif holds signatureFile then
                 let sigIndex = indexOf signatureFile
@@ -1433,8 +1435,8 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 let mutable found: FSharp.Compiler.Text.range option = None
                 let mutable idx = sigIndex + 1
 
-                while not pending && found.IsNone && idx < files.Length do
-                    if not (isSignatureFile files[idx]) then
+                while not pending && found.IsNone && idx < current.Length do
+                    if not (isSignatureFile current[idx]) then
                         try
                             match readSettled idx (fun f version -> (f :?> IReadableFile).Uses version) with
                             | ValueNone -> pending <- true
