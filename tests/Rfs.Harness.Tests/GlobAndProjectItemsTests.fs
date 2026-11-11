@@ -185,6 +185,21 @@ let globUnitTests =
 
               let docBItem = evaluated |> List.find (fun i -> i.FullPath = docB)
               Expect.equal docBItem.RecursiveDir "api/" "RecursiveDir preserved on wildcard item"
+          }
+
+          test "does not prune baseDir itself when baseDir matches **/.*/** (e.g. .build), while still pruning .build/.git" {
+              use tmp = makeTempRoot ()
+              let dotBuild = Path.Combine(tmp.Dir, ".build")
+              let notesMd = Path.GetFullPath(Path.Combine(dotBuild, "notes.md"))
+              let gitConfig = Path.GetFullPath(Path.Combine(dotBuild, ".git", "config"))
+              writeText notesMd "# Build Notes\n"
+              writeText gitConfig "[core]\n"
+
+              let found =
+                  Glob.expandDisk false dotBuild "**/*" (Some "**/.*/**")
+                  |> List.map fst
+
+              Expect.equal found [ notesMd ] ".build/notes.md is discovered while .build/.git/config is pruned"
           } ]
 
 [<Tests>]
@@ -356,4 +371,75 @@ let projectSpecItemTests =
               File.Delete addedOffline
               let! afterDelete = ProjectSpec.load fsproj
               Expect.isFalse (afterDelete.Items |> List.exists (fun i -> i.FilePath = addedOffline)) "offline file deletion invalidates cached Items automatically"
+          }
+
+          testTask "re-including a removed None item places it after intervening Compile, preserves %3B/%3b across MSBuild expansion, and invalidates offline files under imported Content globs" {
+              use tmp = makeTempRoot ()
+              let root = tmp.Dir
+              File.Copy(Path.Combine(findRepoRoot (), "global.json"), Path.Combine(root, "global.json"))
+
+              // Imported Directory.Build.props contributing an SDK-style wildcard Content glob (e.g. wwwroot/**)
+              writeText
+                  (Path.Combine(root, "Directory.Build.props"))
+                  """<Project>
+  <ItemGroup>
+    <Content Include="wwwroot/**" />
+  </ItemGroup>
+</Project>"""
+
+              let projDir = Path.Combine(root, "ReInc")
+              Directory.CreateDirectory projDir |> ignore
+              let p (rel: string) = Path.GetFullPath(Path.Combine(projDir, rel.Replace('/', Path.DirectorySeparatorChar)))
+
+              writeText (p "a.txt") "alpha"
+              writeText (p "Domain.fs") "module Domain\nlet v = 1\n"
+              writeText (p "semi;1.txt") "s1"
+              writeText (p "semi;2.txt") "s2"
+              writeText (p "normal.txt") "norm"
+              writeText (p "wwwroot/index.html") "<html></html>"
+
+              let fsproj = p "ReInc.fsproj"
+
+              writeText
+                  fsproj
+                  $"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="9.0.100" ExcludeAssets="all" />
+    <Reference Include="FSharp.Core">
+      <HintPath>{Environment.GetEnvironmentVariable "RFS_TEST_FCS_DIR" |> Option.ofObj |> Option.defaultValue @"C:\Users\shaya\RiderProjects\fickle-fsharp-i1\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\"}FSharp.Core.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="a.txt" />
+    <Compile Include="Domain.fs" />
+    <None Remove="a.txt" />
+    <None Include="a.txt" />
+    <None Include="semi%%3B1.txt; semi%%3b2.txt; normal.txt" />
+  </ItemGroup>
+</Project>"""
+
+              let! spec = ProjectSpec.load fsproj
+
+              Expect.equal
+                  (spec.Items |> List.map (fun i -> i.Kind, i.FilePath))
+                  [ ProjectItemKind.Compile, p "Domain.fs"
+                    ProjectItemKind.NoneItem, p "a.txt"
+                    ProjectItemKind.NoneItem, p "semi;1.txt"
+                    ProjectItemKind.NoneItem, p "semi;2.txt"
+                    ProjectItemKind.NoneItem, p "normal.txt"
+                    ProjectItemKind.Content, p "wwwroot/index.html" ]
+                  "Remove purges earlier slot2Timeline entry so re-Include follows Domain.fs, and %3B/%3b survive MSBuild expansion"
+
+              // Add a new file offline under imported wwwroot/** Content glob without touching fsproj or Directory.Build.props
+              let addedWeb = p "wwwroot/app.js"
+              writeText addedWeb "console.log(1);"
+              let! reloaded = ProjectSpec.load fsproj
+
+              Expect.isTrue
+                  (reloaded.Items |> List.exists (fun i -> i.Kind = ProjectItemKind.Content && i.FilePath = addedWeb && i.VirtualPath = "wwwroot/app.js"))
+                  "Offline file creation under imported Content glob (wwwroot/**) invalidates GlobHash and updates Items"
           } ]

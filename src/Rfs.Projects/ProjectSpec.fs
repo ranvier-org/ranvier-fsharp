@@ -581,14 +581,22 @@ module ProjectSpec =
               | assets -> assets ]
 
         let metaEscape = "\u001F_RFS_ITEM_META_("
+        let semiEscape = "\u001F_RFS_ESC_SEMI_"
 
         let expandExpr (raw: string) : string =
             if String.IsNullOrEmpty raw then
                 ""
             else
-                let protectedStr = raw.Replace("%(", metaEscape, StringComparison.Ordinal)
+                let protectedStr =
+                    raw
+                        .Replace("%(", metaEscape, StringComparison.Ordinal)
+                        .Replace("%3B", semiEscape, StringComparison.OrdinalIgnoreCase)
+
                 let expanded = project.ExpandString protectedStr
-                expanded.Replace(metaEscape, "%(", StringComparison.Ordinal)
+
+                expanded
+                    .Replace(metaEscape, "%(", StringComparison.Ordinal)
+                    .Replace(semiEscape, "%3B", StringComparison.Ordinal)
 
         let caseSensitive = Glob.defaultCaseSensitive ()
         let comparer = if caseSensitive then StringComparer.Ordinal else StringComparer.OrdinalIgnoreCase
@@ -702,21 +710,28 @@ module ProjectSpec =
                 |> List.filter (String.IsNullOrWhiteSpace >> not)
             )
 
+        let hasWildcard (s: string) =
+            not (String.IsNullOrEmpty s) && s.IndexOfAny([| '*'; '?' |]) >= 0
+
         let mutable contentList: Glob.EvaluatedItem list =
             if enableDefaultContent then
                 let seenImp = HashSet<string>(comparer)
 
                 [ for pi in project.GetItems "Content" do
-                      if pi.IsImported && not (String.IsNullOrWhiteSpace pi.EvaluatedInclude) then
-                          let full = Path.GetFullPath(Path.Combine(projectDir, pi.EvaluatedInclude))
+                      if pi.IsImported then
+                          if not (isNull pi.Xml) && hasWildcard pi.Xml.Include then
+                              addProbe projectDir (expandExpr pi.Xml.Include) (expandExpr pi.Xml.Exclude)
 
-                          if File.Exists full && seenImp.Add full then
-                              addProbe projectDir pi.EvaluatedInclude ""
+                          if not (String.IsNullOrWhiteSpace pi.EvaluatedInclude) then
+                              let full = Path.GetFullPath(Path.Combine(projectDir, pi.EvaluatedInclude))
 
-                              yield
-                                  { Glob.FullPath = full
-                                    Glob.RecursiveDir = pi.GetMetadataValue "RecursiveDir"
-                                    Glob.Metadata = [ for m in pi.DirectMetadata -> m.Name, m.EvaluatedValue ] } ]
+                              if File.Exists full && seenImp.Add full then
+                                  addProbe projectDir pi.EvaluatedInclude ""
+
+                                  yield
+                                      { Glob.FullPath = full
+                                        Glob.RecursiveDir = pi.GetMetadataValue "RecursiveDir"
+                                        Glob.Metadata = [ for m in pi.DirectMetadata -> m.Name, m.EvaluatedValue ] } ]
             else
                 []
 
@@ -754,6 +769,9 @@ module ProjectSpec =
                 StringComparer.OrdinalIgnoreCase
             )
 
+        let expandMeta (raw: string) : string =
+            (expandExpr raw).Replace("%3B", ";", StringComparison.OrdinalIgnoreCase)
+
         let readMetadata (el: XElement) : (string * string) list =
             let mutable meta: (string * string) list = []
 
@@ -761,22 +779,20 @@ module ProjectSpec =
                 let name = attr.Name.LocalName
 
                 if not (reservedAttrs.Contains name) then
-                    meta <- Glob.mergeMetadata meta [ name, expandExpr attr.Value ]
+                    meta <- Glob.mergeMetadata meta [ name, expandMeta attr.Value ]
 
             for child in el.Elements() do
                 let condAttr = child.Attribute(XName.Get "Condition")
                 let condStr = if isNull condAttr then "" else condAttr.Value
 
                 if evalCond condStr then
-                    meta <- Glob.mergeMetadata meta [ child.Name.LocalName, expandExpr child.Value ]
+                    meta <- Glob.mergeMetadata meta [ child.Name.LocalName, expandMeta child.Value ]
 
             meta
 
         let getAttr (name: string) (el: XElement) : string =
             let a = el.Attribute(XName.Get name)
             if isNull a then "" else expandExpr a.Value
-
-        let hasWildcard (s: string) = s.IndexOfAny([| '*'; '?' |]) >= 0
 
         let applyNonCompileElement (kind: ProjectItemKind) (el: XElement) =
             let inc = getAttr "Include" el
@@ -806,6 +822,13 @@ module ProjectSpec =
                 let surviving = HashSet<string>(next |> List.map _.FullPath, comparer)
 
                 explicitSet.RemoveWhere(fun p -> not (surviving.Contains p)) |> ignore
+
+                slot2Timeline.RemoveAll(fun entry ->
+                    match entry with
+                    | Choice2Of2(k, p) -> k = kind && not (surviving.Contains p)
+                    | Choice1Of2 _ -> false)
+                |> ignore
+
                 setList next
 
             if not (String.IsNullOrWhiteSpace inc) then

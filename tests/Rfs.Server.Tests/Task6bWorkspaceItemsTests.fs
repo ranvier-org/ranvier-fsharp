@@ -89,6 +89,18 @@ let slnxAndWorkspaceItemsTests =
               Expect.equal (items |> List.map _.Name) [ "src"; "tests" ] "Folder Names are leaf segments ('src', 'tests'), never '/src/'"
               Expect.isTrue (items |> List.forall (fun i -> i.Guid <> Guid.Empty)) "Every folder has a non-empty GUID"
 
+              let rfc4122v5 = Text.RegularExpressions.Regex("^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+              for folder in items do
+                  let gs = folder.Guid.ToString("D")
+                  Expect.isTrue (rfc4122v5.IsMatch gs) $"Synthesized folder GUID '{gs}' formats as RFC 4122 v5"
+                  match folder.Kind with
+                  | InspectSln.SolutionItemKind.Folder(children, _) ->
+                      for child in children do
+                          let cs = child.Guid.ToString("D")
+                          Expect.isTrue (rfc4122v5.IsMatch cs) $"Synthesized project GUID '{cs}' formats as RFC 4122 v5"
+                  | _ -> ()
+
               // Repeated parse produces identical deterministic GUIDs
               match WorkspacePeek.tryParseSlnx slnxPath with
               | Error e -> failtest $"tryParseSlnx failed: {e}"

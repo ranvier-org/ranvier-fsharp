@@ -277,18 +277,21 @@ module Glob =
             | WildcardPath(exRoot, exSegs, _, _) ->
                 let exRootSlash = (toSlash exRoot).TrimEnd('/')
 
-                let insideExRoot =
-                    String.Equals(dirSlash, exRootSlash, cmp)
-                    || (dirSlash.Length > exRootSlash.Length + 1
-                        && dirSlash.StartsWith(exRootSlash, cmp)
-                        && dirSlash[exRootSlash.Length] = '/')
+                let strictlyInsideExRoot =
+                    dirSlash.Length > exRootSlash.Length + 1
+                    && dirSlash.StartsWith(exRootSlash, cmp)
+                    && dirSlash[exRootSlash.Length] = '/'
 
-                if not insideExRoot then
+                let atOrInsideExRoot =
+                    String.Equals(dirSlash, exRootSlash, cmp) || strictlyInsideExRoot
+
+                if not atOrInsideExRoot then
                     false
                 elif exSegs.Length = 2 && exSegs[0] = "**" && exSegs[1] = "*" then
                     true
                 elif
-                    exSegs.Length = 4
+                    strictlyInsideExRoot
+                    && exSegs.Length = 4
                     && exSegs[0] = "**"
                     && exSegs[2] = "**"
                     && exSegs[3] = "*"

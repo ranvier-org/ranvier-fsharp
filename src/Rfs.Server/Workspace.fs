@@ -39,11 +39,10 @@ module WorkspacePeek =
     let private skipped = set [ "obj"; "bin" ]
 
     let private synthesizeSlnxGuid (seed: string) : Guid =
-        let hash = SHA256.HashData(Encoding.UTF8.GetBytes seed)
-        let bytes = Array.sub hash 0 16
+        let bytes = SHA256.HashData(Encoding.UTF8.GetBytes seed)
         bytes[6] <- (bytes[6] &&& 0x0Fuy) ||| 0x50uy
         bytes[8] <- (bytes[8] &&& 0x3Fuy) ||| 0x80uy
-        Guid bytes
+        Guid(ReadOnlySpan<byte>(bytes, 0, 16), true)
 
     type private SlnxFolderNode =
         { LeafName: string
