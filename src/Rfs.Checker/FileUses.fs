@@ -220,6 +220,35 @@ type FileUses
         for KeyValue(k, u) in byKey do
             keyed <- keyed + entry + text k + 32L + int64 u.Hits.Length * (rangeBytes + 8L) + 24L + int64 u.Definitions.Length * rangeBytes + 24L
 
+        for KeyValue(k, impls) in implementations do
+            keyed <- keyed + entry + text k + 24L + int64 impls.Length * rangeBytes
+
+        for KeyValue(k, t) in typesByKey do
+            keyed <-
+                keyed
+                + entry
+                + text k
+                + (if isNull t.Key then 0L else text t.Key)
+                + (if isNull t.Name then 0L else text t.Name)
+                + 4L
+                + 2L * rangeBytes
+                + 24L
+                + (t.SuperKeys |> Array.sumBy (fun s -> 8L + (if isNull s then 0L else text s)))
+
+        let subtypeSlotBytes = 8L + 8L + 4L + 2L * rangeBytes + 8L
+
+        for KeyValue(k, subs) in subtypesBySuper do
+            keyed <- keyed + entry + text k + 24L + int64 subs.Length * subtypeSlotBytes
+
+        let callableSlotBytes = 8L + 8L + 4L + 2L * rangeBytes
+        keyed <- keyed + 24L + int64 callables.Length * callableSlotBytes
+
+        for c in callables do
+            keyed <-
+                keyed
+                + (if isNull c.Key then 0L else text c.Key)
+                + (if isNull c.Name then 0L else text c.Name)
+
         let mutable raw = 0L
 
         for d in [ definitions; conforming ] do
@@ -515,9 +544,15 @@ module private AstIndex =
 
             match implicitCtor, info with
             | Some(SynMemberDefn.ImplicitCtor(range = ctorRange)), SynComponentInfo(synType = Some ty) when not isAugmentation ->
-                match List.tryLast (typeHeadIdents ty) with
-                | Some id -> callableRanges[rangeKey id.idRange] <- Range.unionRanges id.idRange ctorRange
-                | None -> ()
+                let span =
+                    match List.tryLast (typeHeadIdents ty) with
+                    | Some id ->
+                        let s = Range.unionRanges id.idRange fullRange
+                        callableRanges[rangeKey id.idRange] <- s
+                        s
+                    | None -> fullRange
+
+                callableRanges[rangeKey ctorRange] <- span
             | _ -> ()
 
             match repr with
@@ -763,7 +798,43 @@ module SymbolUses =
 
         acc |> Seq.distinct |> Seq.toArray
 
+    let private ancestorSuperKeysOf (includeSelf: bool) (e: FSharpEntity) : string[] =
+        let acc = ResizeArray<string>()
+        let visited = HashSet<string>(StringComparer.Ordinal)
+
+        let addEntity (ent: FSharpEntity) =
+            match keyOf ent with
+            | Some k when visited.Add k -> acc.Add k
+            | _ -> ()
+
+        try
+            if includeSelf then
+                addEntity e
+
+            let mutable cur = e.BaseType
+            let mutable guard = 0
+
+            while cur.IsSome && guard < 64 do
+                guard <- guard + 1
+
+                match cur with
+                | Some b when b.HasTypeDefinition && not (isTrivialSuper b.TypeDefinition) ->
+                    let td = b.TypeDefinition
+                    addEntity td
+                    cur <- td.BaseType
+                | _ ->
+                    cur <- None
+
+            for ifc in e.AllInterfaces do
+                if ifc.HasTypeDefinition then
+                    addEntity ifc.TypeDefinition
+        with _ ->
+            ()
+
+        acc.ToArray()
+
     let private buildRelations
+        (isImplFile: bool)
         (hasParseTree: bool)
         (ast: AstIndex.Info)
         (defs: seq<struct (range * FSharpSymbol)>)
@@ -834,14 +905,22 @@ module SymbolUses =
                         typesByKey[typeKey] <- entry
 
                         for superKey in supers do
-                            addImpl superKey r
-
                             match subtypesBuilders.TryGetValue superKey with
                             | true, l -> l.Add entry
                             | _ ->
                                 let l = ResizeArray<TypeRelationEntry>()
                                 l.Add entry
                                 subtypesBuilders[superKey] <- l
+
+                        let isConcrete =
+                            try
+                                not e.IsInterface && not e.IsAbstractClass
+                            with _ ->
+                                false
+
+                        if isImplFile && isConcrete then
+                            for ancestorKey in ancestorSuperKeysOf false e do
+                                addImpl ancestorKey r
                     | _ -> ()
 
             | :? FSharpMemberOrFunctionOrValue as v ->
@@ -984,9 +1063,23 @@ module SymbolUses =
                         | Some k -> yield struct (k, u.Range)
                         | None -> ()
                     elif not u.IsFromDefinition && ast.ObjExprTypeRanges.Contains(AstIndex.rangeKey u.Range) then
-                        match keyOf u.Symbol with
-                        | Some k -> yield struct (k, u.Range)
-                        | None -> ()
+                        match u.Symbol with
+                        | :? FSharpEntity as objEnt ->
+                            for k in ancestorSuperKeysOf true objEnt do
+                                yield struct (k, u.Range)
+                        | :? FSharpMemberOrFunctionOrValue as ctor when ctor.IsConstructor ->
+                            match ctor.DeclaringEntity with
+                            | Some objEnt ->
+                                for k in ancestorSuperKeysOf true objEnt do
+                                    yield struct (k, u.Range)
+                            | None ->
+                                match keyOf u.Symbol with
+                                | Some k -> yield struct (k, u.Range)
+                                | None -> ()
+                        | _ ->
+                            match keyOf u.Symbol with
+                            | Some k -> yield struct (k, u.Range)
+                            | None -> ()
             }
 
         let defPairs =
@@ -994,7 +1087,7 @@ module SymbolUses =
             |> Seq.choose (fun u -> if u.IsFromDefinition then Some(struct (u.Range, u.Symbol)) else None)
 
         let implementations, typesByKey, subtypesBySuper, callables =
-            buildRelations parseTree.IsSome ast defPairs extraImpls
+            buildRelations true parseTree.IsSome ast defPairs extraImpls
 
         all
         |> Seq.choose (fun u ->
@@ -1068,7 +1161,7 @@ module SymbolUses =
             |> Seq.choose (fun (struct (r, definition, symbol)) -> if definition then Some(struct (r, symbol)) else None)
 
         let implementations, typesByKey, subtypesBySuper, callables =
-            buildRelations parseTree.IsSome ast defPairs Seq.empty
+            buildRelations false parseTree.IsSome ast defPairs Seq.empty
 
         uses
         |> Seq.choose (fun (struct (r, definition, symbol)) ->

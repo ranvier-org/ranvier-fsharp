@@ -372,23 +372,30 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// applied, and the projects it references settled. Its result being settled means the files it was set up from are
     /// current too, transitively (IFileNode.Current). Every read is tracked, so a request node whose body calls it runs
     /// again when a guard that failed may pass: a write applied, a restart, a restart's failure.
-    let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+    let checkRestart () =
         if not (isNull (box restartFailed)) then
             restartFailed.Value |> ignore
 
         if not (isNull restartFailure) then
             raise (InvalidOperationException("The project's nodes could not be made again after a reference changed.", restartFailure))
 
-        if not (isNull (box filesNow)) then
-            filesNow.Value |> ignore
+    let currentFiles () =
+        checkRestart ()
 
+        if not (isNull (box filesNow)) then
+            filesNow.Value
+        else
+            files
+
+    let readSettled (i: int) (read: IFileNode -> int64 -> 'T voption) : 'T voption =
+        let current = currentFiles ()
         let mutable applied = true
 
         for j in 0..i do
-            if files[j].Text.Text.Value.Version <> Volatile.Read &requested[j] then
+            if current[j].Text.Text.Value.Version <> Volatile.Read &requested[j] then
                 applied <- false
 
-        if applied && referencesCurrent () then read files[i] (Volatile.Read &requested[i]) else ValueNone
+        if applied && referencesCurrent () then read current[i] (Volatile.Read &requested[i]) else ValueNone
 
     /// Reads every file once each is settled on its latest text.
     let settledAll (read: IFileNode -> int64 -> 'T voption) : 'T[] voption =
@@ -1251,6 +1258,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
     /// Graph thread, inside one turn: each of `paths` (files of this project) with its latest parsed TextView, or
     /// ValueNone while any posted text or parse is pending. Never waits on typecheck.
     member internal _.LatestParsesOfInTurn(paths: string list) : (string * TextView)[] voption =
+        let current = currentFiles ()
         let read = ResizeArray<string * TextView>()
         let mutable pending = false
         let mutable rest = paths
@@ -1259,12 +1267,13 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             let path = rest.Head
             rest <- rest.Tail
             let i = indexOf path
-            let text = files[i].Text.Text.Value
+            let f = current[i]
+            let text = f.Text.Text.Value
 
             if text.Version <> Volatile.Read &requested[i] then
                 pending <- true
             else
-                match files[i].Text.Parsed.TryValue with
+                match f.Text.Parsed.TryValue with
                 | Ready p when p.Version = text.Version ->
                     read.Add(path, { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version })
                 | Failed e -> raise (InvalidOperationException($"%s{path} failed to parse", e))
@@ -1277,13 +1286,24 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
         let i = indexOf file
 
         let body (flight: CancellationToken) =
-            let text = files[i].Text.Text.Value
-            let p = files[i].Text.Parsed.Value
+            let current = currentFiles ()
+            let f = current[i]
+            let text = f.Text.Text.Value
 
-            if text.Version <> Volatile.Read &requested[i] || p.Version <> text.Version then
+            if text.Version <> Volatile.Read &requested[i] then
                 Request.waitForNextTurn flight
             else
-                Task.FromResult { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
+                let parsed =
+                    try
+                        ValueSome f.Text.Parsed.Value
+                    with NotReadyException _ ->
+                        ValueNone
+
+                match parsed with
+                | ValueSome p when p.Version = text.Version ->
+                    Task.FromResult { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
+                | _ ->
+                    Request.waitForNextTurn flight
 
         task {
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
@@ -1298,11 +1318,11 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             invalidArg (nameof file) $"%s{file} is not a signature file"
 
         let body (flight: CancellationToken) =
-            let p = files[i].Text.Parsed.Value
-
             let settled =
                 try
                     readSettled i (fun f version ->
+                        let p = f.Text.Parsed.Value
+
                         if p.Version <> version then
                             ValueNone
                         else
