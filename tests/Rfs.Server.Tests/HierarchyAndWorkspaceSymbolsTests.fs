@@ -153,7 +153,15 @@ let private withTwoProjectWorkspace
             let! _ = libGraph.AllDiagnostics() |> within
             let! _ = appGraph.AllDiagnostics() |> within
 
+            let! graphThreadId = host.Read(fun () -> Thread.CurrentThread.ManagedThreadId) |> within
+
+            let assertGraphThread (memberName: string) =
+                if Thread.CurrentThread.ManagedThreadId <> graphThreadId then
+                    failtest
+                        $"References.Scope.%s{memberName} called off GraphHost thread (actual=%d{Thread.CurrentThread.ManagedThreadId}, expected=%d{graphThreadId})"
+
             let ownersOf (f: string) =
+                assertGraphThread "OwnersOf"
                 let full = Path.GetFullPath f
 
                 if libPaths |> List.exists (sameFile full) then [ libGraph ]
@@ -162,10 +170,22 @@ let private withTwoProjectWorkspace
 
             let scope: References.Scope =
                 { OwnersOf = ownersOf
-                  ReferencingProjects = fun g -> if obj.ReferenceEquals(g, libGraph) then [ appGraph ] else []
-                  Projects = fun () -> [ libGraph; appGraph ]
-                  FilesOf = fun g -> if obj.ReferenceEquals(g, libGraph) then libPaths else appPaths
-                  IsLoading = fun () -> false }
+                  ReferencingProjects =
+                    fun g ->
+                        assertGraphThread "ReferencingProjects"
+                        if obj.ReferenceEquals(g, libGraph) then [ appGraph ] else []
+                  Projects =
+                    fun () ->
+                        assertGraphThread "Projects"
+                        [ libGraph; appGraph ]
+                  FilesOf =
+                    fun g ->
+                        assertGraphThread "FilesOf"
+                        if obj.ReferenceEquals(g, libGraph) then libPaths else appPaths
+                  IsLoading =
+                    fun () ->
+                        assertGraphThread "IsLoading"
+                        false }
 
             do! body host libGraph appGraph libPath appPath scope
             appGraph.Dispose()
@@ -292,18 +312,23 @@ let featureUnitTests =
         "HierarchyAndWorkspaceSymbols.Unit"
         [ testTask "WorkspaceSymbols: empty workspace, substring, camelCase/PascalCase subsequence, 0-based locations, .fs + .fsi, and shared-file deduplication" {
               // 1. Empty workspace (0 loaded projects) returns Some(U2.C2 [||]) cleanly
-              let! emptyWs = WorkspaceSymbols.search (fun () -> []) (fun () -> false) (fun _ -> []) "Customer" CancellationToken.None |> within
-              let emptyArr = extractWorkspaceSymbols emptyWs
-              Expect.isEmpty emptyArr "0 loaded projects must return empty WorkspaceSymbol[]"
+              let emptyHost = GraphHost.Start "task5-empty"
+
+              try
+                  let! emptyWs = WorkspaceSymbols.search emptyHost (fun () -> []) (fun () -> false) (fun _ -> []) "Customer" CancellationToken.None |> within
+                  let emptyArr = extractWorkspaceSymbols emptyWs
+                  Expect.isEmpty emptyArr "0 loaded projects must return empty WorkspaceSymbol[]"
+              finally
+                  emptyHost.Dispose()
 
               do!
                   withTwoProjectWorkspace
                       [ "Types.fs", libTypesFs; "Signed.fsi", libSignedFsi; "Signed.fs", libSignedFs ]
                       [ "Runner.fs", appRunnerFs ]
-                      (fun _ libGraph appGraph libPath appPath scope ->
+                      (fun host libGraph appGraph libPath appPath scope ->
                           task {
                               // 2. Empty query returns declarations across .fs and .fsi with exact 0-based LSP locations
-                              let! allRes = WorkspaceSymbols.search scope.Projects scope.IsLoading scope.FilesOf "" CancellationToken.None |> within
+                              let! allRes = WorkspaceSymbols.search host scope.Projects scope.IsLoading scope.FilesOf "" CancellationToken.None |> within
                               let allSyms = extractWorkspaceSymbols allRes
                               let allNames = allSyms |> Array.map _.Name |> Set.ofArray
                               Expect.contains allNames "Customer" "Includes Customer from Lib/Types.fs"
@@ -328,6 +353,7 @@ let featureUnitTests =
                               // Verify .fsi symbol is emitted when querying Signed.fsi specifically
                               let! fsiOnlyRes =
                                   WorkspaceSymbols.search
+                                      host
                                       (fun () -> [ libGraph ])
                                       (fun () -> false)
                                       (fun _ -> [ libPath "Signed.fsi" ])
@@ -346,22 +372,22 @@ let featureUnitTests =
                               | U2.C2 _ -> failtest "Expected U2.C1 Location"
 
                               // 3. Case-insensitive substring
-                              let! subRes = WorkspaceSymbols.search scope.Projects scope.IsLoading scope.FilesOf "semanticclass" CancellationToken.None |> within
+                              let! subRes = WorkspaceSymbols.search host scope.Projects scope.IsLoading scope.FilesOf "semanticclass" CancellationToken.None |> within
                               let subNames = extractWorkspaceSymbols subRes |> Array.map _.Name
                               Expect.equal subNames [| "GetSemanticClassification" |] "Case-insensitive substring matches GetSemanticClassification"
 
                               // 4. CamelCase / PascalCase subsequence (including negative non-hump & mid-word checks!)
-                              let! gscRes = WorkspaceSymbols.search scope.Projects scope.IsLoading scope.FilesOf "gSC" CancellationToken.None |> within
+                              let! gscRes = WorkspaceSymbols.search host scope.Projects scope.IsLoading scope.FilesOf "gSC" CancellationToken.None |> within
                               let gscNames = extractWorkspaceSymbols gscRes |> Array.map _.Name
                               Expect.contains gscNames "GetSemanticClassification" "'gSC' must match 'GetSemanticClassification'"
 
-                              let! mcRes = WorkspaceSymbols.search scope.Projects scope.IsLoading scope.FilesOf "mC" CancellationToken.None |> within
+                              let! mcRes = WorkspaceSymbols.search host scope.Projects scope.IsLoading scope.FilesOf "mC" CancellationToken.None |> within
                               let mcNames = extractWorkspaceSymbols mcRes |> Array.map _.Name |> Set.ofArray
                               Expect.contains mcNames "makeCustomer" "'mC' must match 'makeCustomer'"
                               Expect.isFalse (mcNames.Contains "makeconstant") "'mC' MUST NOT match 'makeconstant' (lowercase 'c' is not a camelCase hump)"
                               Expect.isFalse (mcNames.Contains "someConstant") "'mC' MUST NOT match 'someConstant' ('m' is mid-word, not a word start)"
 
-                              let! mkCustRes = WorkspaceSymbols.search scope.Projects scope.IsLoading scope.FilesOf "mkCust" CancellationToken.None |> within
+                              let! mkCustRes = WorkspaceSymbols.search host scope.Projects scope.IsLoading scope.FilesOf "mkCust" CancellationToken.None |> within
                               let mkCustNames = extractWorkspaceSymbols mkCustRes |> Array.map _.Name
                               Expect.equal mkCustNames [| "makeCustomer" |] "'mkCust' must match 'makeCustomer'"
 
@@ -379,6 +405,7 @@ let featureUnitTests =
 
                               let! dedupRes =
                                   WorkspaceSymbols.search
+                                      host
                                       (fun () -> [ libGraph; dupGraph; appGraph ])
                                       (fun () -> false)
                                       (fun g ->
@@ -412,16 +439,16 @@ let featureUnitTests =
 
                               // 1. Non-callable parameter & local variable return None
                               let paramLine, paramCol = findPos libTypesFs "(alpha: int)" 0 2
-                              let! nonCallableParam = CallHierarchy.prepare scope.OwnersOf libGraph typesPath paramLine paramCol CancellationToken.None |> within
+                              let! nonCallableParam = CallHierarchy.prepare scope libGraph typesPath paramLine paramCol CancellationToken.None |> within
                               Expect.isNone nonCallableParam "Parameter must not prepare a CallHierarchyItem"
 
                               let localLine, localCol = findPos appRunnerFs "let localNum = 10" 0 5
-                              let! nonCallableLocal = CallHierarchy.prepare scope.OwnersOf appGraph runnerPath localLine localCol CancellationToken.None |> within
+                              let! nonCallableLocal = CallHierarchy.prepare scope appGraph runnerPath localLine localCol CancellationToken.None |> within
                               Expect.isNone nonCallableLocal "Non-function local variable must not prepare a CallHierarchyItem"
 
                               // 2. Prepare on combineValues call site in App/Runner.fs resolves Lib/Types.fs declaration
                               let callLine, callCol = findPos appRunnerFs "combineValues input localNum" 0 3
-                              let! prepCombineOpt = CallHierarchy.prepare scope.OwnersOf appGraph runnerPath callLine callCol CancellationToken.None |> within
+                              let! prepCombineOpt = CallHierarchy.prepare scope appGraph runnerPath callLine callCol CancellationToken.None |> within
                               Expect.isSome prepCombineOpt "prepare on combineValues call site succeeds"
                               Expect.hasLength prepCombineOpt.Value 1 "Single CallHierarchyItem"
                               let combineItem = prepCombineOpt.Value[0]
@@ -453,7 +480,7 @@ let featureUnitTests =
 
                               // 4. Recursive function countdown: incomingCalls includes countdown ONCE with FromRanges.Length = 1 (recursive call only, NOT header!)
                               let recLine, recCol = findPos libTypesFs "let rec countdown" 0 9
-                              let! prepRecOpt = CallHierarchy.prepare scope.OwnersOf libGraph typesPath recLine recCol CancellationToken.None |> within
+                              let! prepRecOpt = CallHierarchy.prepare scope libGraph typesPath recLine recCol CancellationToken.None |> within
                               Expect.isSome prepRecOpt "prepare on countdown succeeds"
                               let! incomingRecOpt = CallHierarchy.incoming scope libGraph prepRecOpt.Value[0] CancellationToken.None |> within
                               Expect.isSome incomingRecOpt "incomingCalls on countdown succeeds"
@@ -463,7 +490,7 @@ let featureUnitTests =
 
                               // 5. Constructor incomingCalls: ConcreteProcessor() in runPipeline is included, whereas `(p: ConcreteProcessor)` type annotation in inspectProcessor is NOT!
                               let ctorCallLine, ctorCallCol = findPos appRunnerFs "ConcreteProcessor()" 0 3
-                              let! prepCtorOpt = CallHierarchy.prepare scope.OwnersOf appGraph runnerPath ctorCallLine ctorCallCol CancellationToken.None |> within
+                              let! prepCtorOpt = CallHierarchy.prepare scope appGraph runnerPath ctorCallLine ctorCallCol CancellationToken.None |> within
                               Expect.isSome prepCtorOpt "prepare on ConcreteProcessor() call succeeds"
                               let! incomingCtorOpt = CallHierarchy.incoming scope libGraph prepCtorOpt.Value[0] CancellationToken.None |> within
                               Expect.isSome incomingCtorOpt "incomingCalls on ConcreteProcessor ctor succeeds"
@@ -475,9 +502,9 @@ let featureUnitTests =
                               //    Includes combineValues (2 FromRanges), signedEntry (1), ConcreteProcessor ctor (1), Process (1), localHelper (1)
                               //    Excludes siblingOnlyHelper (called in sibling unrelatedCaller, outside runPipeline!) and runPipeline itself!
                               let pipeLine, pipeCol = findPos appRunnerFs "let runPipeline" 0 6
-                              let! prepPipeOpt = CallHierarchy.prepare scope.OwnersOf appGraph runnerPath pipeLine pipeCol CancellationToken.None |> within
+                              let! prepPipeOpt = CallHierarchy.prepare scope appGraph runnerPath pipeLine pipeCol CancellationToken.None |> within
                               Expect.isSome prepPipeOpt "prepare on runPipeline succeeds"
-                              let! outgoingPipeOpt = CallHierarchy.outgoing scope.OwnersOf appGraph prepPipeOpt.Value[0] CancellationToken.None |> within
+                              let! outgoingPipeOpt = CallHierarchy.outgoing scope appGraph prepPipeOpt.Value[0] CancellationToken.None |> within
                               Expect.isSome outgoingPipeOpt "outgoingCalls on runPipeline succeeds"
                               let outgoingPipe = outgoingPipeOpt.Value
                               let calleeNames = outgoingPipe |> Array.map (fun c -> c.To.Name) |> Set.ofArray
@@ -496,9 +523,9 @@ let featureUnitTests =
 
                               // Type annotation `(p: ConcreteProcessor)` inside inspectProcessor MUST NOT emit constructor in outgoingCalls
                               let inspLine, inspCol = findPos appRunnerFs "let inspectProcessor" 0 6
-                              let! prepInspOpt = CallHierarchy.prepare scope.OwnersOf appGraph runnerPath inspLine inspCol CancellationToken.None |> within
+                              let! prepInspOpt = CallHierarchy.prepare scope appGraph runnerPath inspLine inspCol CancellationToken.None |> within
                               Expect.isSome prepInspOpt "prepare on inspectProcessor succeeds"
-                              let! outInspOpt = CallHierarchy.outgoing scope.OwnersOf appGraph prepInspOpt.Value[0] CancellationToken.None |> within
+                              let! outInspOpt = CallHierarchy.outgoing scope appGraph prepInspOpt.Value[0] CancellationToken.None |> within
                               Expect.isSome outInspOpt "outgoingCalls on inspectProcessor succeeds"
                               Expect.isFalse
                                   (outInspOpt.Value |> Array.exists (fun c -> c.To.Kind = SymbolKind.Constructor))
@@ -506,10 +533,10 @@ let featureUnitTests =
 
                               // 7. Prepare on Signed.fsi `val signedEntry` -> outgoingCalls resolves body in paired Signed.fs -> finds combineValues!
                               let fsiValLine, fsiValCol = findPos libSignedFsi "val signedEntry" 0 5
-                              let! prepFsiOpt = CallHierarchy.prepare scope.OwnersOf libGraph signedFsiPath fsiValLine fsiValCol CancellationToken.None |> within
+                              let! prepFsiOpt = CallHierarchy.prepare scope libGraph signedFsiPath fsiValLine fsiValCol CancellationToken.None |> within
                               Expect.isSome prepFsiOpt "prepare on .fsi val signedEntry succeeds"
                               Expect.isTrue (sameFile (Paths.ofUri prepFsiOpt.Value[0].Uri) signedFsiPath) "Prepared on .fsi points to .fsi"
-                              let! outFromFsiOpt = CallHierarchy.outgoing scope.OwnersOf libGraph prepFsiOpt.Value[0] CancellationToken.None |> within
+                              let! outFromFsiOpt = CallHierarchy.outgoing scope libGraph prepFsiOpt.Value[0] CancellationToken.None |> within
                               Expect.isSome outFromFsiOpt "outgoingCalls from .fsi item succeeds via paired .fs"
                               let fsiCalleeNames = outFromFsiOpt.Value |> Array.map (fun c -> c.To.Name)
                               Expect.equal fsiCalleeNames [| "combineValues" |] "signedEntry in Signed.fs calls combineValues"
@@ -534,12 +561,12 @@ let featureUnitTests =
 
                               // 1. Non-type function returns None
                               let fnLine, fnCol = findPos libTypesFs "let combineValues" 0 6
-                              let! nonType = TypeHierarchy.prepare scope.OwnersOf libGraph typesPath fnLine fnCol CancellationToken.None |> within
+                              let! nonType = TypeHierarchy.prepare scope libGraph typesPath fnLine fnCol CancellationToken.None |> within
                               Expect.isNone nonType "Function must not prepare a TypeHierarchyItem"
 
                               // 2. Prepare on type abbreviation WorkerAlias unwraps to IWorker
                               let aliasLine, aliasCol = findPos libTypesFs "type WorkerAlias" 0 7
-                              let! aliasPrep = TypeHierarchy.prepare scope.OwnersOf libGraph typesPath aliasLine aliasCol CancellationToken.None |> within
+                              let! aliasPrep = TypeHierarchy.prepare scope libGraph typesPath aliasLine aliasCol CancellationToken.None |> within
                               Expect.isSome aliasPrep "Type abbreviation unwraps to underlying type"
                               Expect.equal aliasPrep.Value[0].Name "IWorker" "WorkerAlias unwraps to IWorker"
                               Expect.equal aliasPrep.Value[0].Kind SymbolKind.Interface "IWorker is Interface"
@@ -547,7 +574,7 @@ let featureUnitTests =
 
                               // 3. Prepare on interface reference `interface IWorker` in App/Runner.fs resolves IWorker in Lib/Types.fs
                               let refLine, refCol = findPos appRunnerFs "interface IWorker" 0 12
-                              let! iWorkerPrep = TypeHierarchy.prepare scope.OwnersOf appGraph runnerPath refLine refCol CancellationToken.None |> within
+                              let! iWorkerPrep = TypeHierarchy.prepare scope appGraph runnerPath refLine refCol CancellationToken.None |> within
                               Expect.isSome iWorkerPrep "prepare on interface reference in App resolves IWorker"
                               let iWorkerItem = iWorkerPrep.Value[0]
                               Expect.equal iWorkerItem.Name "IWorker" "Resolved IWorker"
@@ -566,9 +593,9 @@ let featureUnitTests =
 
                               // 5. Cross-project supertypes of AppSpecialProcessor (in App): ConcreteProcessor (in Lib) + IAppTag (in App)
                               let appSpecLine, appSpecCol = findPos appRunnerFs "type AppSpecialProcessor" 0 8
-                              let! appSpecPrep = TypeHierarchy.prepare scope.OwnersOf appGraph runnerPath appSpecLine appSpecCol CancellationToken.None |> within
+                              let! appSpecPrep = TypeHierarchy.prepare scope appGraph runnerPath appSpecLine appSpecCol CancellationToken.None |> within
                               Expect.isSome appSpecPrep "prepare on AppSpecialProcessor succeeds"
-                              let! appSpecSupersOpt = TypeHierarchy.supertypes scope.OwnersOf appGraph appSpecPrep.Value[0] CancellationToken.None |> within
+                              let! appSpecSupersOpt = TypeHierarchy.supertypes scope appGraph appSpecPrep.Value[0] CancellationToken.None |> within
                               Expect.isSome appSpecSupersOpt "supertypes of AppSpecialProcessor succeeds"
                               let appSpecSuperNames = appSpecSupersOpt.Value |> Array.map _.Name |> Set.ofArray
                               Expect.equal
@@ -578,23 +605,78 @@ let featureUnitTests =
 
                               // Second hop supertypes on ConcreteProcessor -> BaseProcessor + IWorker
                               let concreteItem = appSpecSupersOpt.Value |> Array.find (fun t -> t.Name = "ConcreteProcessor")
-                              let! concreteSupersOpt = TypeHierarchy.supertypes scope.OwnersOf libGraph concreteItem CancellationToken.None |> within
+                              let! concreteSupersOpt = TypeHierarchy.supertypes scope libGraph concreteItem CancellationToken.None |> within
                               Expect.isSome concreteSupersOpt "second-hop supertypes on ConcreteProcessor succeeds"
                               let concreteSuperNames = concreteSupersOpt.Value |> Array.map _.Name |> Set.ofArray
                               Expect.equal concreteSuperNames (Set.ofList [ "BaseProcessor"; "IWorker" ]) "ConcreteProcessor supertypes are BaseProcessor and IWorker"
 
                               // Root interface supertypes excludes trivial System.Object -> empty
-                              let! rootSupersOpt = TypeHierarchy.supertypes scope.OwnersOf libGraph iWorkerItem CancellationToken.None |> within
+                              let! rootSupersOpt = TypeHierarchy.supertypes scope libGraph iWorkerItem CancellationToken.None |> within
                               Expect.isSome rootSupersOpt "supertypes on root interface returns Some"
                               Expect.isEmpty rootSupersOpt.Value "IWorker has 0 workspace supertypes (System.Object excluded)"
 
                               // 6. Prepare on Signed.fsi `type SignedWorker` (where interface IWorker is hidden in Signed.fs!) -> supertypes still finds IWorker!
                               let fsiTypeLine, fsiTypeCol = findPos libSignedFsi "type SignedWorker" 0 7
-                              let! fsiTypePrep = TypeHierarchy.prepare scope.OwnersOf libGraph signedFsiPath fsiTypeLine fsiTypeCol CancellationToken.None |> within
+                              let! fsiTypePrep = TypeHierarchy.prepare scope libGraph signedFsiPath fsiTypeLine fsiTypeCol CancellationToken.None |> within
                               Expect.isSome fsiTypePrep "prepare on .fsi type SignedWorker succeeds"
-                              let! fsiTypeSupers = TypeHierarchy.supertypes scope.OwnersOf libGraph fsiTypePrep.Value[0] CancellationToken.None |> within
+                              let! fsiTypeSupers = TypeHierarchy.supertypes scope libGraph fsiTypePrep.Value[0] CancellationToken.None |> within
                               Expect.isSome fsiTypeSupers "supertypes on .fsi SignedWorker succeeds"
                               Expect.equal (fsiTypeSupers.Value |> Array.map _.Name) [| "IWorker" |] ".fsi SignedWorker resolves hidden IWorker supertype from paired Signed.fs"
+                          })
+          }
+
+          testTask "Promoted (not view.Whole) files: CallHierarchy.prepare, CallHierarchy.outgoing, and TypeHierarchy.prepare use CheckResultsAt on kept rows and enforce graph-thread Scope" {
+              do!
+                  withTwoProjectWorkspace
+                      [ "Types.fs", libTypesFs; "Signed.fsi", libSignedFsi; "Signed.fs", libSignedFs ]
+                      [ "Runner.fs", appRunnerFs ]
+                      (fun _ _ appGraph _ appPath scope ->
+                          task {
+                              let runnerPath = appPath "Runner.fs"
+                              appGraph.Promote runnerPath
+                              let! mode = appGraph.WhenPromoted(runnerPath, CancellationToken.None) |> within
+                              Expect.equal mode FileMode.Declarations "Runner.fs promoted to declaration-level checking"
+
+                              // Edit an early declaration body (AppWorker.Execute) without changing its signature,
+                              // so later rows (AppSpecialProcessor, runPipeline) remain kept rows with stale EnvBefore!
+                              let editedRunner =
+                                  appRunnerFs.Replace(
+                                      "member _.Execute(count: int) = string (count + 100)",
+                                      "member _.Execute(count: int) =\n            let delta = 250\n            string (count + delta)"
+                                  )
+
+                              appGraph.SetText(runnerPath, editedRunner) |> ignore
+                              let! _ = appGraph.Diagnostics runnerPath |> within
+
+                              // 1. TypeHierarchy.prepare on kept row AppSpecialProcessor triggers CheckResultsAt (AdHocChecks > before)
+                              let adHoc0 = appGraph.AdHocChecks
+                              let specLine, specCol = findPos editedRunner "inherit ConcreteProcessor" 0 10
+                              let! prepTypeOpt = TypeHierarchy.prepare scope appGraph runnerPath specLine specCol CancellationToken.None |> within
+                              Expect.isSome prepTypeOpt "TypeHierarchy.prepare on kept row succeeds"
+                              Expect.equal prepTypeOpt.Value[0].Name "ConcreteProcessor" "Resolved ConcreteProcessor from kept row"
+                              Expect.isGreaterThan appGraph.AdHocChecks adHoc0 "TypeHierarchy.prepare must call view.CheckResultsAt on kept row"
+
+                              // 2. CallHierarchy.prepare on kept row runPipeline triggers CheckResultsAt
+                              let adHoc1 = appGraph.AdHocChecks
+                              let callLine, callCol = findPos editedRunner "combineValues input localNum" 0 3
+                              let! prepCallOpt = CallHierarchy.prepare scope appGraph runnerPath callLine callCol CancellationToken.None |> within
+                              Expect.isSome prepCallOpt "CallHierarchy.prepare on kept row succeeds"
+                              Expect.equal prepCallOpt.Value[0].Name "combineValues" "Resolved combineValues from kept row"
+                              Expect.isGreaterThan appGraph.AdHocChecks adHoc1 "CallHierarchy.prepare must call view.CheckResultsAt on kept row"
+
+                              // 3. CallHierarchy.outgoing on kept row runPipeline (also with Data = None!) triggers CheckResultsAt
+                              let pipeLine, pipeCol = findPos editedRunner "let runPipeline" 0 6
+                              let! prepPipeOpt = CallHierarchy.prepare scope appGraph runnerPath pipeLine pipeCol CancellationToken.None |> within
+                              Expect.isSome prepPipeOpt "prepare on shifted runPipeline succeeds"
+                              let pipeNoData = { prepPipeOpt.Value[0] with Data = None }
+
+                              let adHoc2 = appGraph.AdHocChecks
+                              let! outPipeOpt = CallHierarchy.outgoing scope appGraph pipeNoData CancellationToken.None |> within
+                              Expect.isSome outPipeOpt "CallHierarchy.outgoing with Data = None on kept row succeeds"
+                              Expect.isGreaterThan appGraph.AdHocChecks adHoc2 "CallHierarchy.outgoing must call view.CheckResultsAt on kept row"
+                              let outNames = outPipeOpt.Value |> Array.map (fun c -> c.To.Name) |> Set.ofArray
+                              Expect.contains outNames "combineValues" "outgoingCalls on kept row finds combineValues"
+                              Expect.contains outNames "localHelper" "outgoingCalls on kept row finds localHelper"
                           })
           } ]
 
@@ -761,6 +843,77 @@ let private runLspProtocolTest () : Task<unit> =
         let subNames = [| for s in subsReply.AsArray() -> s["name"].GetValue<string>() |]
         Expect.equal subNames [| "ConcreteAction" |] "IAction subtypes over JSON-RPC"
 
+        // 5b. REGRESSION: Hierarchy follow-up requests with Data = None ("data" omitted or null) over live JSON-RPC
+        //     must re-prepare on the GraphHost thread inside turnScope () without touching Ranvier.Memo.Value off-thread,
+        //     and must work on promoted (not view.Whole) files after a kept-row edit!
+        let editedPromotedD =
+            hierarchySourceD.Replace(
+                "let leafCalc (v: int) = v + 10",
+                "let leafCalc (v: int) =\n    let extra = 20\n    v + extra"
+            )
+
+        do!
+            lsp.DidChange(
+                dPath,
+                3,
+                { Range = { Start = { Line = 0; Character = 0 }; End = { Line = 60; Character = 0 } }
+                  Text = editedPromotedD }
+            )
+            |> withinUnit
+
+        let! _ = graph.AllDiagnostics() |> within
+
+        let midLinePromoted, midColPromoted = findPos editedPromotedD "let midStep" 0 5
+        let! prepMidPromotedReply, _ =
+            lsp.Request("textDocument/prepareCallHierarchy", posJson dPath (midLinePromoted, midColPromoted))
+            |> within
+        let midItemNoData = prepMidPromotedReply.AsArray().[0].DeepClone().AsObject()
+        midItemNoData.Remove "data" |> ignore
+
+        let! inNoDataReply, _ =
+            lsp.Request("callHierarchy/incomingCalls", JsonNode.Parse $"""{{"item":%s{midItemNoData.ToJsonString()}}}""")
+            |> within
+        Expect.isNotNull inNoDataReply "callHierarchy/incomingCalls with Data = None succeeded"
+        Expect.equal (inNoDataReply.AsArray().Count) 1 "incomingCalls with Data = None finds topEntry"
+        Expect.equal (inNoDataReply.AsArray().[0].["from"].["name"].GetValue<string>()) "topEntry" "incomingCalls Data = None caller is topEntry"
+
+        let midItemNullData = midItemNoData.DeepClone().AsObject()
+        midItemNullData["data"] <- null
+        let! outNoDataReply, _ =
+            lsp.Request("callHierarchy/outgoingCalls", JsonNode.Parse $"""{{"item":%s{midItemNullData.ToJsonString()}}}""")
+            |> within
+        Expect.isNotNull outNoDataReply "callHierarchy/outgoingCalls with Data = None succeeded on promoted file"
+        Expect.equal (outNoDataReply.AsArray().Count) 1 "outgoingCalls with Data = None finds leafCalc"
+        Expect.equal (outNoDataReply.AsArray().[0].["to"].["name"].GetValue<string>()) "leafCalc" "outgoingCalls Data = None callee is leafCalc"
+        Expect.equal (outNoDataReply.AsArray().[0].["fromRanges"].AsArray().Count) 2 "outgoingCalls Data = None preserves 2 fromRanges"
+
+        let concLinePromoted, concColPromoted = findPos editedPromotedD "type ConcreteAction" 0 7
+        let! prepConcPromotedReply, _ =
+            lsp.Request("textDocument/prepareTypeHierarchy", posJson dPath (concLinePromoted, concColPromoted))
+            |> within
+        let concTypeNoData = prepConcPromotedReply.AsArray().[0].DeepClone().AsObject()
+        concTypeNoData.Remove "data" |> ignore
+
+        let! supersNoDataReply, _ =
+            lsp.Request("typeHierarchy/supertypes", JsonNode.Parse $"""{{"item":%s{concTypeNoData.ToJsonString()}}}""")
+            |> within
+        Expect.isNotNull supersNoDataReply "typeHierarchy/supertypes with Data = None succeeded"
+        let superNamesNoData = [| for s in supersNoDataReply.AsArray() -> s["name"].GetValue<string>() |] |> Set.ofArray
+        Expect.equal superNamesNoData (Set.ofList [ "BaseAction"; "IAction" ]) "supertypes with Data = None returns BaseAction and IAction"
+
+        let iActionNoData =
+            (supersNoDataReply.AsArray() |> Seq.find (fun s -> s["name"].GetValue<string>() = "IAction"))
+                .DeepClone()
+                .AsObject()
+        iActionNoData["data"] <- null
+
+        let! subsNoDataReply, _ =
+            lsp.Request("typeHierarchy/subtypes", JsonNode.Parse $"""{{"item":%s{iActionNoData.ToJsonString()}}}""")
+            |> within
+        Expect.isNotNull subsNoDataReply "typeHierarchy/subtypes with Data = None succeeded"
+        let subNamesNoData = [| for s in subsNoDataReply.AsArray() -> s["name"].GetValue<string>() |]
+        Expect.equal subNamesNoData [| "ConcreteAction" |] "subtypes with Data = None returns ConcreteAction"
+
         // 6. NON-BLOCKING PROOF: Block typechecking on BOTH D.fs and E.fsi, edit both via didChange,
         //    prove semanticTokens/full is blocked while workspace/symbol answers immediately with new .fs and .fsi symbols!
         use gate = new ManualResetEventSlim(false)
@@ -772,7 +925,7 @@ let private runLspProtocolTest () : Task<unit> =
                 gate.Wait(ct))
 
         try
-            let editedD = "module Deps.D\nopen System.Text\n" + hierarchySourceD.Substring(hierarchySourceD.IndexOf('\n') + 1) + "\n\nlet newlyAddedWorkspaceFn (z: int) = z + 99\n"
+            let editedD = "module Deps.D\nopen System.Text\n" + editedPromotedD.Substring(editedPromotedD.IndexOf('\n') + 1) + "\n\nlet newlyAddedWorkspaceFn (z: int) = z + 99\n"
             let editedESig =
                 String.concat
                     "\n"
@@ -787,7 +940,7 @@ let private runLspProtocolTest () : Task<unit> =
             do!
                 lsp.DidChange(
                     dPath,
-                    3,
+                    4,
                     { Range = { Start = { Line = 0; Character = 0 }; End = { Line = 60; Character = 0 } }
                       Text = editedD }
                 )

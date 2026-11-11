@@ -124,7 +124,11 @@ let internal matchesQuery (trimmedQuery: string) (name: string) (containerOpt: s
     else
         isCamelCaseMatch trimmedQuery name
 
-let private extractSymbols (query: string) (projectFiles: (ProjectGraph * (string * TextView)[])[]) : WorkspaceSymbol[] =
+let private extractSymbols
+    (query: string)
+    (projectFiles: (ProjectGraph * (string * TextView)[])[])
+    (ct: CancellationToken)
+    : WorkspaceSymbol[] =
     let trimmed = if isNull query then "" else query.Trim()
 
     StackGuard.onLargeStack (fun () ->
@@ -151,6 +155,8 @@ let private extractSymbols (query: string) (projectFiles: (ProjectGraph * (strin
 
         for _, views in projectFiles do
             for path, view in views do
+                ct.ThrowIfCancellationRequested()
+
                 if results.Count < maxResults then
                     let normPath =
                         try
@@ -217,7 +223,7 @@ let internal searchOnHost
 
                 match! hostGraph.LatestParsesInOneTurn(scope, ct) with
                 | ValueSome read ->
-                    answer <- Some(extractSymbols query read)
+                    answer <- Some(extractSymbols query read ct)
                 | ValueNone ->
                     // A project in scope was disposed concurrently by a reload; loop to pick up the current graph set.
                     ()
@@ -226,18 +232,13 @@ let internal searchOnHost
     }
 
 let search
+    (host: GraphHost)
     (projectsNow: unit -> ProjectGraph list)
     (loadingNow: unit -> bool)
     (filesNow: ProjectGraph -> string list)
     (query: string)
     (ct: CancellationToken)
     : Task<U2<SymbolInformation[], WorkspaceSymbol[]> option> =
-    match projectsNow () with
-    | g :: _ -> searchOnHost g.Host projectsNow loadingNow filesNow query ct
-    | [] ->
-        if loadingNow () then
-            Task.FromResult(Some(U2.C2 [||]))
-        else
-            Task.FromResult(Some(U2.C2 [||]))
+    searchOnHost host projectsNow loadingNow filesNow query ct
 
 let resolve (sym: WorkspaceSymbol) : WorkspaceSymbol = sym

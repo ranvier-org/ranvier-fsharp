@@ -218,7 +218,7 @@ let private tryResolveEntityItem
     fromPreferredFsi |> Option.orElse fromFs |> Option.orElse fromAnyFsi
 
 let prepare
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (path: string)
     (line: int)
@@ -249,7 +249,11 @@ let prepare
                         match lookup with
                         | None -> None
                         | Some(lineStr, names, endColumn) ->
-                            let check = if view.Whole then view.Result.CheckResultsNotKept else view.Result.CheckResults
+                            let check =
+                                if view.Whole then
+                                    view.Result.CheckResultsNotKept
+                                else
+                                    view.CheckResultsAt(line + 1, endColumn)
 
                             match check.GetSymbolUseAtLocation(line + 1, endColumn, lineStr, names) with
                             | Some u -> extractEntityTarget None u.Symbol
@@ -260,13 +264,25 @@ let prepare
         match targetOpt with
         | None -> return None
         | Some(entityKey, landedOpt) ->
-            let definers = definersOf ownersOf graph landedOpt
-
             let turnScope () : TurnScope<unit> =
-                { Loading = false
-                  Projects = [| for p in definers -> p, Array.toList p.FilesOf |]
-                  Name = None
-                  Extra = () }
+                if scope.IsLoading() then
+                    { Loading = true
+                      Projects = [||]
+                      Name = None
+                      Extra = () }
+                else
+                    let definers = definersOf scope.OwnersOf graph landedOpt
+
+                    let extraAsking =
+                        if definers |> List.exists (fun p -> obj.ReferenceEquals(p, graph)) then
+                            [||]
+                        else
+                            [| graph, [] |]
+
+                    { Loading = false
+                      Projects = Array.append [| for p in definers -> p, scope.FilesOf p |] extraAsking
+                      Name = None
+                      Extra = () }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
             | TurnRead.Gone -> return None
@@ -279,7 +295,7 @@ let prepare
     }
 
 let private resolveItemData
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (item: TypeHierarchyItem)
     (ct: CancellationToken)
@@ -289,7 +305,7 @@ let private resolveItemData
         | Some parsed -> return Some parsed
         | None ->
             let itemPath = Paths.ofUri item.Uri
-            let! prepared = prepare ownersOf graph itemPath (int item.SelectionRange.Start.Line) (int item.SelectionRange.Start.Character) ct
+            let! prepared = prepare scope graph itemPath (int item.SelectionRange.Start.Line) (int item.SelectionRange.Start.Character) ct
 
             return
                 prepared
@@ -298,28 +314,35 @@ let private resolveItemData
     }
 
 let supertypes
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (item: TypeHierarchyItem)
     (ct: CancellationToken)
     : Task<TypeHierarchyItem[] option> =
     task {
-        let! dataOpt = resolveItemData ownersOf graph item ct
+        let! dataOpt = resolveItemData scope graph item ct
 
         match dataOpt with
         | None -> return Some [||]
         | Some(entityKey, declPath, landedPath) ->
-            let definers =
-                (definersOf ownersOf graph (Some landedPath) @ definersOf ownersOf graph (Some declPath))
-                |> List.distinct
-
-            let searchProjects = upstreamClosure (definers @ [ graph ]) graph.Host
-
             let turnScope () : TurnScope<unit> =
-                { Loading = false
-                  Projects = [| for p in searchProjects -> p, Array.toList p.FilesOf |]
-                  Name = None
-                  Extra = () }
+                if scope.IsLoading() then
+                    { Loading = true
+                      Projects = [||]
+                      Name = None
+                      Extra = () }
+                else
+                    let definers =
+                        (definersOf scope.OwnersOf graph (Some landedPath)
+                         @ definersOf scope.OwnersOf graph (Some declPath))
+                        |> List.distinct
+
+                    let searchProjects = upstreamClosure (definers @ [ graph ]) graph.Host
+
+                    { Loading = false
+                      Projects = [| for p in searchProjects -> p, scope.FilesOf p |]
+                      Name = None
+                      Extra = () }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
             | TurnRead.Gone -> return None
@@ -375,7 +398,7 @@ let subtypes
     (ct: CancellationToken)
     : Task<TypeHierarchyItem[] option> =
     task {
-        let! dataOpt = resolveItemData scope.OwnersOf hostGraph item ct
+        let! dataOpt = resolveItemData scope hostGraph item ct
 
         match dataOpt with
         | None -> return Some [||]

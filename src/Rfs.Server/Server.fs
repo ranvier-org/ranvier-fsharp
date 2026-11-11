@@ -202,16 +202,29 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
             try
                 do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
-                let path = Paths.ofUri (uri ())
+                let fullPath = Path.GetFullPath(Paths.ofUri (uri ()))
 
-                let candidates =
-                    match workspace.OwnersOf path with
-                    | [] -> workspace.Projects
-                    | owners -> owners
+                let! candidateOpt =
+                    host.WhenSettled(
+                        (fun () ->
+                            if workspace.LoadingNow() then
+                                ValueNone
+                            else
+                                let candidates =
+                                    match workspace.OwnersNow fullPath with
+                                    | [] -> workspace.ProjectsNow()
+                                    | owners -> owners
 
-                match candidates with
-                | [] -> return Ok none
-                | graph :: _ ->
+                                match candidates with
+                                | [] -> ValueSome None
+                                | graph :: _ -> ValueSome(Some graph)),
+                        ct
+                    )
+                    |> Async.AwaitTask
+
+                match candidateOpt with
+                | None -> return Ok none
+                | Some graph ->
                     let! answer = run graph ct |> Async.AwaitTask
                     return Ok answer
             with ex ->
@@ -564,8 +577,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 CallHierarchy.incoming scope graph p.Item ct)
 
         member _.CallHierarchyOutgoingCalls(p: CallHierarchyOutgoingCallsParams) =
+            let scope = makeScope ()
+
             readingItem "callHierarchy/outgoingCalls" None (fun () -> p.Item.Uri) (fun graph ct ->
-                CallHierarchy.outgoing workspace.OwnersOf graph p.Item ct)
+                CallHierarchy.outgoing scope graph p.Item ct)
         member _.CodeActionResolve(_) = notImplemented
         member _.CodeLensResolve(_) = notImplemented
         member _.CompletionItemResolve(item: CompletionItem) =
@@ -712,14 +727,18 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentMoniker(_) = notImplemented
         member _.TextDocumentOnTypeFormatting(_) = notImplemented
         member _.TextDocumentPrepareCallHierarchy(p: CallHierarchyPrepareParams) =
+            let scope = makeScope ()
+
             readingAny "prepareCallHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
-                CallHierarchy.prepare workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct)
+                CallHierarchy.prepare scope graph path (int p.Position.Line) (int p.Position.Character) ct)
 
         member _.TextDocumentPrepareRename(_) = notImplemented
 
         member _.TextDocumentPrepareTypeHierarchy(p: TypeHierarchyPrepareParams) =
+            let scope = makeScope ()
+
             readingAny "prepareTypeHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
-                TypeHierarchy.prepare workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct)
+                TypeHierarchy.prepare scope graph path (int p.Position.Line) (int p.Position.Character) ct)
         member _.TextDocumentRangeFormatting(_) = notImplemented
         member this.TextDocumentReferences(p: ReferenceParams) =
             async {
@@ -814,8 +833,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 TypeHierarchy.subtypes scope graph p.Item ct)
 
         member _.TypeHierarchySupertypes(p: TypeHierarchySupertypesParams) =
+            let scope = makeScope ()
+
             readingItem "typeHierarchy/supertypes" None (fun () -> p.Item.Uri) (fun graph ct ->
-                TypeHierarchy.supertypes workspace.OwnersOf graph p.Item ct)
+                TypeHierarchy.supertypes scope graph p.Item ct)
 
         member _.WindowWorkDoneProgressCancel(_) = ignoreNotification
         member _.WorkspaceDiagnostic(_) = notImplemented
@@ -834,7 +855,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     let query = if isNull p.Query then "" else p.Query
 
                     let! answer =
-                        WorkspaceSymbols.searchOnHost
+                        WorkspaceSymbols.search
                             host
                             workspace.ProjectsNow
                             workspace.LoadingNow

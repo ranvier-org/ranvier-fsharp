@@ -300,12 +300,15 @@ let private definersFor (ownersOf: string -> ProjectGraph list) (fallbackGraph: 
                     file
 
             let sigFile = Path.ChangeExtension(file, ".fsi")
-            (ownersOf file @ ownersOf impl @ ownersOf sigFile) |> List.distinct
+
+            (ownersOf file @ ownersOf impl @ ownersOf sigFile)
+            |> List.filter (fun g -> obj.ReferenceEquals(g.Host, fallbackGraph.Host))
+            |> List.distinct
         | None -> []
 
     match fromLanded with
     | [] -> upstreamClosure [ fallbackGraph ] fallbackGraph.Host
-    | ds -> ds |> List.filter (fun g -> obj.ReferenceEquals(g.Host, fallbackGraph.Host))
+    | ds -> ds
 
 let private tryResolveInTurnFiles
     (preferFsiPath: string option)
@@ -349,7 +352,7 @@ let private tryResolveInTurnFiles
     fromPreferredFsi |> Option.orElse fromFs |> Option.orElse fromAnyFsi
 
 let prepare
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (path: string)
     (line: int)
@@ -380,7 +383,11 @@ let prepare
                         match lookup with
                         | None -> None
                         | Some(lineStr, names, endColumn) ->
-                            let check = if view.Whole then view.Result.CheckResultsNotKept else view.Result.CheckResults
+                            let check =
+                                if view.Whole then
+                                    view.Result.CheckResultsNotKept
+                                else
+                                    view.CheckResultsAt(line + 1, endColumn)
 
                             match check.GetSymbolUseAtLocation(line + 1, endColumn, lineStr, names) with
                             | Some u -> extractTarget None u.Symbol
@@ -391,13 +398,25 @@ let prepare
         match targetOpt with
         | None -> return None
         | Some target ->
-            let definers = definersFor ownersOf graph target.Landed
-
             let turnScope () : TurnScope<unit> =
-                { Loading = false
-                  Projects = [| for p in definers -> p, Array.toList p.FilesOf |]
-                  Name = None
-                  Extra = () }
+                if scope.IsLoading() then
+                    { Loading = true
+                      Projects = [||]
+                      Name = None
+                      Extra = () }
+                else
+                    let definers = definersFor scope.OwnersOf graph target.Landed
+
+                    let extraAsking =
+                        if definers |> List.exists (fun p -> obj.ReferenceEquals(p, graph)) then
+                            [||]
+                        else
+                            [| graph, [] |]
+
+                    { Loading = false
+                      Projects = Array.append [| for p in definers -> p, scope.FilesOf p |] extraAsking
+                      Name = None
+                      Extra = () }
 
             match! graph.ReadInOneTurn(turnScope, ct) with
             | TurnRead.Gone -> return None
@@ -410,7 +429,7 @@ let prepare
     }
 
 let private resolveItemData
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (item: CallHierarchyItem)
     (ct: CancellationToken)
@@ -420,7 +439,7 @@ let private resolveItemData
         | Some parsed -> return Some parsed
         | None ->
             let itemPath = Paths.ofUri item.Uri
-            let! prepared = prepare ownersOf graph itemPath (int item.SelectionRange.Start.Line) (int item.SelectionRange.Start.Character) ct
+            let! prepared = prepare scope graph itemPath (int item.SelectionRange.Start.Line) (int item.SelectionRange.Start.Character) ct
 
             return
                 prepared
@@ -435,7 +454,7 @@ let incoming
     (ct: CancellationToken)
     : Task<CallHierarchyIncomingCall[] option> =
     task {
-        let! dataOpt = resolveItemData scope.OwnersOf hostGraph item ct
+        let! dataOpt = resolveItemData scope hostGraph item ct
 
         match dataOpt with
         | None -> return Some [||]
@@ -558,14 +577,19 @@ type private RawOutgoingHit =
     { Target: CallableTarget
       FromRange: LspRange }
 
+[<NoComparison; NoEquality>]
+type private OutgoingBodyOutcome =
+    | Gone
+    | Hits of RawOutgoingHit[] * ProjectGraph option
+
 let outgoing
-    (ownersOf: string -> ProjectGraph list)
+    (scope: References.Scope)
     (graph: ProjectGraph)
     (item: CallHierarchyItem)
     (ct: CancellationToken)
     : Task<CallHierarchyOutgoingCall[] option> =
     task {
-        let! dataOpt = resolveItemData ownersOf graph item ct
+        let! dataOpt = resolveItemData scope graph item ct
 
         match dataOpt with
         | None -> return Some [||]
@@ -581,85 +605,179 @@ let outgoing
                     else
                         declPath
 
-                let implOwnerOpt =
-                    match ownersOf candidateImplPath with
-                    | g :: _ when g.Holds candidateImplPath -> Some(g, candidateImplPath)
-                    | _ ->
-                        if not (candidateImplPath.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)) && graph.Holds candidateImplPath then
-                            Some(graph, candidateImplPath)
+                let mutable outcome: OutgoingBodyOutcome option = None
+
+                while outcome.IsNone do
+                    ct.ThrowIfCancellationRequested()
+
+                    let implTurnScope () : TurnScope<(ProjectGraph * string) option> =
+                        if scope.IsLoading() then
+                            { Loading = true
+                              Projects = [||]
+                              Name = None
+                              Extra = None }
                         else
-                            None
+                            let tryPickOwner (candidates: ProjectGraph list) =
+                                candidates
+                                |> List.tryPick (fun g ->
+                                    if obj.ReferenceEquals(g.Host, graph.Host) && g.Holds candidateImplPath then
+                                        match scope.FilesOf g |> List.tryFind (sameFile candidateImplPath) with
+                                        | Some canonical -> Some(g, canonical)
+                                        | None -> Some(g, candidateImplPath)
+                                    else
+                                        None)
 
-                match implOwnerOpt with
-                | None -> return Some [||]
-                | Some(implGraph, implPath) ->
-                    let! rawHits =
-                        implGraph.ReadFile(
-                            implPath,
-                            (fun view -> view.Text.Split '\n' |> Array.map (fun s -> s.TrimEnd '\r')),
-                            (fun view lines ->
-                                let check = if view.Whole then view.Result.CheckResultsNotKept else view.Result.CheckResults
-                                let localUses = SymbolUses.ofCheckWithParse (box view.Result) (Some view.Parse.ParseTree) check ct
+                            let implOwnerOpt =
+                                if candidateImplPath.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                                    None
+                                else
+                                    tryPickOwner (scope.OwnersOf candidateImplPath)
+                                    |> Option.orElseWith (fun () -> tryPickOwner [ graph ])
 
-                                match localUses.CallableOf(ownKey, true) with
-                                | ValueNone -> [||]
-                                | ValueSome callerDecl ->
-                                    let hits = ResizeArray<RawOutgoingHit>()
+                            match implOwnerOpt with
+                            | None ->
+                                { Loading = false
+                                  Projects = [| graph, [] |]
+                                  Name = None
+                                  Extra = None }
+                            | Some(ig, ip) ->
+                                let projects =
+                                    if obj.ReferenceEquals(ig, graph) then
+                                        [| ig, [ ip ] |]
+                                    else
+                                        [| ig, [ ip ]; graph, [] |]
 
-                                    for u in check.GetAllUsesOfAllSymbolsInFile ct do
-                                        if
-                                            not u.IsFromDefinition
-                                            && not u.IsFromType
-                                            && sameFile u.Range.FileName implPath
-                                            && Range.rangeContainsRange callerDecl.Range u.Range
-                                            && not (Range.equals u.Range callerDecl.SelectionRange)
-                                        then
-                                            let belongsToCaller =
-                                                match localUses.EnclosingCallable u.Range.Start with
-                                                | ValueSome enc ->
-                                                    enc.Key = callerDecl.Key
-                                                    || (callerDecl.Glyph = SymbolGlyph.Constructor && enc.Glyph = SymbolGlyph.Field)
-                                                | ValueNone -> true
+                                { Loading = false
+                                  Projects = projects
+                                  Name = None
+                                  Extra = Some(ig, ip) }
 
-                                            if belongsToCaller then
-                                                match extractTarget None u.Symbol with
-                                                | Some callee when callee.Landed.IsSome ->
-                                                    let fromLsp =
-                                                        DocumentHighlight.stripQualification lines u.Range
-                                                        |> Option.defaultWith (fun () -> toLspRange u.Range)
+                    match! graph.ReadInOneTurn(implTurnScope, ct) with
+                    | TurnRead.Gone ->
+                        outcome <- Some OutgoingBodyOutcome.Gone
+                    | TurnRead.Read(None, _) ->
+                        outcome <- Some(OutgoingBodyOutcome.Hits([||], None))
+                    | TurnRead.Read(Some(implGraph, implPath), turnProjects) ->
+                        let indexedOpt =
+                            turnProjects
+                            |> Array.tryPick (fun (_, tfs) ->
+                                tfs
+                                |> Array.tryPick (function
+                                    | TurnFile.Indexed(_, v, u) -> Some(v, u)
+                                    | _ -> None))
 
-                                                    hits.Add
-                                                        { Target = callee
-                                                          FromRange = fromLsp }
-                                                | _ -> ()
+                        match indexedOpt with
+                        | None ->
+                            outcome <- Some(OutgoingBodyOutcome.Hits([||], Some implGraph))
+                        | Some(usesVersion, localUses) ->
+                            match localUses.CallableOf(ownKey, true) with
+                            | ValueNone ->
+                                outcome <- Some(OutgoingBodyOutcome.Hits([||], Some implGraph))
+                            | ValueSome callerDecl ->
+                                let! hitsAtVersion =
+                                    task {
+                                        try
+                                            return!
+                                                implGraph.ReadFile(
+                                                    implPath,
+                                                    (fun view ->
+                                                        if view.Version <> usesVersion then
+                                                            ValueNone
+                                                        else
+                                                            ValueSome(view.Text.Split '\n' |> Array.map (fun s -> s.TrimEnd '\r'))),
+                                                    (fun view linesOpt ->
+                                                        match linesOpt with
+                                                        | ValueNone -> ValueNone
+                                                        | ValueSome lines ->
+                                                            StackGuard.onLargeStack (fun () ->
+                                                                let check =
+                                                                    if view.Whole then
+                                                                        view.Result.CheckResultsNotKept
+                                                                    else
+                                                                        view.CheckResultsAt(
+                                                                            callerDecl.SelectionRange.StartLine,
+                                                                            callerDecl.SelectionRange.EndColumn
+                                                                        )
 
-                                    hits.ToArray()),
-                            ct
-                        )
+                                                                let hits = ResizeArray<RawOutgoingHit>()
 
-                    if rawHits.Length = 0 then
+                                                                for u in check.GetAllUsesOfAllSymbolsInFile ct do
+                                                                    if
+                                                                        not u.IsFromDefinition
+                                                                        && not u.IsFromType
+                                                                        && sameFile u.Range.FileName implPath
+                                                                        && Range.rangeContainsRange callerDecl.Range u.Range
+                                                                        && not (Range.equals u.Range callerDecl.SelectionRange)
+                                                                    then
+                                                                        let belongsToCaller =
+                                                                            match localUses.EnclosingCallable u.Range.Start with
+                                                                            | ValueSome enc ->
+                                                                                enc.Key = callerDecl.Key
+                                                                                || (callerDecl.Glyph = SymbolGlyph.Constructor && enc.Glyph = SymbolGlyph.Field)
+                                                                            | ValueNone -> true
+
+                                                                        if belongsToCaller then
+                                                                            match extractTarget None u.Symbol with
+                                                                            | Some callee when callee.Landed.IsSome ->
+                                                                                let fromLsp =
+                                                                                    DocumentHighlight.stripQualification lines u.Range
+                                                                                    |> Option.defaultWith (fun () -> toLspRange u.Range)
+
+                                                                                hits.Add
+                                                                                    { Target = callee
+                                                                                      FromRange = fromLsp }
+                                                                            | _ -> ()
+
+                                                                ValueSome(hits.ToArray()))),
+                                                    ct
+                                                )
+                                        with
+                                        | :? OperationCanceledException when not ct.IsCancellationRequested ->
+                                            return ValueNone
+                                        | :? ObjectDisposedException ->
+                                            return ValueNone
+                                    }
+
+                                match hitsAtVersion with
+                                | ValueSome hits ->
+                                    outcome <- Some(OutgoingBodyOutcome.Hits(hits, Some implGraph))
+                                | ValueNone ->
+                                    ()
+
+                match outcome.Value with
+                | OutgoingBodyOutcome.Gone -> return None
+                | OutgoingBodyOutcome.Hits(rawHits, implGraphOpt) ->
+                    if rawHits.Length = 0 || implGraphOpt.IsNone then
                         return Some [||]
                     else
-                        let extraRoots =
-                            rawHits
-                            |> Array.collect (fun h ->
-                                match h.Target.Landed with
-                                | Some lp ->
-                                    let impl = Path.ChangeExtension(lp, ".fs")
-                                    let sigF = Path.ChangeExtension(lp, ".fsi")
-                                    (ownersOf lp @ ownersOf impl @ ownersOf sigF) |> List.toArray
-                                | None -> [||])
-                            |> Array.toList
+                        let implGraph = implGraphOpt.Value
 
-                        let targetProjects = upstreamClosure (implGraph :: extraRoots) implGraph.Host
+                        let targetTurnScope () : TurnScope<unit> =
+                            if scope.IsLoading() then
+                                { Loading = true
+                                  Projects = [||]
+                                  Name = None
+                                  Extra = () }
+                            else
+                                let extraRoots =
+                                    rawHits
+                                    |> Array.collect (fun h ->
+                                        match h.Target.Landed with
+                                        | Some lp ->
+                                            let impl = Path.ChangeExtension(lp, ".fs")
+                                            let sigF = Path.ChangeExtension(lp, ".fsi")
+                                            (scope.OwnersOf lp @ scope.OwnersOf impl @ scope.OwnersOf sigF) |> List.toArray
+                                        | None -> [||])
+                                    |> Array.toList
 
-                        let turnScope () : TurnScope<unit> =
-                            { Loading = false
-                              Projects = [| for p in targetProjects -> p, Array.toList p.FilesOf |]
-                              Name = None
-                              Extra = () }
+                                let targetProjects = upstreamClosure (implGraph :: extraRoots) implGraph.Host
 
-                        match! implGraph.ReadInOneTurn(turnScope, ct) with
+                                { Loading = false
+                                  Projects = [| for p in targetProjects -> p, scope.FilesOf p |]
+                                  Name = None
+                                  Extra = () }
+
+                        match! implGraph.ReadInOneTurn(targetTurnScope, ct) with
                         | TurnRead.Gone -> return None
                         | TurnRead.Read((), projects) ->
                             let grouped = Dictionary<struct (string * string), CallHierarchyItem * ResizeArray<LspRange>>()
