@@ -1,7 +1,6 @@
 module Rfs.Server.SelectionRange
 
 open System.Collections.Generic
-open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.Syntax
@@ -11,29 +10,6 @@ open Rfs.Checker
 
 type private LspPos = Ionide.LanguageServerProtocol.Types.Position
 type private LspRange = Ionide.LanguageServerProtocol.Types.Range
-
-let private onLargeStack (f: unit -> 'T) : 'T =
-    let result = ref ValueNone
-    let failure = ref null
-
-    let thread =
-        Thread(
-            (fun () ->
-                try
-                    result.Value <- ValueSome(f ())
-                with ex ->
-                    failure.Value <- ExceptionDispatchInfo.Capture ex),
-            GraphHost.StackSize,
-            IsBackground = true
-        )
-
-    thread.Start()
-    thread.Join()
-
-    if not (isNull failure.Value) then
-        failure.Value.Throw()
-
-    result.Value.Value
 
 let inline private posLeq (a: LspPos) (b: LspPos) =
     a.Line < b.Line || (a.Line = b.Line && a.Character <= b.Character)
@@ -69,7 +45,7 @@ let internal compute (text: string) (parseTree: ParsedInput) (positions: LspPos[
     if isNull (box positions) || positions.Length = 0 then
         [||]
     else
-        onLargeStack (fun () ->
+        StackGuard.onLargeStack (fun () ->
             let count = positions.Length
 
             let fcsPositions =
@@ -171,7 +147,9 @@ let internal compute (text: string) (parseTree: ParsedInput) (positions: LspPos[
                 | SynType.WithGlobalConstraints(inner, constraints, _) ->
                     walkType inner
                     List.iter walkTypeConstraint constraints
-                | SynType.Intersection(_, types, _, _) -> List.iter walkType types
+                | SynType.Intersection(typarOpt, types, _, _) ->
+                    typarOpt |> Option.iter (fun (SynTypar(id, _, _)) -> considerIdent id)
+                    List.iter walkType types
                 | SynType.StaticConstantExpr(expr, _) -> walkExpr expr
                 | SynType.StaticConstantNamed(ident, value, _) ->
                     walkType ident

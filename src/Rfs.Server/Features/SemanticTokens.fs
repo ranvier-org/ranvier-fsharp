@@ -6,7 +6,6 @@ open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Runtime.CompilerServices
-open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
@@ -111,29 +110,6 @@ let private mapClassification (t: SemanticClassificationType) : struct (uint32 *
     | SemanticClassificationType.LocalValue -> struct (8u, 0u)
     | SemanticClassificationType.Plaintext -> struct (24u, 0u)
     | _ -> struct (24u, 0u)
-
-let private onLargeStack (f: unit -> 'T) : 'T =
-    let result = ref ValueNone
-    let failure = ref null
-
-    let thread =
-        Thread(
-            (fun () ->
-                try
-                    result.Value <- ValueSome(f ())
-                with ex ->
-                    failure.Value <- ExceptionDispatchInfo.Capture ex),
-            GraphHost.StackSize,
-            IsBackground = true
-        )
-
-    thread.Start()
-    thread.Join()
-
-    if not (isNull failure.Value) then
-        failure.Value.Throw()
-
-    result.Value.Value
 
 /// Collects plain-data 1-based `(StartLine, StartColumn, EndLine, EndColumn)` ranges for:
 /// 1) function and lambda parameter identifier declarations (`LocalValue` -> `Parameter`), and
@@ -604,7 +580,7 @@ let private getAstSupplements (parse: FSharpParseFileResults) =
     match astCache.TryGetValue parse with
     | true, cached -> cached
     | false, _ ->
-        let computed = onLargeStack (fun () -> collectAstSupplements parse.ParseTree)
+        let computed = StackGuard.onLargeStack (fun () -> collectAstSupplements parse.ParseTree)
         astCache.GetValue(parse, ConditionalWeakTable.CreateValueCallback(fun _ -> computed))
 
 type private SingleLineSeg = (struct (int * int * int * uint32 * uint32))

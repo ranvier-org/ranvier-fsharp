@@ -1,35 +1,11 @@
 module Rfs.Server.Folding
 
-open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Syntax
 open Ionide.LanguageServerProtocol.Types
 open Rfs.Checker
-
-let private onLargeStack (f: unit -> 'T) : 'T =
-    let result = ref ValueNone
-    let failure = ref null
-
-    let thread =
-        Thread(
-            (fun () ->
-                try
-                    result.Value <- ValueSome(f ())
-                with ex ->
-                    failure.Value <- ExceptionDispatchInfo.Capture ex),
-            GraphHost.StackSize,
-            IsBackground = true
-        )
-
-    thread.Start()
-    thread.Join()
-
-    if not (isNull failure.Value) then
-        failure.Value.Throw()
-
-    result.Value.Value
 
 /// Matches FSAC's `LspHelpers.Structure.scopeToKind`: Open -> Imports, Comment/XmlDocComment -> Comment, all other scopes -> None.
 let private scopeToKind (scope: Structure.Scope) : string option =
@@ -92,7 +68,7 @@ let private toFoldingRange (item: Structure.ScopeRange) : FoldingRange =
       CollapsedText = None }
 
 let internal compute (text: string) (parseTree: ParsedInput) : FoldingRange[] =
-    onLargeStack (fun () ->
+    StackGuard.onLargeStack (fun () ->
         let lines = text.Split('\n') |> Array.map (fun s -> s.TrimEnd('\r'))
 
         Structure.getOutliningRanges lines parseTree

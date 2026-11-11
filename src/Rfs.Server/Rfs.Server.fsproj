@@ -7,6 +7,7 @@
     <Compile Include="Client.fs" />
     <Compile Include="Config.fs" />
     <Compile Include="Paths.fs" />
+    <Compile Include="StackGuard.fs" />
     <Compile Include="Workspace.fs" />
     <Compile Include="Documents.fs" />
     <Compile Include="Outbox.fs" />

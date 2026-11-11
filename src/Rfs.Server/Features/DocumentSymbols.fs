@@ -1,7 +1,6 @@
 module Rfs.Server.DocumentSymbols
 
 open System
-open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.EditorServices
@@ -12,29 +11,6 @@ open Rfs.Checker
 
 type private LspPos = Ionide.LanguageServerProtocol.Types.Position
 type private LspRange = Ionide.LanguageServerProtocol.Types.Range
-
-let private onLargeStack (f: unit -> 'T) : 'T =
-    let result = ref ValueNone
-    let failure = ref null
-
-    let thread =
-        Thread(
-            (fun () ->
-                try
-                    result.Value <- ValueSome(f ())
-                with ex ->
-                    failure.Value <- ExceptionDispatchInfo.Capture ex),
-            GraphHost.StackSize,
-            IsBackground = true
-        )
-
-    thread.Start()
-    thread.Join()
-
-    if not (isNull failure.Value) then
-        failure.Value.Throw()
-
-    result.Value.Value
 
 /// Matches FSAC's `LspHelpers.glyphToSymbolKindGenerator`.
 let private glyphToSymbolKind (glyph: FSharpGlyph) : SymbolKind =
@@ -106,7 +82,7 @@ let private mapItem (decl: NavigationItem) (children: DocumentSymbol[]) : Docume
               Children = if Array.isEmpty children then None else Some children }
 
 let internal compute (parseTree: ParsedInput) : DocumentSymbol[] =
-    onLargeStack (fun () ->
+    StackGuard.onLargeStack (fun () ->
         let nav = Navigation.getNavigation parseTree
 
         [| for top in nav.Declarations do
