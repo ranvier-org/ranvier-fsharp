@@ -89,9 +89,6 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let configGate = obj ()
     let mutable config = FSharpConfig.Default
     let tokenCache = SemanticTokens.TokenDeltaCache()
-    let mutable automaticInit = false
-    let mutable peekDepth = 2
-    let mutable excludedDirs: string list = [ ".git"; "node_modules"; ".ionide" ]
     let mutable canPullConfiguration = false
     let mutable canRegisterWatchers = false
     let mutable canShowProgress = false
@@ -100,10 +97,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let updateConfig (token: JToken) =
         lock configGate (fun () ->
             let updated = FSharpConfig.UpdateFromJson (Volatile.Read &config) token
-            Volatile.Write(&config, updated)
-            automaticInit <- updated.AutomaticWorkspaceInit
-            peekDepth <- updated.WorkspaceModePeekDeepLevel
-            excludedDirs <- updated.ExcludeProjectDirectories)
+            Volatile.Write(&config, updated))
 
     let pullConfiguration () =
         async {
@@ -194,7 +188,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let automaticLoad (root: string) =
         task {
             try
-                let found = WorkspacePeek.peek root peekDepth excludedDirs
+                let cfg = Volatile.Read &config
+                let found = WorkspacePeek.peek root cfg.WorkspaceModePeekDeepLevel cfg.ExcludeProjectDirectories
                 let! _ = workspace.Load(WorkspacePeek.projectsOf found)
                 ()
             with ex ->
@@ -310,7 +305,12 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
         async {
             try
-                let found = WorkspacePeek.peek p.Directory p.Deep (List.ofArray p.ExcludedDirs)
+                let cfg = Volatile.Read &config
+                let deep = if p.Deep > 0 then p.Deep else cfg.WorkspaceModePeekDeepLevel
+                let excluded =
+                    if isNull p.ExcludedDirs then cfg.ExcludeProjectDirectories else List.ofArray p.ExcludedDirs
+
+                let found = WorkspacePeek.peek p.Directory deep excluded
                 return plain (Responses.workspacePeek found)
             with ex ->
                 return internalError ex.Message
@@ -398,13 +398,17 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     progress <- Some(new Progress(host, workspace, publisher, client, this.ProgressBeginHold))
 
                 registerWatchers ()
-                pullConfiguration () |> Async.Start
 
-                match rootPath, automaticInit with
-                | Some root, true ->
-                    // The load takes as long as the cold checks; the connection keeps serving meanwhile
-                    automaticLoad root |> ignore
-                | _ -> ()
+                async {
+                    do! pullConfiguration ()
+
+                    match rootPath, (Volatile.Read &config).AutomaticWorkspaceInit with
+                    | Some root, true ->
+                        // The load takes as long as the cold checks; the connection keeps serving meanwhile
+                        automaticLoad root |> ignore
+                    | _ -> ()
+                }
+                |> Async.Start
             }
 
         member _.Shutdown() =

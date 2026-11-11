@@ -153,7 +153,9 @@ let private collectAstSupplements (input: ParsedInput) : HashSet<struct (int * i
         | SynPat.Attrib(pat = inner) -> collectParamPat inner
         | SynPat.Tuple(elementPats = pats) -> List.iter collectParamPat pats
         | SynPat.OptionalVal(ident = id) -> addRange paramRanges id.idRange
-        | SynPat.As(rhsPat = rhs) -> collectParamPat rhs
+        | SynPat.As(lhsPat = lhs; rhsPat = rhs) ->
+            collectParamPat lhs
+            collectParamPat rhs
         | _ -> ()
 
     let walkAttributes (walkExpr: SynExpr -> unit) (attrs: SynAttributes) =
@@ -681,8 +683,11 @@ let internal encodeClassified
                 let segArr = singleSegs.ToArray()
 
                 let priority (ty: uint32) =
-                    // Prefer specific overrides (`parameter` = 7, `keyword` = 15, `regexp` = 20) on exact range ties
-                    if ty = 7u || ty = 15u || ty = 20u then 0 else 1
+                    // Prefer specific overrides (`parameter` = 7, `keyword` = 15, `regexp` = 20) on exact range ties,
+                    // and deprioritize `Plaintext` (`text` = 24) below semantic classifications (e.g. `module` = 25).
+                    if ty = 7u || ty = 15u || ty = 20u then 0
+                    elif ty = 24u then 2
+                    else 1
 
                 Array.sortInPlaceWith
                     (fun (struct (l1: int, s1: int, e1: int, ty1: uint32, m1: uint32)) (struct (l2: int, s2: int, e2: int, ty2: uint32, m2: uint32)) ->
