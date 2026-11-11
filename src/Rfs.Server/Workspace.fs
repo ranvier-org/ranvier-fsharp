@@ -121,13 +121,34 @@ module Responses =
         o["Project"] <- JsonValue.Create project
         message "projectLoading" o
 
-    /// FSAC's `project` response, as far as a ProjectSpec knows it: the files and references are the project's, the
-    /// rest (package references, framework info) is empty.
+    /// FSAC's `project` response, populated from `ProjectSpec` (`Output`, `OutputType`, `TargetFramework`, files, and references).
     let project (spec: ProjectSpec) =
         let o = JsonObject()
         o["Project"] <- JsonValue.Create spec.ProjectFile
         o["Files"] <- strings spec.SourceFiles
-        o["Output"] <- JsonValue.Create "null"
+
+        let outputPath =
+            spec.OtherOptions
+            |> List.tryPick (fun x ->
+                if x.StartsWith("-o:", StringComparison.Ordinal) then
+                    let p = x.Substring(3).Trim()
+                    if p = "" then None else Some p
+                elif x.StartsWith("--out:", StringComparison.Ordinal) then
+                    let p = x.Substring(6).Trim()
+                    if p = "" then None else Some p
+                else
+                    None)
+            |> Option.map (fun p ->
+                try
+                    if Path.IsPathRooted p then
+                        Path.GetFullPath p
+                    else
+                        Path.GetFullPath(Path.Combine(Path.GetDirectoryName spec.ProjectFile, p))
+                with _ ->
+                    p)
+            |> Option.defaultValue "null"
+
+        o["Output"] <- JsonValue.Create outputPath
 
         o["ProjectReferences"] <-
             JsonArray(
@@ -149,16 +170,32 @@ module Responses =
                 |> List.sortBy Path.GetFileName
             )
 
-        o["OutputType"] <- JsonValue.Create "lib"
+        let outputType =
+            spec.OtherOptions
+            |> List.tryPick (fun x ->
+                if x.StartsWith("--target:", StringComparison.OrdinalIgnoreCase) then
+                    match x.Substring(9).Trim().ToLowerInvariant() with
+                    | "exe"
+                    | "winexe" -> Some "exe"
+                    | "module" -> Some "module"
+                    | "library" -> Some "lib"
+                    | other when other <> "" -> Some other
+                    | _ -> None
+                else
+                    None)
+            |> Option.defaultValue "lib"
+
+        let tfm = if isNull spec.TargetFramework then "" else spec.TargetFramework
+        o["OutputType"] <- JsonValue.Create outputType
         let info = JsonObject()
         info["IsTestProject"] <- JsonValue.Create false
         info["Configuration"] <- JsonValue.Create ""
         info["IsPackable"] <- JsonValue.Create false
-        info["TargetFramework"] <- JsonValue.Create ""
+        info["TargetFramework"] <- JsonValue.Create tfm
         info["TargetFrameworkIdentifier"] <- JsonValue.Create ""
         info["TargetFrameworkVersion"] <- JsonValue.Create ""
         info["RestoreSuccess"] <- JsonValue.Create true
-        info["TargetFrameworks"] <- JsonArray()
+        info["TargetFrameworks"] <- if String.IsNullOrWhiteSpace tfm then JsonArray() else strings [ tfm ]
         info["RunCmd"] <- null
         info["IsPublishable"] <- null
         o["Info"] <- info
@@ -642,6 +679,15 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         |> Array.tryFind (fun e ->
             isSource e.Spec path || String.Equals(e.Spec.ProjectFile, path, StringComparison.OrdinalIgnoreCase))
         |> Option.map _.Graph
+
+    /// The `ProjectSpec` of the loaded project matching `path` (project file or source file), if loaded
+    member _.SpecOf(path: string) : ProjectSpec option =
+        let path = Path.GetFullPath path
+
+        snapshot ()
+        |> Array.tryFind (fun e ->
+            String.Equals(e.Spec.ProjectFile, path, StringComparison.OrdinalIgnoreCase) || isSource e.Spec path)
+        |> Option.map _.Spec
 
     member _.Projects: ProjectGraph list = snapshot () |> Array.map _.Graph |> List.ofArray
 

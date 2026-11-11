@@ -220,6 +220,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
                     result.Add(section item)
 
                 result
+            | "workspace/applyEdit" -> Protocol.obj' [ "applied", JsonValue.Create true ]
             | _ -> null
 
         let m = message ()
@@ -371,7 +372,7 @@ type LspClient private (connection: JsonRpcConnection, server: Process option) =
             let capabilities =
                 JsonNode.Parse
                     """{"textDocument":{"synchronization":{"didSave":true},"publishDiagnostics":{"versionSupport":true}},
-                        "workspace":{"configuration":true,"workspaceFolders":true,"didChangeConfiguration":{"dynamicRegistration":true}},
+                        "workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true},"configuration":true,"workspaceFolders":true,"didChangeConfiguration":{"dynamicRegistration":true}},
                         "window":{"workDoneProgress":true}}"""
 
             if defaultArg watchers false then

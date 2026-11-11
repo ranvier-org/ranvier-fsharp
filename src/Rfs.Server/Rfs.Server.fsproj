@@ -30,6 +30,11 @@
     <Compile Include="Features/WorkspaceSymbols.fs" />
     <Compile Include="Features/CallHierarchy.fs" />
     <Compile Include="Features/TypeHierarchy.fs" />
+    <Compile Include="Features/Rename.fs" />
+    <Compile Include="Features/InlayHints.fs" />
+    <Compile Include="Features/CodeLens.fs" />
+    <Compile Include="Features/InlineValue.fs" />
+    <Compile Include="Features/IonideEndpoints.fs" />
     <Compile Include="Features/Why.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />

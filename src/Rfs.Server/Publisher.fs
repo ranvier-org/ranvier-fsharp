@@ -15,6 +15,10 @@ open Rfs.Projects
 /// The body of `rfs/declarationsChecked`
 type DeclarationsChecked = { count: int }
 
+/// FSAC's `fsharp/documentAnalyzed` payload (`LspHelpers.fs`)
+type DocumentAnalyzedNotification =
+    { TextDocument: VersionedTextDocumentIdentifier }
+
 /// An open document, or a closed file whose diagnostics in other files are still to be brought up to date. Graph
 /// thread.
 [<NoComparison; ReferenceEquality>]
@@ -286,6 +290,47 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
                     last
 
+    /// Emits `fsharp/fileParsed` once per open-row epoch as soon as the latest parse lands, without waiting on typecheck. Graph thread.
+    let publishingParsed (item: unit -> Row) : unit =
+        let mutable parsedSent = Int64.MinValue
+        let mutable inFlight = Int64.MinValue
+
+        createEffect (fun () ->
+            let r = item ()
+
+            try
+                if r.Open && r.Uri <> "" && r.Epoch <> parsedSent && r.Epoch <> inFlight then
+                    match workspace.OwnersNow r.Path with
+                    | [] -> ()
+                    | g :: _ ->
+                        let path = r.Path
+                        let uri = r.Uri
+                        let targetEpoch = r.Epoch
+                        inFlight <- targetEpoch
+
+                        task {
+                            try
+                                let! _ = g.LatestParse(path, CancellationToken.None)
+
+                                if Volatile.Read &disposed = 0 then
+                                    GraphTurn.afterPump host (fun () ->
+                                        if Volatile.Read &disposed = 0 then
+                                            match rowOf path with
+                                            | Some now when now.Open && now.Epoch = targetEpoch && parsedSent <> targetEpoch ->
+                                                parsedSent <- targetEpoch
+                                                let body = box { Content = uri }
+                                                outbox.Enqueue(Notify(fun () -> client.Notify("fsharp/fileParsed", body) |> Async.StartAsTask :> Task))
+                                            | _ -> ())
+                            with _ ->
+                                if Volatile.Read &disposed = 0 then
+                                    GraphTurn.afterPump host (fun () ->
+                                        if inFlight = targetEpoch then
+                                            inFlight <- Int64.MinValue)
+                        }
+                        |> ignore
+            with ex ->
+                log $"publishing fileParsed %s{r.Path} failed: %O{ex}")
+
     /// The effect of one row, over the row's own value. Graph thread.
     let publishing (item: unit -> Row) (own: Memo<Found>) : unit =
         let mutable sent = Int64.MinValue
@@ -304,6 +349,9 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
                         if fresh then
                             notifyChecks ()
+                            let analyzedBody = box { TextDocument = { Uri = r.Uri; Version = r.LspVersion } }
+                            GraphTurn.afterPump host (fun () ->
+                                outbox.Enqueue(Notify(fun () -> client.Notify("fsharp/documentAnalyzed", analyzedBody) |> Async.StartAsTask :> Task)))
                 elif found.Current && not (reportsToOpen r.Path found) then
                     // A closed file reports nothing to an open one: the row goes, after this pump, and with it what it
                     // reported, as for a file never opened
@@ -325,6 +373,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                         (fun item ->
                             let read = finding item
                             let own = createMemo (fun _ -> read ())
+                            publishingParsed item
                             publishing item own
                             fun () -> own.Value)
                         (fun () -> rows.Value |> Map.values :> seq<_>)

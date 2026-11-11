@@ -92,6 +92,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable canPullConfiguration = false
     let mutable canRegisterWatchers = false
     let mutable canShowProgress = false
+    let mutable canDocumentChanges = false
     let mutable progress: Progress option = None
 
     let updateConfig (token: JToken) =
@@ -389,6 +390,131 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         reading "rfs/why" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
             Why.at graph path (int p.Position.Line) (int p.Position.Character) ct)
 
+    member _.FSharpProject(p: ProjectParms) : Async<LspResult<PlainNotification>> =
+        async {
+            try
+                let projPath = Path.GetFullPath(Paths.ofUri p.Project.Uri)
+
+                match workspace.SpecOf projPath with
+                | Some spec -> return plain (Responses.project spec)
+                | None ->
+                    let! _ = workspace.Load [ projPath ] |> Async.AwaitTask
+
+                    match workspace.SpecOf projPath with
+                    | Some spec -> return plain (Responses.project spec)
+                    | None -> return internalError $"Project '%s{projPath}' failed to load."
+            with ex ->
+                return internalError ex.Message
+        }
+
+    member _.FSharpSignature(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/signature" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            task {
+                let! s = IonideEndpoints.signature graph path (int p.Position.Line) (int p.Position.Character) ct
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpSignatureData(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/signatureData" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            task {
+                let! s = IonideEndpoints.signatureData graph path (int p.Position.Line) (int p.Position.Character) ct
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpLineLens(p: ProjectParms) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/lineLens" None (fun () -> Paths.ofUri p.Project.Uri) (fun graph path ct ->
+            task {
+                let! s = IonideEndpoints.lineLens graph path ct
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpPipelineHint(p: PipelineHintRequest) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/pipelineHint" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            task {
+                let! s = IonideEndpoints.pipelineHint graph path ct
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpF1Help(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/f1Help" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            task {
+                let! s = IonideEndpoints.f1Help graph path (int p.Position.Line) (int p.Position.Character) ct
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpDocumentation(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
+        readingAny "fsharp/documentation" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            task {
+                let! s =
+                    IonideEndpoints.documentation
+                        workspace.OwnersOf
+                        graph
+                        path
+                        (int p.Position.Line)
+                        (int p.Position.Character)
+                        ct
+
+                return s |> Option.map (fun c -> { Content = c })
+            })
+
+    member _.FSharpDocumentationSymbol(p: DocumentationForSymbolRequest) : Async<LspResult<PlainNotification option>> =
+        async {
+            let! ct = Async.CancellationToken
+
+            try
+                do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+
+                let! s =
+                    IonideEndpoints.documentationSymbolOnHost
+                        host
+                        workspace.ProjectsNow
+                        workspace.LoadingNow
+                        p.XmlSig
+                        p.Assembly
+                        ct
+                    |> Async.AwaitTask
+
+                return Ok(s |> Option.map (fun c -> { Content = c }))
+            with ex ->
+                match ex with
+                | :? OperationCanceledException
+                | :? ObjectDisposedException -> return Ok None
+                | e -> return internalError e.Message
+        }
+
+    member _.FSharpDocumentationGenerator(p: TextDocumentPositionParams) : Async<LspResult<unit>> =
+        async {
+            let! res =
+                readingAny "fsharp/documentationGenerator" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                    let verOpt = documents.TryFind path |> Option.map _.LspVersion
+
+                    IonideEndpoints.documentationGeneratorWithCapabilities
+                        canDocumentChanges
+                        verOpt
+                        graph
+                        path
+                        (int p.Position.Line)
+                        (int p.Position.Character)
+                        ct)
+
+            match res with
+            | Error e -> return Error e
+            | Ok None -> return Ok()
+            | Ok(Some edit) ->
+                let! _ =
+                    (client :> ILspClient).WorkspaceApplyEdit
+                        { Label = Some "Generate Xml Documentation"
+                          Edit = edit }
+
+                return Ok()
+        }
+
+    member _.FSharpCompilerLocation(_: obj) : Async<LspResult<PlainNotification>> =
+        async.Return(plain (IonideEndpoints.compilerLocation ()))
+
+    member _.FSharpLoadAnalyzers(_: obj) : Async<LspResult<unit>> =
+        async.Return(Ok())
+
     interface ILspServer with
         member _.Initialize(p: InitializeParams) =
             async {
@@ -417,6 +543,17 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     |> Option.bind _.WorkDoneProgress
                     |> Option.defaultValue false
 
+                canDocumentChanges <-
+                    p.Capabilities.Workspace
+                    |> Option.bind _.WorkspaceEdit
+                    |> Option.bind _.DocumentChanges
+                    |> Option.defaultValue false
+
+                let inlineValueCap =
+                    match (Volatile.Read &config).InlineValues.Enabled with
+                    | Some false -> None
+                    | _ -> Some(U3.C1 true)
+
                 let capabilities =
                     { ServerCapabilities.Default with
                         TextDocumentSync =
@@ -443,6 +580,23 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         TypeHierarchyProvider = Some(U3.C1 true)
                         FoldingRangeProvider = Some(U3.C1 true)
                         SelectionRangeProvider = Some(U3.C1 true)
+                        RenameProvider =
+                            Some(
+                                U2.C2
+                                    { PrepareProvider = Some true
+                                      WorkDoneProgress = None }
+                            )
+                        InlayHintProvider =
+                            Some(
+                                U3.C2
+                                    { ResolveProvider = Some false
+                                      WorkDoneProgress = None }
+                            )
+                        CodeLensProvider =
+                            Some
+                                { ResolveProvider = Some true
+                                  WorkDoneProgress = None }
+                        InlineValueProvider = inlineValueCap
                         SignatureHelpProvider =
                             Some
                                 { TriggerCharacters = Some [| "("; ","; " " |]
@@ -582,7 +736,23 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             readingItem "callHierarchy/outgoingCalls" None (fun () -> p.Item.Uri) (fun graph ct ->
                 CallHierarchy.outgoing scope graph p.Item ct)
         member _.CodeActionResolve(_) = notImplemented
-        member _.CodeLensResolve(_) = notImplemented
+        member _.CodeLensResolve(lens: CodeLens) =
+            async {
+                let! ct = Async.CancellationToken
+
+                try
+                    do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                    let scope = makeScope ()
+                    let! resolved = CodeLens.resolve scope workspace.OwnersOf lens ct |> Async.AwaitTask
+                    return Ok resolved
+                with ex ->
+                    match ex with
+                    | :? OperationCanceledException
+                    | :? ObjectDisposedException -> return Ok lens
+                    | e ->
+                        eprintfn "[ranvierautocomplete] codeLens/resolve failed: %O" e
+                        return internalError e.Message
+            }
         member _.CompletionItemResolve(item: CompletionItem) =
             match Completion.positionOf item with
             | None -> async.Return(Ok item)
@@ -593,7 +763,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.DocumentLinkResolve(_) = notImplemented
         member _.InlayHintResolve(_) = notImplemented
         member _.TextDocumentCodeAction(_) = notImplemented
-        member _.TextDocumentCodeLens(_) = notImplemented
+        member _.TextDocumentCodeLens(p: CodeLensParams) =
+            readingAny "codeLens" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                CodeLens.lenses (Volatile.Read &config) graph path ct)
         member _.TextDocumentColorPresentation(_) = notImplemented
         member _.TextDocumentCompletion(p: CompletionParams) =
             reading "completion" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
@@ -721,8 +893,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 | Ok(Ok None) when workspace.IsLoading -> return moved
                 | _ -> return answer |> Result.bind id
             }
-        member _.TextDocumentInlayHint(_) = notImplemented
-        member _.TextDocumentInlineValue(_) = notImplemented
+        member _.TextDocumentInlayHint(p: InlayHintParams) =
+            readingAny "inlayHint" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                InlayHints.provide (Volatile.Read &config).InlayHints graph path p.Range ct)
+
+        member _.TextDocumentInlineValue(p: InlineValueParams) =
+            readingAny "inlineValue" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                InlineValue.provide (Volatile.Read &config).InlineValues graph path p.Range ct)
+
         member _.TextDocumentLinkedEditingRange(_) = notImplemented
         member _.TextDocumentMoniker(_) = notImplemented
         member _.TextDocumentOnTypeFormatting(_) = notImplemented
@@ -732,7 +910,15 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             readingAny "prepareCallHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 CallHierarchy.prepare scope graph path (int p.Position.Line) (int p.Position.Character) ct)
 
-        member _.TextDocumentPrepareRename(_) = notImplemented
+        member _.TextDocumentPrepareRename(p: PrepareRenameParams) =
+            readingAny "prepareRename" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                Rename.prepare
+                    (fun f -> workspace.OwnersNow(Path.GetFullPath f))
+                    graph
+                    path
+                    (int p.Position.Line)
+                    (int p.Position.Character)
+                    ct)
 
         member _.TextDocumentPrepareTypeHierarchy(p: TypeHierarchyPrepareParams) =
             let scope = makeScope ()
@@ -784,7 +970,34 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 | Ok(Ok None) when workspace.IsLoading -> return moved
                 | _ -> return answer |> Result.bind id
             }
-        member _.TextDocumentRename(_) = notImplemented
+        member _.TextDocumentRename(p: RenameParams) =
+            async {
+                match Rename.validateAndFormatNewName p.NewName with
+                | Error msg -> return Error(JsonRpc.Error.Create(-32602, msg))
+                | Ok _ ->
+                    let scope = makeScope ()
+
+                    let versionOf (filePath: string) =
+                        documents.TryFind filePath |> Option.map _.LspVersion
+
+                    let! res =
+                        readingAny "rename" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                            Rename.renameWithCapabilities
+                                canDocumentChanges
+                                versionOf
+                                scope
+                                graph
+                                path
+                                (int p.Position.Line)
+                                (int p.Position.Character)
+                                p.NewName
+                                ct)
+
+                    match res with
+                    | Error e -> return Error e
+                    | Ok(Error msg) -> return Error(JsonRpc.Error.Create(-32602, msg))
+                    | Ok(Ok editOpt) -> return Ok editOpt
+            }
         member _.TextDocumentSelectionRange(p: SelectionRangeParams) =
             readingAny "selectionRange" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 SelectionRange.atPositions graph path p.Positions ct)
@@ -989,6 +1202,12 @@ module Server =
               "typeHierarchy/subtypes"
               "textDocument/foldingRange"
               "textDocument/selectionRange"
+              "textDocument/prepareRename"
+              "textDocument/rename"
+              "textDocument/inlayHint"
+              "textDocument/codeLens"
+              "codeLens/resolve"
+              "textDocument/inlineValue"
               "textDocument/semanticTokens/full"
               "textDocument/semanticTokens/full/delta"
               "textDocument/semanticTokens/range" ]
@@ -998,6 +1217,17 @@ module Server =
         |> Map.filter (fun name _ -> implemented.Contains name)
         |> Map.add "fsharp/workspacePeek" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspacePeek p))
         |> Map.add "fsharp/workspaceLoad" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpWorkspaceLoad p))
+        |> Map.add "fsharp/project" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpProject p))
+        |> Map.add "fsharp/signature" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpSignature p))
+        |> Map.add "fsharp/signatureData" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpSignatureData p))
+        |> Map.add "fsharp/lineLens" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpLineLens p))
+        |> Map.add "fsharp/pipelineHint" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpPipelineHint p))
+        |> Map.add "fsharp/f1Help" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpF1Help p))
+        |> Map.add "fsharp/documentation" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpDocumentation p))
+        |> Map.add "fsharp/documentationSymbol" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpDocumentationSymbol p))
+        |> Map.add "fsharp/documentationGenerator" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpDocumentationGenerator p))
+        |> Map.add "fsharp/compilerLocation" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpCompilerLocation p))
+        |> Map.add "fsharp/loadAnalyzers" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpLoadAnalyzers p))
         |> Map.add "rfs/why" (serverRequestHandling (fun (s: RanvierServer) p -> s.RfsWhy p))
 
     /// Runs the server, telling `created` about the server the connection makes. For tests.

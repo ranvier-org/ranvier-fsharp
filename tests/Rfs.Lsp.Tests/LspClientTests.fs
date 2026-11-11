@@ -316,4 +316,37 @@ let tests =
                               let! opened = server.WaitForMethod "textDocument/didOpen"
                               Expect.equal (opened |> at [ "params"; "textDocument"; "uri" ] |> str) "file:///C:/rfs-uri-test/y.fs" "sent URI"
                           })
+          }
+
+          testTask "client declares applyEdit capability and answers workspace/applyEdit with applied=true" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          let! _ = client.Initialize(Uri(Path.GetTempPath()).AbsoluteUri, JsonNode.Parse "{}")
+                          let! init = server.WaitForMethod "initialize"
+
+                          Expect.isTrue
+                              (init |> at [ "params"; "capabilities"; "workspace"; "applyEdit" ] |> bln)
+                              "workspace.applyEdit capability is declared"
+
+                          Expect.isTrue
+                              (init |> at [ "params"; "capabilities"; "workspace"; "workspaceEdit"; "documentChanges" ] |> bln)
+                              "workspace.workspaceEdit.documentChanges capability is declared"
+
+                          let! applied =
+                              server.Request(
+                                  "workspace/applyEdit",
+                                  JsonNode.Parse
+                                      """{"label":"Generate Xml Documentation","edit":{"changes":{"file:///C:/test/A.fs":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"/// <summary></summary>\n"}]}}}"""
+                              )
+
+                          Expect.isNotNull applied "workspace/applyEdit answered with non-null response"
+                          Expect.isTrue (applied |> at [ "applied" ] |> bln) "applied is true"
+
+                          let recorded =
+                              client.ServerRequests
+                              |> Array.tryFind (fun r -> r["method"].GetValue<string>() = "workspace/applyEdit")
+
+                          Expect.isSome recorded "workspace/applyEdit request recorded on client.ServerRequests"
+                      })
           } ]

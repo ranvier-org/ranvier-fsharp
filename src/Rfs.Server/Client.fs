@@ -21,6 +21,9 @@ type RanvierClient(sendServerNotification: ClientNotificationSender, sendServerR
     override _.WorkspaceConfiguration(p: ConfigurationParams) =
         sendServerRequest.Send "workspace/configuration" (box p)
 
+    override _.WorkspaceApplyEdit(p: ApplyWorkspaceEditParams) =
+        sendServerRequest.Send "workspace/applyEdit" (box p)
+
     /// `window/workDoneProgress/create` for `token`
     member _.CreateProgress(token: string) : Async<Result<unit, JsonRpc.Error>> =
         sendServerRequest.Send "window/workDoneProgress/create" (box (Newtonsoft.Json.Linq.JObject(Newtonsoft.Json.Linq.JProperty("token", token))))
