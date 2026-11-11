@@ -29,6 +29,7 @@
     <Compile Include="RequestFeatureTests.fs" />
     <Compile Include="SemanticTokensAndConfigTests.fs" />
     <Compile Include="SyntaxFeaturesAndKeywordsTests.fs" />
+    <Compile Include="SignatureHelpAndNavigationTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

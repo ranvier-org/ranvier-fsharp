@@ -1342,6 +1342,126 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             return! Request.run host body linked.Token
         }
 
+    /// Settled `.fsi` signature file read running `prepare` and `DeclarationChecker.SignatureUses` off the graph thread,
+    /// returning plain data `'T` only while the signature result remains current.
+    member _.ReadSignature<'P, 'T>
+        (
+            file: string,
+            prepare: TextView -> 'P,
+            read: TextView -> 'P -> FileUses -> (struct (FSharp.Compiler.Text.range * bool * FSharp.Compiler.Symbols.FSharpSymbol))[] -> 'T,
+            ct: CancellationToken
+        ) : Task<'T> =
+        let i = indexOf file
+
+        if not (isSignatureFile files[i]) then
+            invalidArg (nameof file) $"%s{file} is not a signature file"
+
+        let readable () =
+            try
+                readSettled i (fun f version ->
+                    let p = f.Text.Parsed.Value
+
+                    if p.Version <> version then
+                        ValueNone
+                    else
+                        (f :?> ISignatureFile).Uses version
+                        |> ValueOption.map (fun struct (sigResult, uses) ->
+                            let view: TextView = { Parse = p.Parse; Text = p.Text; Docs = p.Docs; Version = p.Version }
+                            struct (view, sigResult, uses, project.Context)))
+            with NotReadyException _ ->
+                ValueNone
+
+        let body (flight: CancellationToken) : Task<'T> =
+            match readable () with
+            | ValueNone -> Request.waitForNextTurn flight
+            | ValueSome(struct (view, sigResult, uses, ctx)) ->
+                Task.Run<'T>(fun () ->
+                    task {
+                        let prepared = prepare view
+                        let sigUses = DeclarationChecker.SignatureUses(ctx, sigResult)
+                        let computed = read view prepared uses sigUses
+
+                        let! stillCurrent =
+                            host.Read(fun () ->
+                                match readable () with
+                                | ValueSome(struct (_, currentSig, _, _)) -> obj.ReferenceEquals(currentSig, sigResult)
+                                | ValueNone -> false)
+
+                        if stillCurrent then
+                            return computed
+                        else
+                            return! Request.waitForNextTurn flight
+                    })
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
+    member this.ReadSignature<'T>
+        (
+            file: string,
+            read: TextView -> FileUses -> (struct (FSharp.Compiler.Text.range * bool * FSharp.Compiler.Symbols.FSharpSymbol))[] -> 'T,
+            ct: CancellationToken
+        ) : Task<'T> =
+        this.ReadSignature(file, ignore, (fun view () uses sigUses -> read view uses sigUses), ct)
+
+    /// Settled lookup of a signature declaration's implementation site in its paired `.fs` file in this project.
+    member _.ImplementationLocation(signatureFile: string, key: string, ct: CancellationToken) : Task<FSharp.Compiler.Text.range option> =
+        let holds (file: string) = byPath.ContainsKey(Path.GetFullPath file)
+        let sameFile (x: string) (y: string) =
+            String.Equals(Path.GetFullPath x, Path.GetFullPath y, StringComparison.OrdinalIgnoreCase)
+
+        let implementation = Path.ChangeExtension(signatureFile, ".fs")
+
+        let readImpl (file: string) =
+            let i = indexOf file
+
+            try
+                readSettled i (fun f version ->
+                    (f :?> IReadableFile).Uses version
+                    |> ValueOption.map (fun struct (u, _) -> u.ImplementationDefinitionOf(key, true)))
+            with NotReadyException _ ->
+                ValueNone
+
+        let answer () : FSharp.Compiler.Text.range option voption =
+            if holds implementation && not (isSignatureFile files[indexOf implementation]) then
+                readImpl implementation
+            elif holds signatureFile then
+                let sigIndex = indexOf signatureFile
+                let mutable pending = false
+                let mutable found: FSharp.Compiler.Text.range option = None
+                let mutable idx = sigIndex + 1
+
+                while not pending && found.IsNone && idx < files.Length do
+                    if not (isSignatureFile files[idx]) then
+                        try
+                            match readSettled idx (fun f version -> (f :?> IReadableFile).Uses version) with
+                            | ValueNone -> pending <- true
+                            | ValueSome(struct (u, _)) ->
+                                match u.DefinitionOf key with
+                                | Some sigRange when sameFile sigRange.FileName signatureFile ->
+                                    found <- u.ImplementationDefinitionOf(key, true)
+                                | _ -> ()
+                        with NotReadyException _ ->
+                            pending <- true
+
+                    idx <- idx + 1
+
+                if pending then ValueNone else ValueSome found
+            else
+                ValueSome None
+
+        let body (flight: CancellationToken) =
+            match answer () with
+            | ValueSome found -> Task.FromResult found
+            | ValueNone -> Request.waitForNextTurn flight
+
+        task {
+            use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token)
+            return! Request.run host body linked.Token
+        }
+
     /// Latest parsed TextViews across workspace graphs on the same GraphHost in one turn, never waiting on typecheck.
     member _.LatestParsesInOneTurn
         (scope: unit -> struct (bool * (ProjectGraph * string list)[]), ct: CancellationToken)

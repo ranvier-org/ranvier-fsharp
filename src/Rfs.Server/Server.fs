@@ -369,10 +369,19 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                     Change = Some TextDocumentSyncKind.Incremental }
                         HoverProvider = Some(U2.C1 true)
                         DefinitionProvider = Some(U2.C1 true)
+                        DeclarationProvider = Some(U3.C1 true)
+                        TypeDefinitionProvider = Some(U3.C1 true)
+                        ImplementationProvider = Some(U3.C1 true)
                         ReferencesProvider = Some(U2.C1 true)
+                        DocumentHighlightProvider = Some(U2.C1 true)
                         DocumentSymbolProvider = Some(U2.C1 true)
                         FoldingRangeProvider = Some(U3.C1 true)
                         SelectionRangeProvider = Some(U3.C1 true)
+                        SignatureHelpProvider =
+                            Some
+                                { TriggerCharacters = Some [| "("; ","; " " |]
+                                  RetriggerCharacters = Some [| ","; ")"; " " |]
+                                  WorkDoneProgress = None }
                         CompletionProvider =
                             Some
                                 { TriggerCharacters = Some [| "."; "'"; "{" |]
@@ -534,14 +543,30 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         )
                 })
 
-        member _.TextDocumentDeclaration(_) = notImplemented
+        member _.TextDocumentDeclaration(p: DeclarationParams) =
+            readingAny "declaration" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                task {
+                    let! found = Declaration.at workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+
+                    return
+                        found
+                        |> Option.map (fun r ->
+                            let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
+
+                            U2.C1(
+                                U2.C1
+                                    { Uri = Paths.toUri r.FileName
+                                      Range = { Start = position r.StartLine r.StartColumn; End = position r.EndLine r.EndColumn } }
+                            ))
+                })
+
         member this.TextDocumentDefinition(p: DefinitionParams) =
-            reading "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+            readingAny "definition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
                     let line, character = int p.Position.Line, int p.Position.Character
 
                     let! found =
-                        if canShowProgress then
+                        if canShowProgress && not (path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)) then
                             Definition.answer lastDefinitions lastAnswers workspace.LoadingNow this.MarkShown this.WhenShown workspace.ProjectsNow workspace.OwnersOf graph path line character ct
                         else
                             Definition.at workspace.OwnersOf graph path line character ct
@@ -560,7 +585,9 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.TextDocumentDiagnostic(_) = notImplemented
         member _.TextDocumentDocumentColor(_) = notImplemented
-        member _.TextDocumentDocumentHighlight(_) = notImplemented
+        member _.TextDocumentDocumentHighlight(p: DocumentHighlightParams) =
+            readingAny "documentHighlight" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                DocumentHighlight.at graph path (int p.Position.Line) (int p.Position.Character) ct)
         member _.TextDocumentDocumentLink(_) = notImplemented
         member _.TextDocumentDocumentSymbol(p: DocumentSymbolParams) =
             readingAny "documentSymbol" None (fun () -> Paths.ofUri p.TextDocument.Uri) DocumentSymbols.hierarchical
@@ -581,7 +608,44 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                               Range = None })
                 })
 
-        member _.TextDocumentImplementation(_) = notImplemented
+        member _.TextDocumentImplementation(p: ImplementationParams) =
+            async {
+                let scope: References.Scope =
+                    { OwnersOf = fun path -> workspace.OwnersNow(Path.GetFullPath path)
+                      ReferencingProjects = workspace.ReferencingNow
+                      Projects = workspace.ProjectsNow
+                      FilesOf = workspace.FilesNow
+                      IsLoading = workspace.LoadingNow }
+
+                let moved = Error(JsonRpc.Error.Create(-32801, "The files changed while implementations were read"))
+
+                let! answer =
+                    readingAny "implementation" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                        task {
+                            let line, character = int p.Position.Line, int p.Position.Character
+
+                            match! Implementation.find scope graph path line character ct with
+                            | Error() -> return moved
+                            | Ok ranges ->
+                                let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
+
+                                let mapped =
+                                    ranges
+                                    |> Array.map (fun r ->
+                                        { Uri = Paths.toUri r.FileName
+                                          Range = { Start = position r.StartLine r.StartColumn; End = position r.EndLine r.EndColumn } })
+
+                                return
+                                    match mapped with
+                                    | [||] -> Ok None
+                                    | [| single |] -> Ok(Some(U2.C1(U2.C1 single)))
+                                    | multiple -> Ok(Some(U2.C1(U2.C2 multiple)))
+                        })
+
+                match answer with
+                | Ok(Ok None) when workspace.IsLoading -> return moved
+                | _ -> return answer |> Result.bind id
+            }
         member _.TextDocumentInlayHint(_) = notImplemented
         member _.TextDocumentInlineValue(_) = notImplemented
         member _.TextDocumentLinkedEditingRange(_) = notImplemented
@@ -650,8 +714,31 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentSemanticTokensRange(p: SemanticTokensRangeParams) =
             readingAny "semanticTokens/range" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 SemanticTokens.range graph path p.Range ct)
-        member _.TextDocumentSignatureHelp(_) = notImplemented
-        member _.TextDocumentTypeDefinition(_) = notImplemented
+        member _.TextDocumentSignatureHelp(p: SignatureHelpParams) =
+            reading "signatureHelp" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                let triggerChar =
+                    p.Context
+                    |> Option.bind _.TriggerCharacter
+                    |> Option.bind (fun s -> if String.IsNullOrEmpty s then None else Some s[0])
+
+                SignatureHelp.atWithTrigger triggerChar workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct)
+
+        member _.TextDocumentTypeDefinition(p: TypeDefinitionParams) =
+            readingAny "typeDefinition" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                task {
+                    let! found = TypeDefinition.at workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+
+                    return
+                        found
+                        |> Option.map (fun r ->
+                            let position (line: int) (column: int) = { Line = uint32 (line - 1); Character = uint32 column }
+
+                            U2.C1(
+                                U2.C1
+                                    { Uri = Paths.toUri r.FileName
+                                      Range = { Start = position r.StartLine r.StartColumn; End = position r.EndLine r.EndColumn } }
+                            ))
+                })
         member _.TextDocumentWillSave(_) = ignoreNotification
         member _.TextDocumentWillSaveWaitUntil(_) = notImplemented
         member _.TypeHierarchySubtypes(_) = notImplemented
@@ -753,7 +840,12 @@ module Server =
               "workspace/didChangeWatchedFiles"
               "textDocument/hover"
               "textDocument/definition"
+              "textDocument/declaration"
+              "textDocument/typeDefinition"
+              "textDocument/implementation"
               "textDocument/references"
+              "textDocument/documentHighlight"
+              "textDocument/signatureHelp"
               "textDocument/completion"
               "completionItem/resolve"
               "textDocument/documentSymbol"

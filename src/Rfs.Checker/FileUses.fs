@@ -156,6 +156,7 @@ type FileUses
         byKey: Dictionary<string, KeyUses>,
         definitions: Dictionary<string, DefinitionSite[]>,
         conforming: Dictionary<string, DefinitionSite[]>,
+        implConforming: Dictionary<string, DefinitionSite[]>,
         implementations: Dictionary<string, range[]>,
         typesByKey: Dictionary<string, TypeRelationEntry>,
         subtypesBySuper: Dictionary<string, TypeRelationEntry[]>,
@@ -227,6 +228,19 @@ type FileUses
         else
             DefinitionSites.locationOf key exact
 
+    /// An implementation file's own declaration site in `.fs` for a raw key (or conformed `.fsi` signature key), ignoring `.fsi` redirection
+    member _.ImplementationDefinitionOf(key: string, conformed: bool) : range option =
+        let defined = sitesIn implConforming (DefinitionSites.conformance key)
+        let exact = defined |> Array.filter (fun s -> DefinitionSites.withoutSetter s.Key = DefinitionSites.withoutSetter key)
+
+        if exact.Length = 0 && conformed then
+            DefinitionSites.locationOf key defined
+        else
+            DefinitionSites.locationOf key exact
+
+    member this.ImplementationDefinitionOf(key: string) : range option =
+        this.ImplementationDefinitionOf(key, true)
+
     /// An estimate of the bytes it holds (entries, key strings, arrays, ranges), for measuring: the uses by key, then the
     /// definitions by raw key
     member internal _.Footprint: struct (int64 * int64) =
@@ -270,7 +284,7 @@ type FileUses
 
         let mutable raw = 0L
 
-        for d in [ definitions; conforming ] do
+        for d in [ definitions; conforming; implConforming ] do
             for KeyValue(k, sites) in d do
                 raw <- raw + entry + text k + 24L
 
@@ -1008,6 +1022,7 @@ module SymbolUses =
         (source: obj)
         (definitionSites: Dictionary<string, DefinitionSite[]>)
         (conforming: Dictionary<string, DefinitionSite[]>)
+        (implConforming: Dictionary<string, DefinitionSite[]>)
         (implementations: Dictionary<string, range[]>)
         (typesByKey: Dictionary<string, TypeRelationEntry>)
         (subtypesBySuper: Dictionary<string, TypeRelationEntry[]>)
@@ -1039,7 +1054,7 @@ module SymbolUses =
                     | true, d -> d.ToArray()
                     | _ -> [||] }
 
-        FileUses(WeakReference source, byKey, definitionSites, conforming, implementations, typesByKey, subtypesBySuper, callables)
+        FileUses(WeakReference source, byKey, definitionSites, conforming, implConforming, implementations, typesByKey, subtypesBySuper, callables)
 
     let private noSites = Dictionary<string, DefinitionSite[]>()
 
@@ -1074,6 +1089,39 @@ module SymbolUses =
 
         let definitions =
             all |> Seq.filter _.IsFromDefinition |> Seq.map _.Symbol |> sitesOf |> DefinitionSites.group DefinitionSites.withoutSetter false
+
+        let implConforming =
+            all
+            |> Seq.choose (fun u ->
+                if not u.IsFromDefinition || ast.AugmentationIdentRanges.Contains(AstIndex.rangeKey u.Range) then
+                    None
+                else
+                    let skipGenerated =
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as v ->
+                            (try v.IsCompilerGenerated with _ -> false)
+                            && not v.IsPropertyGetterMethod
+                            && not v.IsPropertySetterMethod
+                            && not v.IsConstructor
+                        | _ -> false
+
+                    if skipGenerated then
+                        None
+                    else
+                        match DeclarationChecker.SymbolKey u.Symbol with
+                        | None -> None
+                        | Some rawKey ->
+                            let getter, setter =
+                                match u.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as v -> v.IsPropertyGetterMethod, v.IsPropertySetterMethod
+                                | _ -> false, false
+
+                            Some
+                                { Key = rawKey
+                                  Location = ValueSome u.Range
+                                  IsGetter = getter
+                                  IsSetter = setter })
+            |> DefinitionSites.group DefinitionSites.conformance true
 
         let extraImpls =
             seq {
@@ -1122,7 +1170,7 @@ module SymbolUses =
                         ValueNone
 
                 struct (key, u.Range, u.IsFromDefinition, location)))
-        |> build source definitions noSites implementations typesByKey subtypesBySuper callables
+        |> build source definitions noSites implConforming implementations typesByKey subtypesBySuper callables
 
     /// Indexes an implementation file's check.
     let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
@@ -1198,7 +1246,7 @@ module SymbolUses =
                 | _ -> keyOf symbol
 
             own |> Option.map (fun key -> struct (key, r, definition, ValueNone)))
-        |> build source noSites conforming implementations typesByKey subtypesBySuper callables
+        |> build source noSites conforming noSites implementations typesByKey subtypesBySuper callables
 
     /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
     /// no locations to tell apart in the uses.

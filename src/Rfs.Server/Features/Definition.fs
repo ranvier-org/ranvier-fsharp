@@ -18,14 +18,15 @@ open Rfs.Checker
 /// <remarks>
 /// What the symbol under the cursor says tells only which definition it is, and which file to look in: a location it
 /// holds can be stale (ProjectGraph.CurrentLocation), so the answer is read from that file now. A symbol with no key
-/// answers only inside the row that uses it, else nothing (see `at`). Not ported: decompiling and sourcelink (an external
-/// definition answers nothing), <c>#load</c>, and moving from a signature to its implementation (a signature file has no
-/// result to ask, and answers nothing).
+/// answers only inside the row that uses it, else nothing (see `at`). In a signature (<c>.fsi</c>) file, a symbol
+/// declared there jumps to its paired <c>.fs</c> implementation when one exists, and a symbol referenced there jumps
+/// to its workspace definition. Not ported: decompiling and sourcelink (an external definition answers nothing), and
+/// <c>#load</c>.
 /// <para>
 /// Where FCS answers and this answers nothing, never something stale, in the DefinitionGrid's batteries (tokens across
 /// states, unsigned of 11581 and signed of 15149): a signed function's or member's parameter (0, 1071), a named
-/// argument (39, 51), a namespace outside its own file's header (104, 136). Also a cursor in a
-/// signature file, and in a file that doesn't compile a key two definitions share.
+/// argument (39, 51), a namespace outside its own file's header (104, 136). Also in a file that doesn't compile a key
+/// two definitions share.
 /// </para>
 /// </remarks>
 module Definition =
@@ -167,11 +168,118 @@ module Definition =
                 return struct (answer, (if answer.IsSome || owners.IsEmpty then entry from answer else ValueNone))
         }
 
-    let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
+    [<NoComparison>]
+    type private SigFound =
+        | SigNowhere
+        | SigDecl of key: string * ownRange: range
+        | SigLocalDecl of range
+        | SigRef of key: string * landed: string
+
+    let internal pickSignatureUse
+        (line: int)
+        (character: int)
+        (endColOpt: int option)
+        (sigUses: (struct (range * bool * FSharpSymbol))[])
+        : struct (range * bool * FSharpSymbol) option =
+        let cursorPos = Position.mkPos (line + 1) character
+
+        let containing =
+            sigUses
+            |> Array.filter (fun (struct (r, _, _)) -> Range.rangeContainsPos r cursorPos)
+
+        if containing.Length = 0 then
+            None
+        else
+            let paramPenalty (s: FSharpSymbol) = if s :? FSharpParameter then 1 else 0
+
+            match endColOpt with
+            | Some endCol ->
+                containing
+                |> Array.filter (fun (struct (r, _, _)) -> r.EndLine = line + 1 && r.EndColumn = endCol)
+                |> Array.sortBy (fun (struct (r, _, s)) -> paramPenalty s, r.EndLine - r.StartLine, r.EndColumn - r.StartColumn)
+                |> Array.tryHead
+                |> Option.orElseWith (fun () ->
+                    containing
+                    |> Array.sortBy (fun (struct (r, _, s)) -> paramPenalty s, r.EndLine - r.StartLine, r.EndColumn - r.StartColumn)
+                    |> Array.tryHead)
+            | None ->
+                containing
+                |> Array.sortBy (fun (struct (r, _, s)) -> paramPenalty s, r.EndLine - r.StartLine, r.EndColumn - r.StartColumn)
+                |> Array.tryHead
+
+    let private atSignature
+        (ownersOf: string -> ProjectGraph list)
+        (graph: ProjectGraph)
+        (path: string)
+        (line: int)
+        (character: int)
+        (ct: CancellationToken)
+        : Task<range option> =
         task {
-            let! struct (found, _) = atIn None ownersOf graph path line character ct
-            return found
+            let! found =
+                graph.ReadSignature(
+                    path,
+                    (fun view -> Hover.lookupOf view.Text line character),
+                    (fun _ lookup _ sigUses ->
+                        let endColOpt = lookup |> Option.map (fun (_, _, ec) -> ec)
+
+                        match pickSignatureUse line character endColOpt sigUses with
+                        | None -> SigNowhere
+                        | Some(struct (_, _, symbol)) when (symbol :? FSharpParameter) -> SigNowhere
+                        | Some(struct (_, isDef, symbol)) when (match symbol with :? FSharpEntity as e -> e.IsNamespace | _ -> false) && not isDef ->
+                            SigNowhere
+                        | Some(struct (ownRange, true, symbol)) ->
+                            match DeclarationChecker.SymbolKey symbol with
+                            | Some key -> SigDecl(key, ownRange)
+                            | None -> SigLocalDecl ownRange
+                        | Some(struct (_, false, symbol)) ->
+                            match DeclarationChecker.SymbolKey symbol, symbol.SignatureLocation |> Option.orElse symbol.DeclarationLocation with
+                            | Some key, Some loc when not (loc.FileName.EndsWith(Range.rangeStartup.FileName, StringComparison.Ordinal)) ->
+                                SigRef(key, loc.FileName)
+                            | _ -> SigNowhere),
+                    ct
+                )
+
+            match found with
+            | SigNowhere -> return None
+            | SigLocalDecl ownRange -> return Some ownRange
+            | SigDecl(key, ownRange) ->
+                let implPath = Path.ChangeExtension(path, ".fs")
+                let owners = (ownersOf implPath @ ownersOf path @ [ graph ]) |> List.distinct
+                let mutable answer = None
+
+                for owner in owners do
+                    if answer.IsNone then
+                        let! implLoc = owner.ImplementationLocation(path, key, ct)
+                        answer <- implLoc
+
+                return answer |> Option.orElse (Some ownRange)
+            | SigRef(key, landed) ->
+                let implementation =
+                    if landed.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                        Path.ChangeExtension(landed, ".fs")
+                    else
+                        landed
+
+                let owners = (ownersOf implementation @ ownersOf (Path.ChangeExtension(landed, ".fsi"))) |> List.distinct
+                let mutable answer = None
+
+                for owner in owners do
+                    if answer.IsNone then
+                        let! current = owner.CurrentLocation(path, landed, key, ct)
+                        answer <- current
+
+                return answer
         }
+
+    let at (ownersOf: string -> ProjectGraph list) (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<range option> =
+        if path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+            atSignature ownersOf graph path line character ct
+        else
+            task {
+                let! struct (found, _) = atIn None ownersOf graph path line character ct
+                return found
+            }
 
     /// The settled answers definition gave, for answers from the last state
     type LastAnswers = LastState.Cache<range option>

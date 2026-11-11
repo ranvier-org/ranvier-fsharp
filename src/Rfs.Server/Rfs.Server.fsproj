@@ -18,6 +18,11 @@
     <Compile Include="Features/Completion.fs" />
     <Compile Include="Features/Definition.fs" />
     <Compile Include="Features/References.fs" />
+    <Compile Include="Features/SignatureHelp.fs" />
+    <Compile Include="Features/DocumentHighlight.fs" />
+    <Compile Include="Features/Declaration.fs" />
+    <Compile Include="Features/TypeDefinition.fs" />
+    <Compile Include="Features/Implementation.fs" />
     <Compile Include="Features/SemanticTokens.fs" />
     <Compile Include="Features/Folding.fs" />
     <Compile Include="Features/SelectionRange.fs" />
