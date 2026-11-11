@@ -160,7 +160,8 @@ type FileUses
         implementations: Dictionary<string, range[]>,
         typesByKey: Dictionary<string, TypeRelationEntry>,
         subtypesBySuper: Dictionary<string, TypeRelationEntry[]>,
-        callables: CallableDecl[]
+        callables: CallableDecl[],
+        ctorCalls: Dictionary<string, range[]>
     ) =
     static let nothing = { Hits = [||]; Definitions = [||] }
 
@@ -210,6 +211,40 @@ type FileUses
             i <- i + 1
 
         found
+
+    /// Declared callable entries in this file (sorted innermost-first).
+    member _.Callables: CallableDecl[] = callables
+
+    /// Declared callable entry in this file matching `key` (or conformance match when `conformed` is true).
+    member _.CallableOf(key: string, ?conformed: bool) : CallableDecl voption =
+        let conformed = defaultArg conformed false
+        let plain = DefinitionSites.withoutSetter key
+        let mutable found = ValueNone
+        let mutable i = 0
+
+        while found.IsNone && i < callables.Length do
+            if DefinitionSites.withoutSetter callables[i].Key = plain then
+                found <- ValueSome callables[i]
+
+            i <- i + 1
+
+        if found.IsNone && conformed then
+            let conf = DefinitionSites.conformance plain
+            let mutable j = 0
+
+            while found.IsNone && j < callables.Length do
+                if DefinitionSites.conformance callables[j].Key = conf then
+                    found <- ValueSome callables[j]
+
+                j <- j + 1
+
+        found
+
+    /// Non-definition constructor call-site ranges in this file for `ctorKey` (`DeclarationChecker.SymbolKey ctor`).
+    member _.ConstructorCallsOf(ctorKey: string) : range[] =
+        match ctorCalls.TryGetValue ctorKey with
+        | true, ranges -> ranges
+        | _ -> [||]
 
     /// How many keys it holds
     member _.Keys = byKey.Count
@@ -281,6 +316,9 @@ type FileUses
                 keyed
                 + (if isNull c.Key then 0L else text c.Key)
                 + (if isNull c.Name then 0L else text c.Name)
+
+        for KeyValue(k, rs) in ctorCalls do
+            keyed <- keyed + entry + text k + 24L + int64 rs.Length * rangeBytes
 
         let mutable raw = 0L
 
@@ -793,12 +831,17 @@ module SymbolUses =
 
     let private callableNameOf (v: FSharpMemberOrFunctionOrValue) : string =
         try
-            let raw = v.DisplayNameCore
-
-            if (v.IsPropertyGetterMethod || v.IsPropertySetterMethod) && (raw.StartsWith("get_", StringComparison.Ordinal) || raw.StartsWith("set_", StringComparison.Ordinal)) then
-                raw.Substring 4
+            if v.IsConstructor then
+                match v.DeclaringEntity with
+                | Some e -> e.DisplayNameCore
+                | None -> v.DisplayNameCore
             else
-                raw
+                let raw = v.DisplayNameCore
+
+                if (v.IsPropertyGetterMethod || v.IsPropertySetterMethod) && (raw.StartsWith("get_", StringComparison.Ordinal) || raw.StartsWith("set_", StringComparison.Ordinal)) then
+                    raw.Substring 4
+                else
+                    raw
         with _ ->
             v.LogicalName
 
@@ -1027,6 +1070,7 @@ module SymbolUses =
         (typesByKey: Dictionary<string, TypeRelationEntry>)
         (subtypesBySuper: Dictionary<string, TypeRelationEntry[]>)
         (callables: CallableDecl[])
+        (ctorCalls: Dictionary<string, range[]>)
         (uses: seq<struct (string * range * bool * range voption)>)
         =
         let hits = Dictionary<string, List<struct (range * bool)>>()
@@ -1054,9 +1098,10 @@ module SymbolUses =
                     | true, d -> d.ToArray()
                     | _ -> [||] }
 
-        FileUses(WeakReference source, byKey, definitionSites, conforming, implConforming, implementations, typesByKey, subtypesBySuper, callables)
+        FileUses(WeakReference source, byKey, definitionSites, conforming, implConforming, implementations, typesByKey, subtypesBySuper, callables, ctorCalls)
 
     let private noSites = Dictionary<string, DefinitionSite[]>()
+    let private noRanges = Dictionary<string, range[]>()
 
     /// Each definition's site by its raw key, constructors included. A union case's or exception's fields too: the
     /// compiler reports a definition only for a named one, and an unnamed one (`Item1`, `Data0`) can be named in a use.
@@ -1077,7 +1122,7 @@ module SymbolUses =
               | None -> () ]
 
     /// Indexes an implementation file's check, using `parseTree` when provided for declaration body ranges and object expressions.
-    let internal ofCheckWithParse
+    let ofCheckWithParse
         (source: obj)
         (parseTree: ParsedInput option)
         (check: FSharpCheckFileResults)
@@ -1157,6 +1202,28 @@ module SymbolUses =
         let implementations, typesByKey, subtypesBySuper, callables =
             buildRelations true parseTree.IsSome ast defPairs extraImpls
 
+        let ctorCallBuilders = Dictionary<string, ResizeArray<range>>()
+
+        for u in all do
+            if not u.IsFromDefinition && not u.IsFromType then
+                match u.Symbol with
+                | :? FSharpMemberOrFunctionOrValue as v when v.IsConstructor ->
+                    match DeclarationChecker.SymbolKey u.Symbol with
+                    | Some ck ->
+                        match ctorCallBuilders.TryGetValue ck with
+                        | true, l -> l.Add u.Range
+                        | _ ->
+                            let l = ResizeArray<range>()
+                            l.Add u.Range
+                            ctorCallBuilders[ck] <- l
+                    | None -> ()
+                | _ -> ()
+
+        let ctorCalls = Dictionary<string, range[]>(ctorCallBuilders.Count)
+
+        for KeyValue(ck, l) in ctorCallBuilders do
+            ctorCalls[ck] <- l.ToArray()
+
         all
         |> Seq.choose (fun u ->
             keys u
@@ -1170,7 +1237,7 @@ module SymbolUses =
                         ValueNone
 
                 struct (key, u.Range, u.IsFromDefinition, location)))
-        |> build source definitions noSites implConforming implementations typesByKey subtypesBySuper callables
+        |> build source definitions noSites implConforming implementations typesByKey subtypesBySuper callables ctorCalls
 
     /// Indexes an implementation file's check.
     let internal ofCheck (source: obj) (check: FSharpCheckFileResults) (ct: CancellationToken) : FileUses =
@@ -1246,7 +1313,7 @@ module SymbolUses =
                 | _ -> keyOf symbol
 
             own |> Option.map (fun key -> struct (key, r, definition, ValueNone)))
-        |> build source noSites conforming noSites implementations typesByKey subtypesBySuper callables
+        |> build source noSites conforming noSites implementations typesByKey subtypesBySuper callables noRanges
 
     /// Indexes what a signature file's check resolved. Its definitions are kept by raw key for SignatureLocation, and have
     /// no locations to tell apart in the uses.

@@ -184,6 +184,51 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let reading what none path run = readingCore false what none path run
     let readingAny what none path run = readingCore true what none path run
 
+    let makeScope () : References.Scope =
+        { OwnersOf = fun path -> workspace.OwnersNow(Path.GetFullPath path)
+          ReferencingProjects = workspace.ReferencingNow
+          Projects = workspace.ProjectsNow
+          FilesOf = workspace.FilesNow
+          IsLoading = workspace.LoadingNow }
+
+    let readingItem
+        (what: string)
+        (none: 'T)
+        (uri: unit -> string)
+        (run: ProjectGraph -> CancellationToken -> Task<'T>)
+        : Async<LspResult<'T>> =
+        async {
+            let! ct = Async.CancellationToken
+
+            try
+                do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                let path = Paths.ofUri (uri ())
+
+                let candidates =
+                    match workspace.OwnersOf path with
+                    | [] -> workspace.Projects
+                    | owners -> owners
+
+                match candidates with
+                | [] -> return Ok none
+                | graph :: _ ->
+                    let! answer = run graph ct |> Async.AwaitTask
+                    return Ok answer
+            with ex ->
+                let rec root (e: exn) =
+                    match e with
+                    | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
+                    | e -> e
+
+                match root ex with
+                | :? OperationCanceledException
+                | :? ObjectDisposedException
+                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
+                | e ->
+                    eprintfn "[ranvierautocomplete] %s failed: %O" what e
+                    return internalError e.Message
+        }
+
     /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
     let automaticLoad (root: string) =
         task {
@@ -375,6 +420,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                         ReferencesProvider = Some(U2.C1 true)
                         DocumentHighlightProvider = Some(U2.C1 true)
                         DocumentSymbolProvider = Some(U2.C1 true)
+                        WorkspaceSymbolProvider =
+                            Some(
+                                U2.C2
+                                    { ResolveProvider = Some true
+                                      WorkDoneProgress = None }
+                            )
+                        CallHierarchyProvider = Some(U3.C1 true)
+                        TypeHierarchyProvider = Some(U3.C1 true)
                         FoldingRangeProvider = Some(U3.C1 true)
                         SelectionRangeProvider = Some(U3.C1 true)
                         SignatureHelpProvider =
@@ -504,8 +557,15 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
             }
 
-        member _.CallHierarchyIncomingCalls(_) = notImplemented
-        member _.CallHierarchyOutgoingCalls(_) = notImplemented
+        member _.CallHierarchyIncomingCalls(p: CallHierarchyIncomingCallsParams) =
+            let scope = makeScope ()
+
+            readingItem "callHierarchy/incomingCalls" None (fun () -> p.Item.Uri) (fun graph ct ->
+                CallHierarchy.incoming scope graph p.Item ct)
+
+        member _.CallHierarchyOutgoingCalls(p: CallHierarchyOutgoingCallsParams) =
+            readingItem "callHierarchy/outgoingCalls" None (fun () -> p.Item.Uri) (fun graph ct ->
+                CallHierarchy.outgoing workspace.OwnersOf graph p.Item ct)
         member _.CodeActionResolve(_) = notImplemented
         member _.CodeLensResolve(_) = notImplemented
         member _.CompletionItemResolve(item: CompletionItem) =
@@ -651,9 +711,15 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentLinkedEditingRange(_) = notImplemented
         member _.TextDocumentMoniker(_) = notImplemented
         member _.TextDocumentOnTypeFormatting(_) = notImplemented
-        member _.TextDocumentPrepareCallHierarchy(_) = notImplemented
+        member _.TextDocumentPrepareCallHierarchy(p: CallHierarchyPrepareParams) =
+            readingAny "prepareCallHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                CallHierarchy.prepare workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct)
+
         member _.TextDocumentPrepareRename(_) = notImplemented
-        member _.TextDocumentPrepareTypeHierarchy(_) = notImplemented
+
+        member _.TextDocumentPrepareTypeHierarchy(p: TypeHierarchyPrepareParams) =
+            readingAny "prepareTypeHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                TypeHierarchy.prepare workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct)
         member _.TextDocumentRangeFormatting(_) = notImplemented
         member this.TextDocumentReferences(p: ReferenceParams) =
             async {
@@ -741,8 +807,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 })
         member _.TextDocumentWillSave(_) = ignoreNotification
         member _.TextDocumentWillSaveWaitUntil(_) = notImplemented
-        member _.TypeHierarchySubtypes(_) = notImplemented
-        member _.TypeHierarchySupertypes(_) = notImplemented
+        member _.TypeHierarchySubtypes(p: TypeHierarchySubtypesParams) =
+            let scope = makeScope ()
+
+            readingItem "typeHierarchy/subtypes" None (fun () -> p.Item.Uri) (fun graph ct ->
+                TypeHierarchy.subtypes scope graph p.Item ct)
+
+        member _.TypeHierarchySupertypes(p: TypeHierarchySupertypesParams) =
+            readingItem "typeHierarchy/supertypes" None (fun () -> p.Item.Uri) (fun graph ct ->
+                TypeHierarchy.supertypes workspace.OwnersOf graph p.Item ct)
+
         member _.WindowWorkDoneProgressCancel(_) = ignoreNotification
         member _.WorkspaceDiagnostic(_) = notImplemented
         member _.WorkspaceDidChangeWorkspaceFolders(_) = ignoreNotification
@@ -750,8 +824,43 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.WorkspaceDidDeleteFiles(_) = ignoreNotification
         member _.WorkspaceDidRenameFiles(_) = ignoreNotification
         member _.WorkspaceExecuteCommand(_) = notImplemented
-        member _.WorkspaceSymbol(_) = notImplemented
-        member _.WorkspaceSymbolResolve(_) = notImplemented
+
+        member _.WorkspaceSymbol(p: WorkspaceSymbolParams) =
+            async {
+                let! ct = Async.CancellationToken
+
+                try
+                    do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                    let query = if isNull p.Query then "" else p.Query
+
+                    let! answer =
+                        WorkspaceSymbols.searchOnHost
+                            host
+                            workspace.ProjectsNow
+                            workspace.LoadingNow
+                            workspace.FilesNow
+                            query
+                            ct
+                        |> Async.AwaitTask
+
+                    return Ok answer
+                with ex ->
+                    let rec root (e: exn) =
+                        match e with
+                        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
+                        | e -> e
+
+                    match root ex with
+                    | :? OperationCanceledException
+                    | :? ObjectDisposedException
+                    | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok(Some(U2.C2 [||]))
+                    | e ->
+                        eprintfn "[ranvierautocomplete] workspace/symbol failed: %O" e
+                        return internalError e.Message
+            }
+
+        member _.WorkspaceSymbolResolve(sym: WorkspaceSymbol) =
+            async.Return(Ok(WorkspaceSymbols.resolve sym))
         member _.WorkspaceWillCreateFiles(_) = notImplemented
         member _.WorkspaceWillDeleteFiles(_) = notImplemented
         member _.WorkspaceWillRenameFiles(_) = notImplemented
@@ -849,6 +958,14 @@ module Server =
               "textDocument/completion"
               "completionItem/resolve"
               "textDocument/documentSymbol"
+              "workspace/symbol"
+              "workspaceSymbol/resolve"
+              "textDocument/prepareCallHierarchy"
+              "callHierarchy/incomingCalls"
+              "callHierarchy/outgoingCalls"
+              "textDocument/prepareTypeHierarchy"
+              "typeHierarchy/supertypes"
+              "typeHierarchy/subtypes"
               "textDocument/foldingRange"
               "textDocument/selectionRange"
               "textDocument/semanticTokens/full"

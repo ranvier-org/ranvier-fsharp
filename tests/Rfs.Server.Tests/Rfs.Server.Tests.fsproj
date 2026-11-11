@@ -30,6 +30,7 @@
     <Compile Include="SemanticTokensAndConfigTests.fs" />
     <Compile Include="SyntaxFeaturesAndKeywordsTests.fs" />
     <Compile Include="SignatureHelpAndNavigationTests.fs" />
+    <Compile Include="HierarchyAndWorkspaceSymbolsTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

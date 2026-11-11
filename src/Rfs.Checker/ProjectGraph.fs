@@ -644,7 +644,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             filesNow.Value <- nodes
 
     member internal _.Spec: ProjectSpec = spec
-    member internal _.References: ProjectGraph list = references
+    member _.References: ProjectGraph list = references
     member internal this.Assembly: Memo<AssemblyState> = this.AssemblyNodes()
 
     /// The project's assembly once every write posted to its files is applied, they are settled and so are the projects
@@ -1142,7 +1142,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
             return! Request.run host body linked.Token
         }
 
-    member internal _.Host: GraphHost = host
+    member _.Host: GraphHost = host
 
     /// Whether Dispose has begun. Read on the graph thread inside a turn, after which none of its nodes changes.
     member internal _.IsDisposed: bool = Volatile.Read &disposed <> 0
