@@ -406,7 +406,17 @@ let tests =
                   |> Seq.map (fun w -> w["globPattern"].GetValue<string>())
                   |> Set.ofSeq
 
-              Expect.equal globs (set [ "**/*.{fs,fsi}"; "**/*.fsproj"; "**/*.props"; "**/*.targets"; "**/project.assets.json" ]) "the globs"
+              Expect.equal
+                  globs
+                  (set
+                      [ "**/*.{fs,fsi}"
+                        "**/*.fsproj"
+                        "**/*.props"
+                        "**/*.targets"
+                        "**/project.assets.json"
+                        "**/*.{sln,slnx}"
+                        "**/*" ])
+                  "the globs"
 
               let! (plain: LspClient), (plainOwner: IDisposable) = TestServer.start ()
               use _ = disposing plainOwner

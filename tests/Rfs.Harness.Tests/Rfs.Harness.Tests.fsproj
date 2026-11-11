@@ -10,6 +10,7 @@
     <Compile Include="RunnerTests.fs" />
     <Compile Include="ReportTests.fs" />
     <Compile Include="ProjectSpecTests.fs" />
+    <Compile Include="GlobAndProjectItemsTests.fs" />
     <Compile Include="OracleTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

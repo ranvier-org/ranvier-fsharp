@@ -3,9 +3,12 @@ namespace Rfs.Server
 open System
 open System.Collections.Generic
 open System.IO
+open System.Security.Cryptography
+open System.Text
 open System.Text.Json.Nodes
 open System.Threading
 open System.Threading.Tasks
+open System.Xml.Linq
 open Ionide.LanguageServerProtocol.Types
 open Ionide.ProjInfo
 open Rfs.Checker
@@ -35,6 +38,231 @@ module WorkspacePeek =
 
     let private skipped = set [ "obj"; "bin" ]
 
+    let private synthesizeSlnxGuid (seed: string) : Guid =
+        let hash = SHA256.HashData(Encoding.UTF8.GetBytes seed)
+        let bytes = Array.sub hash 0 16
+        bytes[6] <- (bytes[6] &&& 0x0Fuy) ||| 0x50uy
+        bytes[8] <- (bytes[8] &&& 0x3Fuy) ||| 0x80uy
+        Guid bytes
+
+    type private SlnxFolderNode =
+        { LeafName: string
+          CanonicalPath: string
+          mutable ExplicitGuid: Guid voption
+          ChildOrder: ResizeArray<string>
+          Children: Dictionary<string, SlnxFolderNode>
+          Files: ResizeArray<string>
+          FilesSeen: HashSet<string>
+          Projects: ResizeArray<string * Guid voption>
+          ProjectsSeen: Dictionary<string, int> }
+
+    let tryParseSlnx (path: string) : Result<InspectSln.SolutionData, string> =
+        try
+            let slnxFull = Path.GetFullPath path
+            let slnDir = Path.GetDirectoryName slnxFull
+            let comparer = if OperatingSystem.IsLinux() then StringComparer.Ordinal else StringComparer.OrdinalIgnoreCase
+            let xdoc = XDocument.Load slnxFull
+
+            if isNull xdoc.Root || not (String.Equals(xdoc.Root.Name.LocalName, "Solution", StringComparison.OrdinalIgnoreCase)) then
+                Error $"Root element of {path} is not <Solution>"
+            else
+                let rootFolderOrder = ResizeArray<string>()
+                let rootFolders = Dictionary<string, SlnxFolderNode>(comparer)
+                let rootProjects = ResizeArray<string * Guid voption>()
+                let rootProjectsSeen = Dictionary<string, int>(comparer)
+
+                let makeFolder (leaf: string) (canonical: string) : SlnxFolderNode =
+                    { LeafName = leaf
+                      CanonicalPath = canonical
+                      ExplicitGuid = ValueNone
+                      ChildOrder = ResizeArray<string>()
+                      Children = Dictionary<string, SlnxFolderNode>(comparer)
+                      Files = ResizeArray<string>()
+                      FilesSeen = HashSet<string>(comparer)
+                      Projects = ResizeArray<string * Guid voption>()
+                      ProjectsSeen = Dictionary<string, int>(comparer) }
+
+                let ensureFolderPath (segments: string[]) : SlnxFolderNode voption =
+                    if segments.Length = 0 then
+                        ValueNone
+                    else
+                        let firstSeg = segments[0]
+
+                        let mutable current =
+                            match rootFolders.TryGetValue firstSeg with
+                            | true, existing -> existing
+                            | _ ->
+                                let created = makeFolder firstSeg firstSeg
+                                rootFolders[firstSeg] <- created
+                                rootFolderOrder.Add firstSeg
+                                created
+
+                        for i = 1 to segments.Length - 1 do
+                            let seg = segments[i]
+                            let nextCanonical = current.CanonicalPath + "/" + seg
+
+                            match current.Children.TryGetValue seg with
+                            | true, child -> current <- child
+                            | _ ->
+                                let child = makeFolder seg nextCanonical
+                                current.Children[seg] <- child
+                                current.ChildOrder.Add seg
+                                current <- child
+
+                        ValueSome current
+
+                let tryParseGuidAttr (el: XElement) : Guid voption =
+                    let idAttr =
+                        el.Attributes()
+                        |> Seq.tryFind (fun a -> String.Equals(a.Name.LocalName, "Id", StringComparison.OrdinalIgnoreCase))
+
+                    match idAttr with
+                    | Some a ->
+                        match Guid.TryParse(a.Value.Trim()) with
+                        | true, g when g <> Guid.Empty -> ValueSome g
+                        | _ -> ValueNone
+                    | None -> ValueNone
+
+                let tryGetAttr (name: string) (el: XElement) : string voption =
+                    let found =
+                        el.Attributes()
+                        |> Seq.tryFind (fun a -> String.Equals(a.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))
+
+                    match found with
+                    | Some a when not (String.IsNullOrWhiteSpace a.Value) -> ValueSome(a.Value.Trim())
+                    | _ -> ValueNone
+
+                let resolveSlnxPath (raw: string) : string =
+                    let osRel =
+                        raw
+                            .Replace('/', Path.DirectorySeparatorChar)
+                            .Replace('\\', Path.DirectorySeparatorChar)
+
+                    Path.GetFullPath(Path.Combine(slnDir, osRel))
+
+                let addProjectTo
+                    (projects: ResizeArray<string * Guid voption>)
+                    (seen: Dictionary<string, int>)
+                    (el: XElement)
+                    =
+                    match tryGetAttr "Path" el with
+                    | ValueNone -> ()
+                    | ValueSome rawPath ->
+                        let full = resolveSlnxPath rawPath
+                        let expGuid = tryParseGuidAttr el
+
+                        match seen.TryGetValue full with
+                        | true, idx ->
+                            let prevPath, prevGuid = projects[idx]
+
+                            if prevGuid.IsNone && expGuid.IsSome then
+                                projects[idx] <- (prevPath, expGuid)
+                        | _ ->
+                            seen[full] <- projects.Count
+                            projects.Add((full, expGuid))
+
+                let rec processFolderElement (parentSegs: string[]) (folderEl: XElement) =
+                    match tryGetAttr "Name" folderEl with
+                    | ValueNone -> ()
+                    | ValueSome rawName ->
+                        let subSegs =
+                            rawName.Split([| '/'; '\\' |], StringSplitOptions.RemoveEmptyEntries)
+                            |> Array.map (fun s -> s.Trim())
+                            |> Array.filter (fun s -> s.Length > 0)
+
+                        let fullSegs =
+                            if rawName.StartsWith '/' || rawName.StartsWith '\\' || parentSegs.Length = 0 then
+                                subSegs
+                            else
+                                Array.append parentSegs subSegs
+
+                        match ensureFolderPath fullSegs with
+                        | ValueNone -> ()
+                        | ValueSome node ->
+                            match tryParseGuidAttr folderEl with
+                            | ValueSome g -> node.ExplicitGuid <- ValueSome g
+                            | ValueNone -> ()
+
+                            for child in folderEl.Elements() do
+                                let local = child.Name.LocalName
+
+                                if String.Equals(local, "Folder", StringComparison.OrdinalIgnoreCase) then
+                                    processFolderElement fullSegs child
+                                elif String.Equals(local, "File", StringComparison.OrdinalIgnoreCase) then
+                                    match tryGetAttr "Path" child with
+                                    | ValueSome rawFile ->
+                                        let fullFile = resolveSlnxPath rawFile
+
+                                        if node.FilesSeen.Add fullFile then
+                                            node.Files.Add fullFile
+                                    | ValueNone -> ()
+                                elif String.Equals(local, "Project", StringComparison.OrdinalIgnoreCase) then
+                                    addProjectTo node.Projects node.ProjectsSeen child
+
+                for rootChild in xdoc.Root.Elements() do
+                    let local = rootChild.Name.LocalName
+
+                    if String.Equals(local, "Folder", StringComparison.OrdinalIgnoreCase) then
+                        processFolderElement [||] rootChild
+                    elif String.Equals(local, "File", StringComparison.OrdinalIgnoreCase) then
+                        match tryGetAttr "Path" rootChild with
+                        | ValueSome rawFile ->
+                            let fullFile = resolveSlnxPath rawFile
+
+                            match ensureFolderPath [| "Solution Items" |] with
+                            | ValueSome solItemsFolder ->
+                                if solItemsFolder.FilesSeen.Add fullFile then
+                                    solItemsFolder.Files.Add fullFile
+                            | ValueNone -> ()
+                        | ValueNone -> ()
+                    elif String.Equals(local, "Project", StringComparison.OrdinalIgnoreCase) then
+                        addProjectTo rootProjects rootProjectsSeen rootChild
+
+                let projectItemOf (full: string, expGuid: Guid voption) : InspectSln.SolutionItem =
+                    let guid =
+                        match expGuid with
+                        | ValueSome g -> g
+                        | ValueNone ->
+                            let relSlash = Path.GetRelativePath(slnDir, full).Replace('\\', '/')
+
+                            let normRel =
+                                if OperatingSystem.IsLinux() then relSlash else relSlash.ToLowerInvariant()
+
+                            synthesizeSlnxGuid ("slnx:project:" + normRel)
+
+                    { Guid = guid
+                      Name = full
+                      Kind = InspectSln.SolutionItemKind.MSBuildFormat [] }
+
+                let rec folderItemOf (node: SlnxFolderNode) : InspectSln.SolutionItem =
+                    let guid =
+                        match node.ExplicitGuid with
+                        | ValueSome g -> g
+                        | ValueNone ->
+                            let normCanon =
+                                if OperatingSystem.IsLinux() then
+                                    node.CanonicalPath
+                                else
+                                    node.CanonicalPath.ToLowerInvariant()
+
+                            synthesizeSlnxGuid ("slnx:folder:" + normCanon)
+
+                    let childFolders = [ for k in node.ChildOrder -> folderItemOf node.Children[k] ]
+                    let childProjects = [ for p in node.Projects -> projectItemOf p ]
+
+                    { Guid = guid
+                      Name = node.LeafName
+                      Kind = InspectSln.SolutionItemKind.Folder(childFolders @ childProjects, List.ofSeq node.Files) }
+
+                let topFolders = [ for k in rootFolderOrder -> folderItemOf rootFolders[k] ]
+                let topProjects = [ for p in rootProjects -> projectItemOf p ]
+
+                Ok
+                    { Items = topFolders @ topProjects
+                      Configurations = [] }
+        with ex ->
+            Error ex.Message
+
     /// Every `.sln`/`.slnx` and every directory with `.fsproj` files in `root` and the `deep` levels of directories below
     /// it, except directories named in `excluded`.
     let peek (root: string) (deep: int) (excluded: string list) : Interesting list =
@@ -42,7 +270,7 @@ module WorkspacePeek =
         let directories = ResizeArray<string * string list>()
 
         let isExcluded (name: string) =
-            skipped.Contains name
+            skipped.Contains(name.ToLowerInvariant())
             || excluded |> List.exists (fun e -> String.Equals(e, name, StringComparison.OrdinalIgnoreCase))
 
         let rec scan (dir: string) (level: int) =
@@ -52,10 +280,16 @@ module WorkspacePeek =
                 for f in files do
                     let ext = Path.GetExtension f
 
-                    if ext = ".sln" || ext = ".slnx" then
+                    if
+                        String.Equals(ext, ".sln", StringComparison.OrdinalIgnoreCase)
+                        || String.Equals(ext, ".slnx", StringComparison.OrdinalIgnoreCase)
+                    then
                         solutions.Add f
 
-                let projects = files |> Array.filter (fun f -> Path.GetExtension f = ".fsproj") |> List.ofArray
+                let projects =
+                    files
+                    |> Array.filter (fun f -> String.Equals(Path.GetExtension f, ".fsproj", StringComparison.OrdinalIgnoreCase))
+                    |> List.ofArray
 
                 if not projects.IsEmpty then
                     directories.Add((dir, projects))
@@ -71,7 +305,13 @@ module WorkspacePeek =
         scan (Path.GetFullPath root) 0
 
         [ for s in solutions do
-              match InspectSln.tryParseSln s with
+              let parsed =
+                  if String.Equals(Path.GetExtension s, ".slnx", StringComparison.OrdinalIgnoreCase) then
+                      tryParseSlnx s |> Result.mapError box
+                  else
+                      InspectSln.tryParseSln s |> Result.mapError box
+
+              match parsed with
               | Ok data -> yield Solution(s, data)
               | Error e -> eprintfn "[ranvierautocomplete] %s is not a readable solution: %O" s e
           for d, projects in directories -> Directory(d, projects) ]
@@ -87,14 +327,28 @@ module WorkspacePeek =
                 | InspectSln.SolutionItemKind.Folder(children, _) -> items children
                 | _ -> [])
 
-        items data.Items |> List.filter (fun p -> Path.GetExtension p = ".fsproj")
+        items data.Items
+        |> List.filter (fun p -> String.Equals(Path.GetExtension p, ".fsproj", StringComparison.OrdinalIgnoreCase))
 
-    /// What `AutomaticWorkspaceInit` loads: the projects of the single solution, else every project found
+    /// What `AutomaticWorkspaceInit` loads: the projects of the single solution (preferring `.slnx` over a same-stem `.sln`
+    /// migration pair in the same directory), else every project found
     let projectsOf (found: Interesting list) : string list =
         let solutions = found |> List.choose (function Solution(p, d) -> Some(p, d) | _ -> None)
+        let pathCmp = if OperatingSystem.IsLinux() then StringComparison.Ordinal else StringComparison.OrdinalIgnoreCase
 
         match solutions with
         | [ p, d ] -> solutionProjects p d
+        | [ p1, d1; p2, d2 ]
+            when String.Equals(Path.GetDirectoryName p1, Path.GetDirectoryName p2, pathCmp)
+                 && String.Equals(Path.GetFileNameWithoutExtension p1, Path.GetFileNameWithoutExtension p2, pathCmp)
+                 && ((String.Equals(Path.GetExtension p1, ".slnx", StringComparison.OrdinalIgnoreCase)
+                      && String.Equals(Path.GetExtension p2, ".sln", StringComparison.OrdinalIgnoreCase))
+                     || (String.Equals(Path.GetExtension p2, ".slnx", StringComparison.OrdinalIgnoreCase)
+                         && String.Equals(Path.GetExtension p1, ".sln", StringComparison.OrdinalIgnoreCase))) ->
+            if String.Equals(Path.GetExtension p1, ".slnx", StringComparison.OrdinalIgnoreCase) then
+                solutionProjects p1 d1
+            else
+                solutionProjects p2 d2
         | _ -> found |> List.collect (function Directory(_, projects) -> projects | _ -> []) |> List.distinct
 
 /// The `fsharp/notifyWorkspace` and response contents, in the shapes of FSAC's `CommandResponse` module. Property names
@@ -200,15 +454,43 @@ module Responses =
         info["IsPublishable"] <- null
         o["Info"] <- info
 
+        let effectiveItems =
+            if not spec.Items.IsEmpty then
+                spec.Items
+            else
+                let projDir =
+                    match Path.GetDirectoryName spec.ProjectFile with
+                    | null
+                    | "" -> "."
+                    | d -> d
+
+                [ for f in spec.SourceFiles ->
+                      { Kind = ProjectItemKind.Compile
+                        FilePath = f
+                        VirtualPath = ProjectSpec.computeVirtualPath projDir f "" []
+                        Metadata = [] } ]
+
         o["Items"] <-
             JsonArray(
-                spec.SourceFiles
-                |> List.map (fun f ->
+                effectiveItems
+                |> List.map (fun item ->
                     let i = JsonObject()
-                    i["Name"] <- JsonValue.Create "Compile"
-                    i["FilePath"] <- JsonValue.Create f
-                    i["VirtualPath"] <- JsonValue.Create(Path.GetRelativePath(Path.GetDirectoryName spec.ProjectFile, f))
-                    i["Metadata"] <- JsonObject()
+
+                    let kindStr =
+                        match item.Kind with
+                        | ProjectItemKind.Compile -> "Compile"
+                        | ProjectItemKind.Content -> "Content"
+                        | ProjectItemKind.NoneItem -> "None"
+
+                    i["Name"] <- JsonValue.Create kindStr
+                    i["FilePath"] <- JsonValue.Create item.FilePath
+                    i["VirtualPath"] <- JsonValue.Create item.VirtualPath
+                    let metaObj = JsonObject()
+
+                    for k, v in item.Metadata do
+                        metaObj[k] <- JsonValue.Create v
+
+                    i["Metadata"] <- metaObj
                     i :> JsonNode)
                 |> Array.ofList
             )
@@ -645,6 +927,73 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
             onLoadEnd ()
         }
 
+    let isExcludedProjectSubpath (projectDir: string) (fullPath: string) : bool =
+        let projTrimmed =
+            (Path.GetFullPath projectDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+
+        let pathCmp =
+            if OperatingSystem.IsLinux() then
+                StringComparison.Ordinal
+            else
+                StringComparison.OrdinalIgnoreCase
+
+        if
+            fullPath.Length > projTrimmed.Length + 1
+            && fullPath.StartsWith(projTrimmed, pathCmp)
+            && (fullPath[projTrimmed.Length] = Path.DirectorySeparatorChar
+                || fullPath[projTrimmed.Length] = Path.AltDirectorySeparatorChar)
+        then
+            let rel = fullPath.Substring(projTrimmed.Length + 1)
+            let segs = rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            let mutable excluded = false
+
+            for i = 0 to segs.Length - 2 do
+                let s = segs[i]
+
+                if
+                    s.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals("obj", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals(".vs", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals(".idea", StringComparison.OrdinalIgnoreCase)
+                    || s.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
+                then
+                    excluded <- true
+
+            excluded
+        else
+            false
+
+    let isInProjectConeOrItems (spec: ProjectSpec) (fullPath: string) : bool =
+        let projectDir =
+            (Path.GetDirectoryName spec.ProjectFile)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+
+        let pathCmp =
+            if OperatingSystem.IsLinux() then
+                StringComparison.Ordinal
+            else
+                StringComparison.OrdinalIgnoreCase
+
+        let inCone =
+            fullPath.Length > projectDir.Length + 1
+            && fullPath.StartsWith(projectDir, pathCmp)
+            && (fullPath[projectDir.Length] = Path.DirectorySeparatorChar
+                || fullPath[projectDir.Length] = Path.AltDirectorySeparatorChar)
+            && not (isExcludedProjectSubpath projectDir fullPath)
+
+        inCone
+        || spec.Items |> List.exists (fun item -> String.Equals(item.FilePath, fullPath, pathCmp))
+        || isSource spec fullPath
+
+    let compilationInputsEqual (a: ProjectSpec) (b: ProjectSpec) : bool =
+        a.SourceFiles = b.SourceFiles
+        && a.OtherOptions = b.OtherOptions
+        && a.ReferencedProjects = b.ReferencedProjects
+        && a.ReferencedFrameworks = b.ReferencedFrameworks
+        && a.TargetFramework = b.TargetFramework
+        && a.GeneratedFiles = b.GeneratedFiles
+
     /// Counts as loading until disposed (idempotent): a project change known and not yet applied
     member _.HoldLoading() : IDisposable =
         Interlocked.Increment &loading |> ignore
@@ -791,70 +1140,163 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
         let path = Path.GetFullPath path
         snapshot () |> Array.filter (fun e -> isSource e.Spec path) |> Array.map _.Graph |> List.ofArray
 
+    /// Fast lock-free filter for watched-file events: returns false for content edits (`Changed`) on non-build,
+    /// non-`SourceFiles` items (such as `None` and `Content` files) and excluded build/IDE directories.
+    member _.IsRelevantWatchedChange(rawPath: string, changeType: FileChangeType) : bool =
+        let path = Path.GetFullPath rawPath
+        let name = Path.GetFileName path
+        let ext = Path.GetExtension path
+
+        let builtProps =
+            (String.Equals(ext, ".props", StringComparison.OrdinalIgnoreCase)
+             || String.Equals(ext, ".targets", StringComparison.OrdinalIgnoreCase))
+            && path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+               |> Array.exists (fun s ->
+                   s.Equals("obj", StringComparison.OrdinalIgnoreCase)
+                   || s.Equals("bin", StringComparison.OrdinalIgnoreCase))
+
+        if builtProps then
+            false
+        elif
+            String.Equals(ext, ".fsproj", StringComparison.OrdinalIgnoreCase)
+            || String.Equals(ext, ".props", StringComparison.OrdinalIgnoreCase)
+            || String.Equals(ext, ".targets", StringComparison.OrdinalIgnoreCase)
+            || String.Equals(name, "project.assets.json", StringComparison.OrdinalIgnoreCase)
+        then
+            true
+        elif changeType = FileChangeType.Changed then
+            (String.Equals(ext, ".fs", StringComparison.OrdinalIgnoreCase)
+             || String.Equals(ext, ".fsi", StringComparison.OrdinalIgnoreCase))
+            && (snapshot () |> Array.exists (fun e -> isSource e.Spec path))
+        else
+            snapshot () |> Array.exists (fun e -> isInProjectConeOrItems e.Spec path)
+
     /// Applies watched-file changes: a project, props, targets or assets file reloads the projects it belongs to; a
-    /// source file that is not open is read from disk. `deleted` marks a deleted file.
-    member _.FilesChanged(changes: (string * bool) list) : Task =
-        exclusively (fun () ->
-            task {
-                let toReload = List<string>()
-                let onDisk = List<string * string>()
+    /// source file that is not open is read from disk; creation or deletion of a file inside a loaded project's cone
+    /// invalidates `ProjectSpec` and swaps `Entry.Spec` without recreating `ProjectGraph` when compilation inputs are unchanged.
+    member this.FilesChanged(changes: (string * FileChangeType) list) : Task =
+        let relevant =
+            [ for rawPath, changeType in changes do
+                  if this.IsRelevantWatchedChange(rawPath, changeType) then
+                      yield Path.GetFullPath rawPath, changeType ]
 
-                for path, deleted in changes do
-                    let path = Path.GetFullPath path
-                    let name = Path.GetFileName path
-                    let ext = Path.GetExtension path
+        if relevant.IsEmpty then
+            Task.CompletedTask
+        else
+            exclusively (fun () ->
+                task {
+                    let toReload = List<string>()
+                    let toRefreshItems = List<string>()
+                    let onDisk = List<string * string>()
 
-                    let built =
-                        (ext = ".props" || ext = ".targets")
-                        && path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                           |> Array.exists (fun s -> s.Equals("obj", StringComparison.OrdinalIgnoreCase) || s.Equals("bin", StringComparison.OrdinalIgnoreCase))
+                    let addProjectOnce (target: List<string>) (projFile: string) =
+                        if not (target |> Seq.exists (fun p -> String.Equals(p, projFile, StringComparison.OrdinalIgnoreCase))) then
+                            target.Add projFile
 
-                    // Restore writes these under obj, with the project.assets.json that is watched as well
-                    if built then
-                        ()
-                    elif ext = ".fsproj" || ext = ".props" || ext = ".targets" || name = "project.assets.json" then
-                        for e in snapshot () do
-                            let projectDir = Path.GetDirectoryName e.Spec.ProjectFile
+                    for path, changeType in relevant do
+                        let name = Path.GetFileName path
+                        let ext = Path.GetExtension path
 
-                            let belongs =
-                                if ext = ".fsproj" then
-                                    String.Equals(e.Spec.ProjectFile, path, StringComparison.OrdinalIgnoreCase)
-                                elif name = "project.assets.json" then
-                                    let assetsDir = Path.GetDirectoryName path
+                        if
+                            String.Equals(ext, ".fsproj", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(ext, ".props", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(ext, ".targets", StringComparison.OrdinalIgnoreCase)
+                            || String.Equals(name, "project.assets.json", StringComparison.OrdinalIgnoreCase)
+                        then
+                            for e in snapshot () do
+                                let projectDir = Path.GetDirectoryName e.Spec.ProjectFile
 
-                                    String.Equals(Path.GetDirectoryName assetsDir, projectDir, StringComparison.OrdinalIgnoreCase)
-                                    // The artifacts layout: artifacts/obj/<project>/project.assets.json
-                                    || (String.Equals(Path.GetFileName assetsDir, Path.GetFileNameWithoutExtension e.Spec.ProjectFile, StringComparison.OrdinalIgnoreCase)
-                                        && String.Equals(Path.GetFileName(Path.GetDirectoryName assetsDir), "obj", StringComparison.OrdinalIgnoreCase))
-                                else
-                                    // a props or targets file applies to the projects in and below its directory
-                                    let dir = Path.GetDirectoryName path
-                                    projectDir.StartsWith(dir, StringComparison.OrdinalIgnoreCase)
+                                let belongs =
+                                    if String.Equals(ext, ".fsproj", StringComparison.OrdinalIgnoreCase) then
+                                        String.Equals(e.Spec.ProjectFile, path, StringComparison.OrdinalIgnoreCase)
+                                    elif String.Equals(name, "project.assets.json", StringComparison.OrdinalIgnoreCase) then
+                                        let assetsDir = Path.GetDirectoryName path
 
-                            if belongs && not (toReload.Contains e.Spec.ProjectFile) then
-                                toReload.Add e.Spec.ProjectFile
-                    elif (ext = ".fs" || ext = ".fsi") && not deleted && not (onDisk |> Seq.exists (fun (p, _) -> String.Equals(p, path, StringComparison.OrdinalIgnoreCase))) then
-                        try
-                            onDisk.Add((path, File.ReadAllText path))
-                        with
-                        | :? IOException
-                        | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}"
+                                        String.Equals(Path.GetDirectoryName assetsDir, projectDir, StringComparison.OrdinalIgnoreCase)
+                                        // The artifacts layout: artifacts/obj/<project>/project.assets.json
+                                        || (String.Equals(Path.GetFileName assetsDir, Path.GetFileNameWithoutExtension e.Spec.ProjectFile, StringComparison.OrdinalIgnoreCase)
+                                            && String.Equals(Path.GetFileName(Path.GetDirectoryName assetsDir), "obj", StringComparison.OrdinalIgnoreCase))
+                                    else
+                                        // a props or targets file applies to the projects in and below its directory
+                                        let dir = Path.GetDirectoryName path
+                                        projectDir.StartsWith(dir, StringComparison.OrdinalIgnoreCase)
 
-                // Every closed file's disk text in one graph item, so the graphs settle once for all of them (N6). A graph
-                // item as Open is, so the disk text cannot overtake a text opened meanwhile.
-                if onDisk.Count > 0 then
-                    do!
-                        host.Read(fun () ->
-                            Ranvier.Api.batch (fun () ->
-                                for path, text in onDisk do
-                                    if not (openTexts.ContainsKey path) then
-                                        for e in snapshot () do
-                                            if isSource e.Spec path then
-                                                e.Graph.SetText(path, text) |> ignore))
+                                if belongs then
+                                    addProjectOnce toReload e.Spec.ProjectFile
+                        else
+                            let isFsSource =
+                                String.Equals(ext, ".fs", StringComparison.OrdinalIgnoreCase)
+                                || String.Equals(ext, ".fsi", StringComparison.OrdinalIgnoreCase)
 
-                if toReload.Count > 0 then
-                    do! reload (List.ofSeq toReload)
-            })
+                            if
+                                isFsSource
+                                && changeType <> FileChangeType.Deleted
+                                && (snapshot () |> Array.exists (fun e -> isSource e.Spec path))
+                                && not (onDisk |> Seq.exists (fun (p, _) -> String.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+                            then
+                                try
+                                    onDisk.Add((path, File.ReadAllText path))
+                                with
+                                | :? IOException
+                                | :? UnauthorizedAccessException as ex -> log $"%s{path} could not be read: %s{ex.Message}"
+
+                            if changeType = FileChangeType.Created || changeType = FileChangeType.Deleted then
+                                for e in snapshot () do
+                                    if isInProjectConeOrItems e.Spec path then
+                                        addProjectOnce toRefreshItems e.Spec.ProjectFile
+
+                    // Every closed file's disk text in one graph item, so the graphs settle once for all of them (N6). A graph
+                    // item as Open is, so the disk text cannot overtake a text opened meanwhile.
+                    if onDisk.Count > 0 then
+                        do!
+                            host.Read(fun () ->
+                                Ranvier.Api.batch (fun () ->
+                                    for path, text in onDisk do
+                                        if not (openTexts.ContainsKey path) then
+                                            for e in snapshot () do
+                                                if isSource e.Spec path then
+                                                    e.Graph.SetText(path, text) |> ignore))
+
+                    for projFile in toRefreshItems do
+                        let alreadyReloading =
+                            toReload |> Seq.exists (fun p -> String.Equals(p, projFile, StringComparison.OrdinalIgnoreCase))
+
+                        if not alreadyReloading then
+                            match find projFile with
+                            | None -> ()
+                            | Some oldEntry ->
+                                ProjectSpec.invalidate projFile
+
+                                try
+                                    let! newSpec = ProjectSpec.loadFor projFile oldEntry.Spec.TargetFramework
+
+                                    if compilationInputsEqual oldEntry.Spec newSpec then
+                                        if newSpec.Items <> oldEntry.Spec.Items then
+                                            let! swapped =
+                                                host.Read(fun () ->
+                                                    match find projFile with
+                                                    | Some current when compilationInputsEqual current.Spec newSpec ->
+                                                        entries.AddOrUpdate { current with Spec = newSpec }
+                                                        republish ()
+                                                        true
+                                                    | _ -> false)
+
+                                            if swapped then
+                                                do! notifyWorkspace (Responses.project newSpec)
+                                    else
+                                        addProjectOnce toReload projFile
+                                with _ ->
+                                    addProjectOnce toReload projFile
+
+                    if toReload.Count > 0 then
+                        do! reload (List.ofSeq toReload)
+                })
+
+    member this.FilesChanged(changes: (string * bool) list) : Task =
+        this.FilesChanged(
+            changes
+            |> List.map (fun (p, deleted) -> p, (if deleted then FileChangeType.Deleted else FileChangeType.Changed))
+        )
 
     member _.Dispose() =
         lifetime.Cancel()

@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <Compile Include="Glob.fs" />
     <Compile Include="ProjectSpec.fs" />
     <Compile Include="FcsDiagnostics.fs" />
   </ItemGroup>

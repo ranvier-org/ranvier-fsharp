@@ -69,7 +69,8 @@ let tests =
                     ReferencedProjects = []
                     ReferencedFrameworks = []
                     TargetFramework = ""
-                    GeneratedFiles = [] }
+                    GeneratedFiles = []
+                    Items = [] }
 
               Expect.equal (ProjectSpec.ofJson (ProjectSpec.toJson spec)) spec "round trip"
           }
@@ -93,8 +94,8 @@ let tests =
               let stale = { first with SourceFiles = [ "stale.fs" ] }
 
               for mutate in
-                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":6,", "\"FormatVersion\":0,"))
-                    (fun j -> j.Replace("\"FormatVersion\":6,", "")) ] do
+                  [ (fun (j: string) -> j.Replace("\"FormatVersion\":7,", "\"FormatVersion\":0,"))
+                    (fun j -> j.Replace("\"FormatVersion\":7,", "")) ] do
                   let json = mutate (ProjectSpec.toJson stale)
                   Expect.notEqual json (ProjectSpec.toJson stale) "mutation applied"
                   File.WriteAllText(cache, json)
@@ -325,7 +326,8 @@ let tests =
                     ReferencedProjects = []
                     ReferencedFrameworks = []
                     TargetFramework = ""
-                    GeneratedFiles = [] }
+                    GeneratedFiles = []
+                    Items = [] }
 
               Expect.equal (ProjectSpec.missingReferences spec) [ absent ] "only the absent one, once"
           }
@@ -338,7 +340,8 @@ let tests =
                     ReferencedProjects = []
                     ReferencedFrameworks = []
                     TargetFramework = ""
-                    GeneratedFiles = [] }
+                    GeneratedFiles = []
+                    Items = [] }
 
               Expect.equal (ProjectSpec.sequential spec).OtherOptions [ "--a"; "--b"; "--parallelcompilation-" ] "forced off"
 
@@ -405,7 +408,8 @@ let tests =
                     ReferencedProjects = []
                     ReferencedFrameworks = []
                     TargetFramework = ""
-                    GeneratedFiles = [] }
+                    GeneratedFiles = []
+                    Items = [] }
 
               let o = ProjectSpec.toFcsOptions spec
               Expect.equal o.ProjectFileName "p.fsproj" "name"

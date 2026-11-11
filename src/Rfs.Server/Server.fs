@@ -42,14 +42,28 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     /// Applies one batch of watched-file changes, off the graph thread; then ends `held`, the loading the batch's
     /// project changes held while they waited (FilesChanged holds it from its start)
-    let applyWatched (changes: (string * bool) list) (held: IDisposable) : Task =
+    let applyWatched (changes: (string * FileChangeType) list) (held: IDisposable) : Task =
         task {
             try
                 try
                     let applying = workspace.FilesChanged changes
                     held.Dispose()
                     do! applying
-                    publisher.DiskChanged [ for path, deleted in changes do if not deleted then yield path ]
+
+                    let diskSources =
+                        [ for path, changeType in changes do
+                              let ext = Path.GetExtension path
+
+                              if
+                                  changeType <> FileChangeType.Deleted
+                                  && (String.Equals(ext, ".fs", StringComparison.OrdinalIgnoreCase)
+                                      || String.Equals(ext, ".fsi", StringComparison.OrdinalIgnoreCase))
+                                  && not (workspace.OwnersOf path).IsEmpty
+                              then
+                                  yield path ]
+
+                    if not diskSources.IsEmpty then
+                        publisher.DiskChanged diskSources
                 with ex ->
                     eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
             finally
@@ -60,7 +74,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     // switch, a git pull) is applied as one batch once the notifications have been quiet for a while, so each project
     // reloads once and the files changed settle once. A project-level change waiting there counts as loading, so a read
     // in one turn waits for the reload rather than answer from the graph it will replace.
-    let watched = Collections.Generic.List<string * bool>()
+    let watched = Collections.Generic.List<string * FileChangeType>()
     let mutable arrivals: Ranvier.Signal<int> = Unchecked.defaultof<_>
     let mutable holding: IDisposable = null
     let mutable watchDelay = RanvierServer.WatchDelay()
@@ -258,7 +272,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     JProperty(
                         "watchers",
                         JArray(
-                            [ "**/*.{fs,fsi}"; "**/*.fsproj"; "**/*.props"; "**/*.targets"; "**/project.assets.json" ]
+                            [ "**/*.{fs,fsi}"
+                              "**/*.fsproj"
+                              "**/*.props"
+                              "**/*.targets"
+                              "**/project.assets.json"
+                              "**/*.{sln,slnx}"
+                              "**/*" ]
                             |> List.map watcher
                         )
                     )
@@ -704,16 +724,21 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             async {
                 try
                     let changes =
-                        [ for c in p.Changes -> Paths.ofUri c.Uri, (c.Type = FileChangeType.Deleted) ]
+                        [ for c in p.Changes do
+                              let path = Paths.ofUri c.Uri
 
-                    host.Post(fun () ->
-                        ensureWatch ()
+                              if workspace.IsRelevantWatchedChange(path, c.Type) then
+                                  yield path, c.Type ]
 
-                        if isNull holding && changes |> List.exists (fst >> isProjectLevel) then
-                            holding <- workspace.HoldLoading()
+                    if not changes.IsEmpty then
+                        host.Post(fun () ->
+                            ensureWatch ()
 
-                        watched.AddRange changes
-                        arrivals.Value <- arrivals.Value + 1)
+                            if isNull holding && changes |> List.exists (fst >> isProjectLevel) then
+                                holding <- workspace.HoldLoading()
+
+                            watched.AddRange changes
+                            arrivals.Value <- arrivals.Value + 1)
                 with ex ->
                     eprintfn "[ranvierautocomplete] watched-file change failed: %O" ex
             }

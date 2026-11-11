@@ -35,7 +35,8 @@ let private plainSpec (project: string) (files: string list) (options: string li
       ReferencedProjects = []
       ReferencedFrameworks = []
       TargetFramework = "x"
-      GeneratedFiles = [] }
+      GeneratedFiles = []
+      Items = [] }
 
 /// Lib: A.fs holds the shape, B.fs uses it. App, another project, uses it too. The oracle's App reads a compile of Lib.
 type private Pair =
