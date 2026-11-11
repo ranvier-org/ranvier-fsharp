@@ -250,9 +250,9 @@ let tests =
               let prepare = readFile.GetParameters()[1]
               let prepared = prepare.ParameterType.GetGenericArguments()[0]
 
-              let allowed = [ typeof<string>; typeof<int64>; typeof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults> ]
+              let allowed = [ typeof<string>; typeof<int64>; typeof<Rfs.Checker.FileDocs>; typeof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults> ]
               let fields = prepared.GetProperties() |> Array.map (fun p -> p.Name, p.PropertyType)
               let live = fields |> Array.filter (fun (_, t) -> not (List.contains t allowed)) |> Array.map fst
-              Expect.isEmpty live $"%s{prepared.Name} has only the text and its parse"
-              Expect.equal (fields |> Array.map fst |> Set.ofArray) (set [ "Parse"; "Text"; "Version" ]) "all three"
+              Expect.isEmpty live $"%s{prepared.Name} has only the text, docs and its parse"
+              Expect.equal (fields |> Array.map fst |> Set.ofArray) (set [ "Parse"; "Text"; "Docs"; "Version" ]) "all four"
           } ]

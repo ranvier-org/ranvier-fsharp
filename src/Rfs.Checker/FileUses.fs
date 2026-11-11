@@ -6,7 +6,6 @@ open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
-open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.SyntaxTrivia
@@ -108,11 +107,31 @@ module internal DefinitionSites =
 
         d
 
+/// Plain-data glyph classification for declarations indexed in `FileUses` (free of `FSharp.Compiler.*` types).
+type SymbolGlyph =
+    | Class = 0
+    | Struct = 1
+    | Interface = 2
+    | Enum = 3
+    | Delegate = 4
+    | Exception = 5
+    | Union = 6
+    | Type = 7
+    | Module = 8
+    | Function = 9
+    | Method = 10
+    | Constructor = 11
+    | OverridenMethod = 12
+    | ExtensionMethod = 13
+    | Property = 14
+    | Event = 15
+    | Field = 16
+
 [<Struct; NoComparison; NoEquality>]
 type CallableDecl =
     { Key: string
       Name: string
-      Glyph: FSharpGlyph
+      Glyph: SymbolGlyph
       Range: range
       SelectionRange: range }
 
@@ -120,7 +139,7 @@ type CallableDecl =
 type TypeRelationEntry =
     { Key: string
       Name: string
-      Glyph: FSharpGlyph
+      Glyph: SymbolGlyph
       Range: range
       SelectionRange: range
       SuperKeys: string[] }
@@ -732,30 +751,31 @@ module SymbolUses =
         | Some("System.Object" | "System.ValueType" | "System.Enum") -> true
         | _ -> false
 
-    let private entityGlyphOf (e: FSharpEntity) : FSharpGlyph =
+    let private entityGlyphOf (e: FSharpEntity) : SymbolGlyph =
         try
-            if e.IsInterface then FSharpGlyph.Interface
-            elif e.IsEnum then FSharpGlyph.Enum
-            elif e.IsDelegate then FSharpGlyph.Delegate
-            elif e.IsFSharpExceptionDeclaration then FSharpGlyph.Exception
-            elif e.IsValueType then FSharpGlyph.Struct
-            elif e.IsFSharpUnion then FSharpGlyph.Union
-            elif e.IsFSharpRecord then FSharpGlyph.Type
-            else FSharpGlyph.Class
+            if e.IsInterface then SymbolGlyph.Interface
+            elif e.IsEnum then SymbolGlyph.Enum
+            elif e.IsDelegate then SymbolGlyph.Delegate
+            elif e.IsFSharpExceptionDeclaration then SymbolGlyph.Exception
+            elif e.IsValueType then SymbolGlyph.Struct
+            elif e.IsFSharpUnion then SymbolGlyph.Union
+            elif e.IsFSharpRecord then SymbolGlyph.Type
+            else SymbolGlyph.Class
         with _ ->
-            FSharpGlyph.Class
+            SymbolGlyph.Class
 
-    let private callableGlyphOf (v: FSharpMemberOrFunctionOrValue) : FSharpGlyph =
+    let private callableGlyphOf (v: FSharpMemberOrFunctionOrValue) : SymbolGlyph =
         try
-            if v.IsConstructor then FSharpGlyph.Method
-            elif v.IsEvent then FSharpGlyph.Event
-            elif v.IsProperty || v.IsPropertyGetterMethod || v.IsPropertySetterMethod then FSharpGlyph.Property
-            elif v.IsExtensionMember then FSharpGlyph.ExtensionMethod
-            elif v.IsOverrideOrExplicitInterfaceImplementation then FSharpGlyph.OverridenMethod
-            elif v.IsMember || v.FullType.IsFunctionType then FSharpGlyph.Method
-            else FSharpGlyph.Field
+            if v.IsConstructor then SymbolGlyph.Constructor
+            elif v.IsEvent then SymbolGlyph.Event
+            elif v.IsProperty || v.IsPropertyGetterMethod || v.IsPropertySetterMethod then SymbolGlyph.Property
+            elif v.IsExtensionMember then SymbolGlyph.ExtensionMethod
+            elif v.IsOverrideOrExplicitInterfaceImplementation then SymbolGlyph.OverridenMethod
+            elif v.IsMember then SymbolGlyph.Method
+            elif v.FullType.IsFunctionType then SymbolGlyph.Function
+            else SymbolGlyph.Field
         with _ ->
-            FSharpGlyph.Method
+            SymbolGlyph.Method
 
     let private callableNameOf (v: FSharpMemberOrFunctionOrValue) : string =
         try

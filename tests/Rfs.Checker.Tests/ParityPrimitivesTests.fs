@@ -9,7 +9,6 @@ open Expecto
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Declarations
 open FSharp.Compiler.Diagnostics
-open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open Rfs.Checker
@@ -650,7 +649,7 @@ type ValBox =
               match uses.TypeOf childKey with
               | ValueSome entry ->
                   Expect.equal entry.Name "ChildNode" "TypeOf Name"
-                  Expect.equal entry.Glyph FSharpGlyph.Class "ChildNode Glyph is Class"
+                  Expect.equal entry.Glyph SymbolGlyph.Class "ChildNode Glyph is Class"
                   Expect.contains entry.SuperKeys rootKey "ChildNode SuperKeys includes BaseType AbstractRoot"
                   Expect.contains entry.SuperKeys iAlphaKey "ChildNode SuperKeys includes interface IAlpha"
                   Expect.contains entry.SuperKeys iBetaKey "ChildNode SuperKeys includes interface IBeta"
@@ -661,11 +660,11 @@ type ValBox =
               | ValueNone -> failtest "expected TypeOf ChildNode"
 
               match uses.TypeOf iAlphaKey with
-              | ValueSome entry -> Expect.equal entry.Glyph FSharpGlyph.Interface "IAlpha Glyph is Interface"
+              | ValueSome entry -> Expect.equal entry.Glyph SymbolGlyph.Interface "IAlpha Glyph is Interface"
               | ValueNone -> failtest "expected TypeOf IAlpha"
 
               match uses.TypeOf valBoxKey with
-              | ValueSome entry -> Expect.equal entry.Glyph FSharpGlyph.Struct "ValBox Glyph is Struct"
+              | ValueSome entry -> Expect.equal entry.Glyph SymbolGlyph.Struct "ValBox Glyph is Struct"
               | ValueNone -> failtest "expected TypeOf ValBox"
 
               Expect.equal
