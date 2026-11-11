@@ -147,7 +147,7 @@ let internal collectPipelines (view: FileView) (lines: string[]) : PipeStageInfo
                               PrecedingNonPipeLine = pnp
                               RootLine = if idx = 0 then ValueSome rootEndLine0 else ValueNone
                               RootInputType = if idx = 0 then ValueSome inType else ValueNone
-                              StageTypes = types
+                              StageTypes = [| inType; outType |]
                               OutputType = outType }
                     | _ -> ()
 

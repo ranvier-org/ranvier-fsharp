@@ -391,10 +391,245 @@ let renameTests =
                                   Expect.stringContains newSample "let cleanName = 42" "redundant backticks stripped"
                               | other -> failtestf "Expected Ok(Some _) for redundant-backtick rename, got %A" other
 
-                              // Invalid names -> Error
-                              for bad in [ ""; "   "; "foo\nbar"; "foo\r\nbar"; "``   ``"; "foo``bar"; "````" ] do
+                              // Invalid names -> Error (including unbalanced/trailing single backtick `foo``)
+                              for bad in [ ""; "   "; "foo\nbar"; "foo\r\nbar"; "``   ``"; "foo``bar"; "````"; "foo`" ] do
                                   let! res = Rename.rename scope libGraph file line col bad ct |> within
                                   Expect.isError res $"Expected Error for invalid newName '%s{bad}'"
+                          })
+          }
+
+          testTask "rename supports workspace custom operators across Lib and App, validates newName per symbol kind, and still rejects external +" {
+              let libFs =
+                  String.concat
+                      "\n"
+                      [ "namespace Demo"
+                        "module Ops ="
+                        "    let (|+|) (a: int) (b: int) = a + b"
+                        "    let ( |*| ) (a: int) (b: int) = a * b"
+                        "    let combine x y = (x |+| y) + (( |*| ) x y)" ]
+
+              let appFs =
+                  String.concat
+                      "\n"
+                      [ "namespace App"
+                        "open Demo.Ops"
+                        "module UseOps ="
+                        "    let run () ="
+                        "        let p = 3 |+| 4"
+                        "        let q = Demo.Ops.(|+|) 5 6"
+                        "        p + q" ]
+
+              do!
+                  withTwoProjectWorkspace
+                      [ "Ops.fs", libFs ]
+                      [ "UseOps.fs", appFs ]
+                      (fun _ libGraph appGraph libPath appPath scope _ ->
+                          task {
+                              let ct = CancellationToken.None
+                              let opsFile = libPath "Ops.fs"
+                              let useFile = appPath "UseOps.fs"
+
+                              // Prepare on parenthesized definition `let (|+|)` covers only inner `|+|`
+                              let defLine, defCol = findPos libFs "(|+|)" 0 2
+                              let! prepDef = Rename.prepare scope.OwnersOf libGraph opsFile defLine defCol ct |> within
+                              Expect.isSome prepDef "prepare should succeed on parenthesized custom operator definition"
+
+                              match prepDef.Value with
+                              | U3.C2 pr ->
+                                  Expect.equal pr.Placeholder "|+|" "operator placeholder is inner operator name"
+                                  Expect.equal (sliceLspRange libFs pr.Range) "|+|" "prepare range covers inner operator without parens"
+                              | other -> failtestf "Expected U3.C2, got %A" other
+
+                              // Prepare on infix use `3 |+| 4` and qualified `Demo.Ops.(|+|)`
+                              let infixLine, infixCol = findPos appFs "3 |+| 4" 0 3
+                              let! prepInfix = Rename.prepare scope.OwnersOf appGraph useFile infixLine infixCol ct |> within
+                              Expect.isSome prepInfix "prepare should succeed on infix custom operator"
+
+                              let qualLine, qualCol = findPos appFs "Demo.Ops.(|+|)" 0 11
+                              let! prepQual = Rename.prepare scope.OwnersOf appGraph useFile qualLine qualCol ct |> within
+                              Expect.isSome prepQual "prepare should succeed on module-qualified parenthesized operator"
+
+                              match prepQual.Value with
+                              | U3.C2 pr ->
+                                  Expect.equal (sliceLspRange appFs pr.Range) "|+|" "qualified operator range strips Demo.Ops. and parens"
+                              | other -> failtestf "Expected U3.C2, got %A" other
+
+                              // Cross-project rename `|+|` -> `|++|` from infix call site in App
+                              let! renamedOp = Rename.rename scope appGraph useFile infixLine infixCol "|++|" ct |> within
+
+                              match renamedOp with
+                              | Error e -> failtest $"Expected custom operator rename to succeed, got Error: %s{e}"
+                              | Ok None -> failtest "Expected Some WorkspaceEdit for custom operator rename"
+                              | Ok(Some wsEdit) ->
+                                  let edits = editsByPath wsEdit
+                                  let newLib = applyLspEdits libFs edits[LspClient.NormalizePath opsFile]
+                                  let newApp = applyLspEdits appFs edits[LspClient.NormalizePath useFile]
+                                  Expect.stringContains newLib "let (|++|) (a: int) (b: int) = a + b" "parenthesized def updated without touching +"
+                                  Expect.stringContains newLib "let combine x y = (x |++| y) + (( |*| ) x y)" "infix use in Lib updated"
+                                  Expect.stringContains newApp "let p = 3 |++| 4" "infix use in App updated"
+                                  Expect.stringContains newApp "let q = Demo.Ops.(|++|) 5 6" "qualified parenthesized use in App updated"
+
+                              // Spaced parenthesized operator `( |*| )` -> `|**|`
+                              let spacedOpLine, spacedOpCol = findPos libFs "( |*| )" 0 3
+                              let! renamedSpacedOp = Rename.rename scope libGraph opsFile spacedOpLine spacedOpCol "|**|" ct |> within
+
+                              match renamedSpacedOp with
+                              | Ok(Some wsEdit) ->
+                                  let edits = editsByPath wsEdit
+                                  let newLib = applyLspEdits libFs edits[LspClient.NormalizePath opsFile]
+                                  Expect.stringContains newLib "let ( |**| ) (a: int) (b: int) = a * b" "spaced parenthesized def preserves spaces"
+                                  Expect.stringContains newLib "(( |**| ) x y)" "spaced parenthesized call updated"
+                              | other -> failtestf "Expected Ok(Some _) for spaced operator rename, got %A" other
+
+                              // Reject non-operator newName `"notAnOp"` on operator symbol
+                              let! badOpName = Rename.rename scope libGraph opsFile defLine defCol "notAnOp" ct |> within
+                              Expect.isError badOpName "Non-operator name 'notAnOp' must be rejected when renaming an operator"
+
+                              // Reject external `+` in FSharp.Core even with a valid operator newName
+                              let plusLine, plusCol = findPos libFs "a + b" 0 2
+                              let! prepPlus = Rename.prepare scope.OwnersOf libGraph opsFile plusLine plusCol ct |> within
+                              Expect.isNone prepPlus "External + must still be rejected by prepare"
+                              let! renPlus = Rename.rename scope libGraph opsFile plusLine plusCol "|++|" ct |> within
+                              Expect.isError renPlus "External + must still be rejected by rename"
+                          })
+          }
+
+          testTask "rename and CodeLens unify mutable property getter/setter across Lib and App, skip get/set keywords, handle Attribute shorthand, and capture Version on GraphHost thread" {
+              let libFs =
+                  String.concat
+                      "\n"
+                      [ "namespace Demo"
+                        "type TagAttribute() ="
+                        "    inherit System.Attribute()"
+                        ""
+                        "[<Tag>]"
+                        "type Counter() ="
+                        "    let mutable count = 0"
+                        "    member _.Prop"
+                        "        with get () = count"
+                        "        and set (v: int) = count <- v"
+                        "    member _.LocalCalc (x: int) ="
+                        "        let tempVal = x + 1"
+                        "        tempVal * 2" ]
+
+              let appFs =
+                  String.concat
+                      "\n"
+                      [ "namespace App"
+                        "open Demo"
+                        "[<TagAttribute>]"
+                        "module UseCounter ="
+                        "    let run () ="
+                        "        let c = Counter()"
+                        "        c.Prop <- 42"
+                        "        c.Prop + 1" ]
+
+              do!
+                  withTwoProjectWorkspace
+                      [ "Counter.fs", libFs ]
+                      [ "UseCounter.fs", appFs ]
+                      (fun host libGraph appGraph libPath appPath scope ownersAnyThread ->
+                          task {
+                              let ct = CancellationToken.None
+                              let libFile = libPath "Counter.fs"
+                              let appFile = appPath "UseCounter.fs"
+                              let! graphThreadId = host.Read(fun () -> Thread.CurrentThread.ManagedThreadId) |> within
+
+                              // 1. CodeLens.resolve on mutable `Prop` must count BOTH getter read and setter write (`2 References`)!
+                              let! lensesOpt = CodeLens.lenses FSharpConfig.Default libGraph libFile ct |> within
+                              Expect.isSome lensesOpt "CodeLens.lenses should succeed"
+                              let propLine, _ = findPos libFs "member _.Prop" 0 10
+                              let propLenses = lensesOpt.Value |> Array.filter (fun l -> int l.Range.Start.Line = propLine)
+                              Expect.equal propLenses.Length 2 "Prop should have signature + references lenses"
+
+                              let! resolvedPropLenses =
+                                  Task.WhenAll(propLenses |> Array.map (fun l -> CodeLens.resolve scope ownersAnyThread l ct))
+                                  |> within
+
+                              let propTitles = resolvedPropLenses |> Array.choose (fun l -> l.Command |> Option.map _.Title)
+                              Expect.contains propTitles "2 References" $"CodeLens must unify plain and |setter uses (got %A{propTitles})"
+
+                              // 2. Rename `Prop` -> `Amount` initiated from the SETTER write `c.Prop <- 42` in App,
+                              //    capturing OptionalVersionedTextDocumentIdentifier.Version strictly on the GraphHost thread!
+                              let setterLine, setterCol = findPos appFs "c.Prop <- 42" 0 3
+                              let mutable versionCheckedOnGraphThread = 0
+
+                              let versionNow (p: string) =
+                                  if Thread.CurrentThread.ManagedThreadId <> graphThreadId then
+                                      failtest "versionNow called off GraphHost thread!"
+
+                                  Interlocked.Increment(&versionCheckedOnGraphThread) |> ignore
+                                  if sameFile p libFile then Some 5 elif sameFile p appFile then Some 9 else None
+
+                              let! renamedProp =
+                                  Rename.renameWithCapabilities true versionNow scope appGraph appFile setterLine setterCol "Amount" ct
+                                  |> within
+
+                              Expect.isGreaterThan versionCheckedOnGraphThread 0 "versionNow must execute on GraphHost thread"
+
+                              match renamedProp with
+                              | Error e -> failtest $"Expected mutable property rename to succeed without tripping on get/set keywords, got: %s{e}"
+                              | Ok None -> failtest "Expected WorkspaceEdit for mutable property rename"
+                              | Ok(Some wsEdit) ->
+                                  Expect.isSome wsEdit.DocumentChanges "canDocumentChanges=true emits DocumentChanges"
+
+                                  let versionsByPath =
+                                      wsEdit.DocumentChanges.Value
+                                      |> Array.choose (function
+                                          | U4.C1 tde -> Some(LspClient.NormalizePath(Paths.ofUri tde.TextDocument.Uri), tde.TextDocument.Version)
+                                          | _ -> None)
+                                      |> Map.ofArray
+
+                                  Expect.equal versionsByPath[LspClient.NormalizePath libFile] (Some 5) "Lib version captured in-turn"
+                                  Expect.equal versionsByPath[LspClient.NormalizePath appFile] (Some 9) "App version captured in-turn"
+
+                                  let edits = editsByPath wsEdit
+                                  let newLib = applyLspEdits libFs edits[LspClient.NormalizePath libFile]
+                                  let newApp = applyLspEdits appFs edits[LspClient.NormalizePath appFile]
+                                  Expect.stringContains newLib "member _.Amount" "Property declaration renamed"
+                                  Expect.stringContains newLib "with get () = count" "Explicit get accessor keyword preserved"
+                                  Expect.stringContains newLib "and set (v: int) = count <- v" "Explicit set accessor keyword preserved"
+                                  Expect.stringContains newApp "c.Amount <- 42" "Setter write site renamed"
+                                  Expect.stringContains newApp "c.Amount + 1" "Getter read site renamed"
+
+                              // 3. LocalTarget rename also captures Version on the GraphHost thread!
+                              let localLine, localCol = findPos libFs "let tempVal =" 0 6
+                              let mutable localVerChecked = 0
+
+                              let localVersionNow (_: string) =
+                                  if Thread.CurrentThread.ManagedThreadId <> graphThreadId then
+                                      failtest "LocalTarget versionNow called off GraphHost thread!"
+
+                                  Interlocked.Increment(&localVerChecked) |> ignore
+                                  Some 13
+
+                              let! renamedLocal =
+                                  Rename.renameWithCapabilities true localVersionNow scope libGraph libFile localLine localCol "stepVal" ct
+                                  |> within
+
+                              Expect.isGreaterThan localVerChecked 0 "LocalTarget versionNow ran on GraphHost thread"
+
+                              match renamedLocal with
+                              | Ok(Some wsEdit) ->
+                                  match wsEdit.DocumentChanges.Value[0] with
+                                  | U4.C1 tde -> Expect.equal tde.TextDocument.Version (Some 13) "LocalTarget stamped in-turn LspVersion"
+                                  | other -> failtestf "Expected U4.C1, got %A" other
+                              | other -> failtestf "Expected LocalTarget rename Ok(Some _), got %A" other
+
+                              // 4. Attribute rename `TagAttribute` -> `MarkerAttribute` handles `[<Tag>]` shorthand AND `[<TagAttribute>]`
+                              let attrLine, attrCol = findPos libFs "type TagAttribute" 0 7
+                              let! renamedAttr = Rename.rename scope libGraph libFile attrLine attrCol "MarkerAttribute" ct |> within
+
+                              match renamedAttr with
+                              | Error e -> failtest $"Expected Attribute rename to handle shorthand [<Tag>], got Error: %s{e}"
+                              | Ok None -> failtest "Expected WorkspaceEdit for Attribute rename"
+                              | Ok(Some wsEdit) ->
+                                  let edits = editsByPath wsEdit
+                                  let newLib = applyLspEdits libFs edits[LspClient.NormalizePath libFile]
+                                  let newApp = applyLspEdits appFs edits[LspClient.NormalizePath appFile]
+                                  Expect.stringContains newLib "type MarkerAttribute() =" "Attribute type declaration renamed"
+                                  Expect.stringContains newLib "[<Marker>]" "Shorthand [<Tag>] updated to [<Marker>]"
+                                  Expect.stringContains newApp "[<MarkerAttribute>]" "Full [<TagAttribute>] updated to [<MarkerAttribute>]"
                           })
           }
 
@@ -535,18 +770,20 @@ let renameTests =
 let inlayCodeLensInlineValueTests =
     testList
         "Task6.InlayCodeLensInlineValue"
-        [ testTask "InlayHints provides type annotations with valid TextEdits, parameter names, suppresses x = x, and respects range & config" {
+        [ testTask "InlayHints provides type annotations with valid TextEdits, parameter annotations on return-typed functions, parameter names, suppresses x = x, and respects range & config" {
               let src =
                   String.concat
                       "\n"
                       [ "module Hints"
                         "let add (amount: int) (tax: int) = amount + tax"
+                        "let addExplicit x y : int = x + y"
+                        "let valExplicit : int = 42"
                         "let compute () ="
                         "    let total = add 100 20"
                         "    let amount = 50"
                         "    let sameName = add amount 5"
                         "    let mapped = [ 1; 2 ] |> List.map (fun item -> item + 1)"
-                        "    total + sameName + mapped.Length" ]
+                        "    total + sameName + mapped.Length + addExplicit 1 2 + valExplicit" ]
 
               do!
                   withTwoProjectWorkspace
@@ -573,6 +810,20 @@ let inlayCodeLensInlineValueTests =
 
                               // Type annotations present for `total` (`: int`) and lambda `item` (`: int`)
                               Expect.isTrue (labels |> Array.exists (fun s -> s = ": int")) $"Expected ': int' type hint in %A{labels}"
+
+                              // Function with explicit return type `let addExplicit x y : int = x + y` MUST still emit parameter type hints for `x` and `y`!
+                              let explicitFnLine, _ = findPos src "let addExplicit" 0 0
+                              let explicitFnTypeHints =
+                                  hints
+                                  |> Array.filter (fun h -> h.Kind = Some InlayHintKind.Type && int h.Position.Line = explicitFnLine)
+                              Expect.equal explicitFnTypeHints.Length 2 "Both unannotated parameters `x` and `y` on `let addExplicit x y : int` must receive `: int` hints"
+
+                              // Value binding with explicit return type `let valExplicit : int = 42` MUST NOT emit a duplicate value type hint!
+                              let explicitValLine, _ = findPos src "let valExplicit" 0 0
+                              let explicitValTypeHints =
+                                  hints
+                                  |> Array.filter (fun h -> h.Kind = Some InlayHintKind.Type && int h.Position.Line = explicitValLine)
+                              Expect.isEmpty explicitValTypeHints "Explicitly typed value `let valExplicit : int = 42` must not emit a duplicate type hint"
 
                               // Bare lambda param `item` TextEdits should wrap `(item: int)` cleanly
                               let itemLine, _ = findPos src "fun item ->" 0 4
@@ -738,7 +989,60 @@ let inlayCodeLensInlineValueTests =
                           })
           }
 
-          testTask "InlineValue provides end-of-line pipeline stage types within range and honors Enabled=false" {
+          testTask "CodeLens.lenses excludes record fields, union cases, enum members, exception fields, and abstract interface/class slots" {
+              let src =
+                  String.concat
+                      "\n"
+                      [ "namespace Demo"
+                        "type SampleRecord = { FieldOne: int; FieldTwo: string }"
+                        "type SampleUnion ="
+                        "    | Alpha"
+                        "    | Beta of int"
+                        "type SampleEnum ="
+                        "    | Zero = 0"
+                        "    | One = 1"
+                        "exception CustomBoom of string"
+                        "type IWorker ="
+                        "    abstract member Execute: int -> int"
+                        "[<AbstractClass>]"
+                        "type BaseWorker() ="
+                        "    abstract member Step: int -> int"
+                        "    member _.ConcreteHelper (x: int) = x + 1"
+                        "module RealFns ="
+                        "    let topFn (x: int) = x * 2" ]
+
+              do!
+                  withTwoProjectWorkspace
+                      [ "Filter.fs", src ]
+                      [ "App.fs", "module App\nlet y = Demo.RealFns.topFn 3" ]
+                      (fun _ libGraph _ libPath _ _ _ ->
+                          task {
+                              let ct = CancellationToken.None
+                              let file = libPath "Filter.fs"
+                              let! lensesOpt = CodeLens.lenses FSharpConfig.Default libGraph file ct |> within
+                              Expect.isSome lensesOpt "CodeLens.lenses returns Some"
+                              let lensLines = lensesOpt.Value |> Array.map (fun l -> int l.Range.Start.Line) |> Set.ofArray
+
+                              for forbiddenNeedle in
+                                  [ "FieldOne"
+                                    "| Alpha"
+                                    "| Beta"
+                                    "| Zero = 0"
+                                    "| One = 1"
+                                    "exception CustomBoom"
+                                    "abstract member Execute"
+                                    "abstract member Step" ] do
+                                  let fline, _ = findPos src forbiddenNeedle 0 0
+                                  Expect.isFalse (lensLines.Contains fline) $"CodeLens must NOT be emitted for '%s{forbiddenNeedle}' (line %d{fline})"
+
+                              let concreteLine, _ = findPos src "member _.ConcreteHelper" 0 0
+                              let topFnLine, _ = findPos src "let topFn" 0 0
+                              Expect.isTrue (lensLines.Contains concreteLine) "Concrete class member receives CodeLens"
+                              Expect.isTrue (lensLines.Contains topFnLine) "Module function receives CodeLens"
+                          })
+          }
+
+          testTask "InlineValue provides end-of-line pipeline stage types within range, honors Enabled=false, and normalizes ||> / |||> StageTypes to [inType; outType]" {
               let src =
                   String.concat
                       "\n"
@@ -746,7 +1050,13 @@ let inlayCodeLensInlineValueTests =
                         "let run () ="
                         "    [ 1; 2; 3 ]"
                         "    |> List.map (fun x -> x * 2)"
-                        "    |> List.sum" ]
+                        "    |> List.sum"
+                        "let pairPipe () ="
+                        "    (10, 20)"
+                        "    ||> (+)"
+                        "let triplePipe () ="
+                        "    (1, 2, 3)"
+                        "    |||> (fun a b c -> a + b + c)" ]
 
               do!
                   withTwoProjectWorkspace
@@ -758,7 +1068,7 @@ let inlayCodeLensInlineValueTests =
                               let file = libPath "Pipes.fs"
                               let fullRange: Ionide.LanguageServerProtocol.Types.Range =
                                   { Start = { Line = 0u; Character = 0u }
-                                    End = { Line = 10u; Character = 0u } }
+                                    End = { Line = 15u; Character = 0u } }
 
                               let cfg = { Enabled = Some true; Prefix = "//" }
                               let! valuesOpt = InlineValue.provide cfg libGraph file fullRange ct |> within
@@ -783,6 +1093,30 @@ let inlayCodeLensInlineValueTests =
                                   (texts |> Array.exists (fun (l, t) -> l = 4 && t.StartsWith("//") && t.Contains("int")))
                                   $"Expected line 4 '// int' in %A{texts}"
 
+                              // Verify fsharp/pipelineHint StageTypes has length 2 ([inType; outType]) for ||> and |||>!
+                              let! phJson = IonideEndpoints.pipelineHint libGraph file ct |> within
+                              Expect.isSome phJson "pipelineHint returns Some JSON"
+                              let phNode = JsonNode.Parse phJson.Value
+                              let phData = phNode["Data"].AsArray()
+                              let pairLine, _ = findPos src "||> (+)" 0 0
+                              let tripleLine, _ = findPos src "|||> (fun" 0 0
+
+                              let pairStage =
+                                  phData
+                                  |> Seq.find (fun n -> n["Line"].GetValue<int>() = pairLine)
+
+                              let pairTypes = [| for t in pairStage["Types"].AsArray() -> t.GetValue<string>() |]
+                              Expect.equal pairTypes.Length 2 $"||> stage Types must have length 2 ([inType; outType]), got %A{pairTypes}"
+                              Expect.equal pairTypes [| "int * int"; "int" |] "||> stage Types are [\"int * int\"; \"int\"]"
+
+                              let tripleStage =
+                                  phData
+                                  |> Seq.find (fun n -> n["Line"].GetValue<int>() = tripleLine)
+
+                              let tripleTypes = [| for t in tripleStage["Types"].AsArray() -> t.GetValue<string>() |]
+                              Expect.equal tripleTypes.Length 2 $"|||> stage Types must have length 2 ([inType; outType]), got %A{tripleTypes}"
+                              Expect.equal tripleTypes [| "int * int * int"; "int" |] "|||> stage Types are [\"int * int * int\"; \"int\"]"
+
                               // Range containment filter: asking only for line 2 returns ONLY line 2!
                               let line2Only: Ionide.LanguageServerProtocol.Types.Range =
                                   { Start = { Line = 2u; Character = 0u }
@@ -805,28 +1139,50 @@ let inlayCodeLensInlineValueTests =
 let ionideAndProtocolTests =
     testList
         "Task6.IonideAndWireProtocol"
-        [ testTask "All IonideEndpoints produce exact PascalCase CommandResponse JSON envelopes and lineLens is non-blocking" {
+        [ testTask "All IonideEndpoints produce exact FSAC PascalCase CommandResponse JSON schemas, documentationSymbol works on promoted files on GraphHost, and lineLens is non-blocking" {
               let libFs =
                   String.concat
                       "\n"
                       [ "namespace Demo"
+                        "exception DocFailure of string"
+                        "type DocEnum ="
+                        "    | First = 0"
+                        "    | Second = 1"
+                        "type DocUnion ="
+                        "    | LeftCase"
+                        "    | RightCase of int"
+                        "type DocBox() ="
+                        "    let mutable v = 0"
+                        "    member _.ReadOnly = v"
+                        "    member _.MutableProp"
+                        "        with get () = v"
+                        "        and set (nx: int) = v <- nx"
+                        "    member _.Reset () = v <- 0"
                         "module Docs ="
                         "    /// Computes the weighted score."
-                        "    let computeScore<'T> (weight: int) (tag: 'T) : string ="
+                        "    let computeScore<'T> (weight: int) (tag: 'T) : 'T list ="
                         "        let piped ="
                         "            [ 1; 2; 3 ]"
                         "            |> List.map (fun n -> n * weight)"
                         "            |> List.sum"
-                        "        sprintf \"%d-%A\" piped tag" ]
+                        "        let b = DocBox()"
+                        "        b.MutableProp <- piped"
+                        "        b.Reset()"
+                        "        let _ = b.ReadOnly"
+                        "        [ tag ]"
+                        "    let undocFn<'U> (alpha: int) (beta: 'U) ="
+                        "        let bodyLocal = alpha + 1"
+                        "        sprintf \"%d-%A\" bodyLocal beta" ]
 
               do!
                   withTwoProjectWorkspace
                       [ "Docs.fs", libFs ]
                       [ "App.fs", "module App\nlet s = Demo.Docs.computeScore 2 \"ok\"" ]
-                      (fun host libGraph _ libPath _ _ ownersAnyThread ->
+                      (fun host libGraph _ libPath _ scope ownersAnyThread ->
                           task {
                               let ct = CancellationToken.None
                               let file = libPath "Docs.fs"
+                              let! graphThreadId = host.Read(fun () -> Thread.CurrentThread.ManagedThreadId) |> within
                               let fnLine, fnCol = findPos libFs "computeScore" 0 3
 
                               // 1. fsharp/signature -> Kind = "typesig"
@@ -836,14 +1192,39 @@ let ionideAndProtocolTests =
                               Expect.equal (sigNode["Kind"].GetValue<string>()) "typesig" "Kind is typesig"
                               Expect.stringContains (sigNode["Data"].GetValue<string>()) "int" "Data contains signature"
 
-                              // 2. fsharp/signatureData -> Kind = "signatureData"
+                              // 2. fsharp/signatureData -> exact FSAC parity (bare generic "T", prefix "'T" types, getter/setter/unit-member)
                               let! sigDataJson = IonideEndpoints.signatureData libGraph file fnLine fnCol ct |> within
                               Expect.isSome sigDataJson "signatureData should return Some JSON"
                               let sdNode = JsonNode.Parse sigDataJson.Value
                               Expect.equal (sdNode["Kind"].GetValue<string>()) "signatureData" "Kind is signatureData"
-                              Expect.stringContains (sdNode["Data"].["OutputType"].GetValue<string>()) "string" "OutputType is string"
+                              Expect.equal (sdNode["Data"].["OutputType"].GetValue<string>()) "list<'T>" "OutputType uses prefix generic parameter"
                               Expect.equal (sdNode["Data"].["Parameters"].AsArray().Count) 2 "2 curried parameter groups"
-                              Expect.isGreaterThanOrEqual (sdNode["Data"].["Generics"].AsArray().Count) 1 "Generic parameter captured"
+                              Expect.equal (sdNode["Data"].["Parameters"].[1].[0].["Type"].GetValue<string>()) "'T" "Parameter type uses prefix 'T"
+                              let genArr = [| for g in sdNode["Data"].["Generics"].AsArray() -> g.GetValue<string>() |]
+                              Expect.equal genArr [| "T" |] "Generics emits bare 'T' without leading apostrophe"
+
+                              // ReadOnly property getter use -> Parameters = [], Generics = []
+                              let roUseLine, roUseCol = findPos libFs "b.ReadOnly" 0 4
+                              let! roSd = IonideEndpoints.signatureData libGraph file roUseLine roUseCol ct |> within
+                              let roData = (JsonNode.Parse roSd.Value)["Data"]
+                              Expect.equal (roData["OutputType"].GetValue<string>()) "int" "Getter OutputType is int"
+                              Expect.equal (roData["Parameters"].AsArray().Count) 0 "Getter Parameters = []"
+                              Expect.equal (roData["Generics"].AsArray().Count) 0 "Getter Generics = []"
+
+                              // Mutable property setter write `b.MutableProp <- piped` -> OutputType = property value type "int" (not "unit")
+                              let setUseLine, setUseCol = findPos libFs "b.MutableProp <-" 0 4
+                              let! setSd = IonideEndpoints.signatureData libGraph file setUseLine setUseCol ct |> within
+                              let setData = (JsonNode.Parse setSd.Value)["Data"]
+                              Expect.equal (setData["OutputType"].GetValue<string>()) "int" "Setter OutputType is property value type 'int'"
+
+                              // Unit-arg member `b.Reset()` -> Parameters = [[ {"Name":"unit","Type":"unit"} ]]
+                              let resetLine, resetCol = findPos libFs "b.Reset()" 0 3
+                              let! resetSd = IonideEndpoints.signatureData libGraph file resetLine resetCol ct |> within
+                              let resetNode = JsonNode.Parse resetSd.Value
+                              let resetParams = resetNode["Data"].["Parameters"].AsArray()
+                              Expect.equal resetParams.Count 1 "Unit member has 1 group"
+                              Expect.equal (resetParams[0].[0].["Name"].GetValue<string>()) "unit" "Unit member param Name = unit"
+                              Expect.equal (resetParams[0].[0].["Type"].GetValue<string>()) "unit" "Unit member param Type = unit"
 
                               // 3. fsharp/pipelineHint -> Kind = "pipelineHint"
                               let! pipeJson = IonideEndpoints.pipelineHint libGraph file ct |> within
@@ -870,31 +1251,70 @@ let ionideAndProtocolTests =
                               let xmlKey = docNode["Data"].["XmlKey"].GetValue<string>()
                               Expect.isNotEmpty xmlKey "XmlKey populated"
 
-                              // 6. fsharp/documentationSymbol -> Kind = "formattedDocumentation" (via GraphHost-safe lookup!)
+                              // 6. fsharp/documentationSymbol -> promote single-file Lib (`Docs.fs`) to Declarations mode and call with `scope.Projects` / `scope.IsLoading` (assertGraphThread active!)
+                              libGraph.Promote file
+                              let! mode = libGraph.WhenPromoted(file, ct) |> within
+                              Expect.equal mode FileMode.Declarations "Docs.fs promoted to Declarations mode"
+
                               let! symDocJson =
-                                  IonideEndpoints.documentationSymbolOnHost
+                                  IonideEndpoints.documentationSymbol
                                       host
-                                      (fun () -> [ libGraph ])
-                                      (fun () -> false)
+                                      scope.Projects
+                                      scope.IsLoading
                                       xmlKey
                                       "Lib"
                                       ct
                                   |> within
 
-                              Expect.isSome symDocJson "documentationSymbol should resolve workspace symbol by XmlSig"
+                              Expect.isSome symDocJson "documentationSymbol must resolve symbol in open/promoted single-file project on GraphHost"
                               let symDocNode = JsonNode.Parse symDocJson.Value
                               Expect.equal (symDocNode["Kind"].GetValue<string>()) "formattedDocumentation" "Kind is formattedDocumentation"
                               Expect.stringContains (symDocNode["Data"].["Signature"].GetValue<string>()) "computeScore" "Resolved signature matches"
 
-                              // 7. fsharp/documentationGenerator -> generates XML doc stub WorkspaceEdit
-                              let! genEdit = IonideEndpoints.documentationGenerator libGraph file fnLine fnCol ct |> within
-                              Expect.isSome genEdit "documentationGenerator should return WorkspaceEdit"
+                              // Null guards on documentationSymbol
+                              let! nullXmlRes = IonideEndpoints.documentationSymbol host scope.Projects scope.IsLoading null "Lib" ct |> within
+                              Expect.isNone nullXmlRes "null xmlSig returns None cleanly"
+                              let! nullAsmRes = IonideEndpoints.documentationSymbol host scope.Projects scope.IsLoading xmlKey null ct |> within
+                              Expect.isNone nullAsmRes "null assembly returns None cleanly"
+
+                              libGraph.Demote file
+
+                              // 7. fsharp/documentationGenerator -> skips already-documented symbol, skips body lines, generates on undocumented header, and captures Version on GraphHost thread!
+                              let! alreadyDocRes = IonideEndpoints.documentationGenerator libGraph file fnLine fnCol ct |> within
+                              Expect.isNone alreadyDocRes "documentationGenerator must return None when symbol already has XML docs"
+
+                              let bodyLine, bodyCol = findPos libFs "let bodyLocal =" 0 4
+                              let! onBodyRes = IonideEndpoints.documentationGenerator libGraph file bodyLine bodyCol ct |> within
+                              Expect.isNone onBodyRes "documentationGenerator must return None on body lines of multi-line binding"
+
+                              let undocLine, undocCol = findPos libFs "let undocFn" 0 6
+                              let mutable docGenVerCheckedOnGraph = 0
+
+                              let docGenVerNow (_: string) =
+                                  if Thread.CurrentThread.ManagedThreadId <> graphThreadId then
+                                      failtest "documentationGenerator versionNow called off GraphHost thread!"
+
+                                  Interlocked.Increment(&docGenVerCheckedOnGraph) |> ignore
+                                  Some 11
+
+                              let! genEdit =
+                                  IonideEndpoints.documentationGeneratorWithCapabilities true docGenVerNow libGraph file undocLine undocCol ct
+                                  |> within
+
+                              Expect.isGreaterThan docGenVerCheckedOnGraph 0 "documentationGenerator versionNow ran on GraphHost thread"
+                              Expect.isSome genEdit "documentationGenerator should return WorkspaceEdit on undocumented header"
+
+                              match genEdit.Value.DocumentChanges.Value[0] with
+                              | U4.C1 tde -> Expect.equal tde.TextDocument.Version (Some 11) "documentationGenerator stamped in-turn LspVersion"
+                              | other -> failtestf "Expected U4.C1, got %A" other
+
                               let genEdits = editsByPath genEdit.Value
                               let genFileEdits = genEdits[LspClient.NormalizePath file]
                               let inserted = genFileEdits[0].NewText
                               Expect.stringContains inserted "/// <summary></summary>" "Includes <summary>"
-                              Expect.stringContains inserted "/// <param name=\"weight\"></param>" "Includes weight <param>"
-                              Expect.stringContains inserted "/// <param name=\"tag\"></param>" "Includes tag <param>"
+                              Expect.stringContains inserted "/// <typeparam name=\"'U\"></typeparam>" "Includes 'U <typeparam>"
+                              Expect.stringContains inserted "/// <param name=\"alpha\"></param>" "Includes alpha <param>"
+                              Expect.stringContains inserted "/// <param name=\"beta\"></param>" "Includes beta <param>"
                               Expect.stringContains inserted "/// <returns></returns>" "Includes <returns>"
 
                               // 8. fsharp/compilerLocation -> Kind = "compilerlocation"
@@ -904,7 +1324,7 @@ let ionideAndProtocolTests =
                               Expect.equal (compNode["Kind"].GetValue<string>()) "compilerlocation" "Kind is compilerlocation"
                               Expect.isNotNull compNode["Data"] "Data object present"
 
-                              // 9. fsharp/lineLens -> non-blocking via LatestParse even while typecheck is held!
+                              // 9. fsharp/lineLens -> non-blocking via LatestParse + exact FSAC 1-based columns & Glyph/EnclosingEntity strings!
                               use release = new ManualResetEventSlim(false)
                               libGraph.OnFlight(fun kind _ flightCt ->
                                   if not (kind.StartsWith("parse", StringComparison.Ordinal)) then
@@ -916,7 +1336,40 @@ let ionideAndProtocolTests =
                               Expect.stringContains llJson.Value "afterEdit" "lineLens reflects newly parsed afterEdit while typecheck is held"
                               let llNode = JsonNode.Parse llJson.Value
                               Expect.equal (llNode["Kind"].GetValue<string>()) "declarations" "Kind is declarations"
-                              Expect.isNonEmpty (llNode["Data"].AsArray()) "Declarations array non-empty"
+                              let topDecls = llNode["Data"].AsArray()
+                              Expect.isNonEmpty topDecls "Declarations array non-empty"
+
+                              let allDeclNodes =
+                                  [| for top in topDecls do
+                                         yield top["Declaration"]
+                                         for nested in top["Nested"].AsArray() do
+                                             yield nested |]
+
+                              // Verify 1-based StartColumn / EndColumn (`module Docs =` starts at column 0 in 0-based -> 1 in 1-based FSAC rangeWriter!)
+                              let docsModDecl =
+                                  allDeclNodes |> Array.find (fun d -> d["Name"].GetValue<string>() = "Docs")
+                              Expect.equal (docsModDecl["Glyph"].GetValue<string>()) "Module" "Module Glyph = 'Module'"
+                              Expect.equal (docsModDecl["GlyphChar"].GetValue<string>()) "N" "Module GlyphChar = 'N' (FSAC parity)"
+                              Expect.equal (docsModDecl["Range"].["StartColumn"].GetValue<int>()) 1 "Top-level `module Docs` Range.StartColumn is 1-based (0 + 1 = 1)"
+                              Expect.equal (docsModDecl["Range"].["EndColumn"].GetValue<int>()) 24 "Top-level `module Docs` Range.EndColumn is 1-based (23 + 1 = 24)"
+                              Expect.equal (docsModDecl["BodyRange"].["StartColumn"].GetValue<int>()) 12 "Top-level `module Docs` BodyRange.StartColumn is 1-based (11 + 1 = 12)"
+                              Expect.equal (docsModDecl["BodyRange"].["EndColumn"].GetValue<int>()) 24 "Top-level `module Docs` BodyRange.EndColumn is 1-based (23 + 1 = 24)"
+
+                              let exnDecl =
+                                  allDeclNodes |> Array.find (fun d -> d["Name"].GetValue<string>() = "DocFailure")
+                              Expect.equal (exnDecl["Glyph"].GetValue<string>()) "Exception" "Exception Glyph = 'Exception'"
+                              Expect.equal (exnDecl["GlyphChar"].GetValue<string>()) "X" "Exception GlyphChar = 'X' (FSAC parity)"
+
+                              let enumMemberDecl =
+                                  allDeclNodes |> Array.find (fun d -> d["Name"].GetValue<string>() = "First")
+                              Expect.equal (enumMemberDecl["Glyph"].GetValue<string>()) "Property" "EnumMember Glyph = 'Property' (FSAC parity)"
+                              Expect.equal (enumMemberDecl["GlyphChar"].GetValue<string>()) "P" "EnumMember GlyphChar = 'P' (FSAC parity)"
+                              Expect.equal (enumMemberDecl["EnclosingEntity"].GetValue<string>()) "En" "Enum EnclosingEntity = 'En' (FSAC parity)"
+
+                              let unionDecl =
+                                  allDeclNodes |> Array.find (fun d -> d["Name"].GetValue<string>() = "DocUnion")
+                              Expect.equal (unionDecl["Glyph"].GetValue<string>()) "Type" "Union Glyph = 'Type' (FSAC parity)"
+                              Expect.equal (unionDecl["GlyphChar"].GetValue<string>()) "T" "Union GlyphChar = 'T' (FSAC parity)"
 
                               libGraph.OnFlight(fun _ _ _ -> ())
                               release.Set()
@@ -966,7 +1419,31 @@ let ionideAndProtocolTests =
 
               let! (initReply: JsonNode), _ = lsp.Request("initialize", initJson) |> within
               do! lsp.Notify("initialized", JsonObject()) |> fun t -> t.WaitAsync(TimeSpan.FromSeconds 30.)
-              let! _server = serverTask |> within
+              let! (server: RanvierServer) = serverTask |> within
+
+              // Item 5: Verify AggregateException unwrapping & SupersededLineDirectivesException / cancellation handling in Server.fs
+              let supersededExn =
+                  let t = typeof<FSharp.Compiler.Declarations.SupersededLineDirectivesException>
+                  System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(t) :?> exn
+
+              Expect.equal
+                  (server.HandleReadExn("fsharp/documentationSymbol", None, AggregateException(supersededExn)))
+                  (Ok None)
+                  "AggregateException(SupersededLineDirectivesException) must unwrap to Ok None"
+
+              Expect.equal
+                  (server.HandleReadExn("codeLens/resolve", "fallback", AggregateException(OperationCanceledException())))
+                  (Ok "fallback")
+                  "AggregateException(OperationCanceledException) must unwrap to Ok fallback"
+
+              Expect.equal
+                  (server.HandleReadExn("codeLens/resolve", "fallback", AggregateException(ObjectDisposedException("disposed"))))
+                  (Ok "fallback")
+                  "AggregateException(ObjectDisposedException) must unwrap to Ok fallback"
+
+              match server.HandleReadExn("fsharp/documentationSymbol", None, AggregateException(InvalidOperationException("boom"))) with
+              | Error err -> Expect.equal err.Code -32603 "Real fault inside AggregateException unwraps and returns -32603"
+              | Ok v -> failtestf "Expected Error(-32603), got Ok %A" v
 
               let caps = initReply["capabilities"]
               Expect.isNotNull caps["renameProvider"] "RenameProvider advertised"
@@ -1009,9 +1486,10 @@ let ionideAndProtocolTests =
                       "\n"
                       [ "module A"
                         "let greet name = \"Hello, \" + name"
+                        "let (|+|) (x: int) (y: int) = x + y"
                         "let numbers () ="
                         "    [ 1; 2; 3 ]"
-                        "    |> List.map (fun n -> n + 1)" ]
+                        "    |> List.map (fun n -> n |+| 1)" ]
 
               do! lsp.DidOpen(aPath, aText)
 
@@ -1022,8 +1500,9 @@ let ionideAndProtocolTests =
                       let hasAnalyzed = arr |> Array.exists (fun (m, _) -> m = "fsharp/documentAnalyzed")
                       hasParsed && hasAnalyzed)
 
-              // Wire: textDocument/prepareRename & textDocument/rename (valid + invalid -32602)
+              // Wire: textDocument/prepareRename & textDocument/rename (valid + invalid -32602 for identifier `foo`` and operator `notAnOp`)
               let greetLine, greetCol = findPos aText "greet" 0 2
+              let opWireLine, opWireCol = findPos aText "(|+|)" 0 2
               let posParams (line: int) (col: int) =
                   let o = JsonObject()
                   let td = JsonObject()
@@ -1039,26 +1518,36 @@ let ionideAndProtocolTests =
               Expect.isNotNull prepWire "textDocument/prepareRename returns range + placeholder"
               Expect.equal (jstr prepWire "placeholder") "greet" "prepareRename placeholder"
 
-              let renameReq (newName: string) =
-                  let o = posParams greetLine greetCol
+              let renameReqAt (line: int) (col: int) (newName: string) =
+                  let o = posParams line col
                   o["newName"] <- JsonValue.Create newName
                   o
+
+              let renameReq (newName: string) = renameReqAt greetLine greetCol newName
 
               let! renameWire = req "textDocument/rename" (renameReq "welcome")
               Expect.isNotNull renameWire "textDocument/rename returns WorkspaceEdit"
 
-              // Invalid rename name over JSON-RPC must fail with -32602
-              let! badRenameOutcome =
-                  task {
-                      try
-                          let! _ = req "textDocument/rename" (renameReq "")
-                          return None
-                      with ex ->
-                          return Some ex.Message
-                  }
+              // Custom operator rename over JSON-RPC succeeds for `|++|`
+              let! opRenameWire = req "textDocument/rename" (renameReqAt opWireLine opWireCol "|++|")
+              Expect.isNotNull opRenameWire "textDocument/rename on custom operator (|+|) -> |++| returns WorkspaceEdit"
 
-              Expect.isSome badRenameOutcome "Invalid newName must return JSON-RPC error"
-              Expect.stringContains badRenameOutcome.Value "-32602" "Error code must be InvalidParams (-32602)"
+              // Invalid rename names over JSON-RPC must fail with -32602 (empty, malformed identifier `foo``, and non-operator `notAnOp` on operator!)
+              for badLine, badCol, badName, desc in
+                  [ greetLine, greetCol, "", "empty newName"
+                    greetLine, greetCol, "foo`", "malformed single-backtick identifier"
+                    opWireLine, opWireCol, "notAnOp", "non-operator newName on custom operator" ] do
+                  let! badOutcome =
+                      task {
+                          try
+                              let! _ = req "textDocument/rename" (renameReqAt badLine badCol badName)
+                              return None
+                          with ex ->
+                              return Some ex.Message
+                      }
+
+                  Expect.isSome badOutcome $"Expected JSON-RPC error for %s{desc}"
+                  Expect.stringContains badOutcome.Value "-32602" $"Error code must be InvalidParams (-32602) for %s{desc}"
 
               // Wire: textDocument/inlayHint, textDocument/codeLens, codeLens/resolve, textDocument/inlineValue
               let rangeReq () =
@@ -1140,4 +1629,49 @@ let ionideAndProtocolTests =
                   lsp.ServerRequests
                   |> Array.filter (fun r -> r["method"].GetValue<string>() = "workspace/applyEdit")
               Expect.isNonEmpty applyReqs "fsharp/documentationGenerator must send workspace/applyEdit to client"
+
+              // Item 8: Hold `parse` on the initial owner graph, send DidChange (Epoch = 1), then Reload (disposing the old
+              // owner graph while LatestParse is in flight), and verify `fsharp/fileParsed` reactively retries and fires!
+              let oldOwner = (server.Workspace.ProjectOf aPath).Value
+              let parseEntered = new ManualResetEventSlim(false)
+              let releaseParse = new ManualResetEventSlim(false)
+              use _pe = disposing parseEntered
+              use _rp = disposing releaseParse
+
+              oldOwner.OnFlight(fun kind _ flightCt ->
+                  if kind = "parse" then
+                      parseEntered.Set()
+                      releaseParse.Wait(flightCt))
+
+              let parsedBeforeReload =
+                  seenNotifications.ToArray()
+                  |> Array.filter (fun (m, _) -> m = "fsharp/fileParsed")
+                  |> Array.length
+
+              let nextAText = aText + "\nlet afterReload = 99"
+              let fullLines = aText.Split('\n')
+
+              let fullEdit: Rfs.Lsp.Edit =
+                  { Range =
+                      { Start = { Line = 0; Character = 0 }
+                        End = { Line = fullLines.Length; Character = 0 } }
+                    Text = nextAText }
+
+              do! lsp.DidChange(aPath, 1, fullEdit)
+              Expect.isTrue (parseEntered.Wait(TimeSpan.FromSeconds 10.)) "Initial owner LatestParse entered held parse flight"
+
+              try
+                  do! server.Workspace.Reload tempDepsProject |> withinUnit
+
+                  do!
+                      PublishTests.eventually "fsharp/fileParsed retried on reloaded owner graph" (fun () ->
+                          let nowParsed =
+                              seenNotifications.ToArray()
+                              |> Array.filter (fun (m, _) -> m = "fsharp/fileParsed")
+                              |> Array.length
+
+                          nowParsed > parsedBeforeReload)
+              finally
+                  oldOwner.OnFlight(fun _ _ _ -> ())
+                  releaseParse.Set()
           } ]

@@ -299,9 +299,9 @@ let provide
 
                     let rec walkBinding (SynBinding(headPat = headPat; returnInfo = returnInfo; expr = body) as b) =
                         if rangesOverlapLines range b.RangeOfBindingWithRhs then
-                            if config.TypeAnnotations && returnInfo.IsNone then
+                            if config.TypeAnnotations then
                                 match headPat with
-                                | SynPat.Named(ident = SynIdent(ident, _)) ->
+                                | SynPat.Named(ident = SynIdent(ident, _)) when returnInfo.IsNone ->
                                     if not ident.idRange.IsSynthetic && ident.idText <> "_" then
                                         emitTypeHint ident false
                                 | SynPat.LongIdent(argPats = SynArgPats.Pats argPats) ->

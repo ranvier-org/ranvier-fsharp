@@ -16,6 +16,13 @@ open Rfs.Checker
 type private LspPos = Ionide.LanguageServerProtocol.Types.Position
 type private LspRange = Ionide.LanguageServerProtocol.Types.Range
 
+[<Struct>]
+type private RenameSymbolKind =
+    | IdentifierSymbol
+    | OperatorSymbol
+    | PropertySymbol
+    | TypeOrAttributeSymbol
+
 let private isSignature (file: string) =
     file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
 
@@ -78,52 +85,81 @@ let private fsharpKeywords =
 
     s
 
-let private isValidBareIdent (name: string) =
-    if String.IsNullOrEmpty name then
-        false
-    else
-        let first = name[0]
-
-        if not (Char.IsLetter first || first = '_') then
-            false
-        else
-            let mutable ok = true
-
-            for i in 1 .. name.Length - 1 do
-                let c = name[i]
-
-                if not (Char.IsLetterOrDigit c || c = '_' || c = '\'') then
-                    ok <- false
-
-            ok
-
-let internal validateAndFormatNewName (rawNewName: string) : Result<string, string> =
+let private validateAndFormatIdentifier (rawNewName: string) : Result<string * string, string> =
     if isNull rawNewName || String.IsNullOrWhiteSpace rawNewName then
         Error "Invalid identifier name: name cannot be empty."
-    elif rawNewName.IndexOfAny([| '\r'; '\n' |]) >= 0 then
-        Error "Invalid identifier name: name cannot contain newlines."
+    elif rawNewName.IndexOfAny([| '\r'; '\n'; '\t' |]) >= 0 then
+        Error "Invalid identifier name: name cannot contain newlines or tabs."
     else
-        let innerRes =
+        let candidate =
             if rawNewName.StartsWith("``", StringComparison.Ordinal) && rawNewName.EndsWith("``", StringComparison.Ordinal) then
                 if rawNewName.Length <= 4 then
-                    Error "Invalid identifier name: empty backticked identifier."
+                    None
                 else
-                    let body = rawNewName.Substring(2, rawNewName.Length - 4)
+                    let inner = rawNewName.Substring(2, rawNewName.Length - 4)
 
-                    if String.IsNullOrWhiteSpace body || body.Contains("``", StringComparison.Ordinal) then
-                        Error "Invalid identifier name: invalid backticked identifier."
+                    if String.IsNullOrWhiteSpace inner || inner.Contains("`", StringComparison.Ordinal) then
+                        None
                     else
-                        Ok body
-            elif rawNewName.Contains("``", StringComparison.Ordinal) then
-                Error "Invalid identifier name: unexpected double backticks."
+                        Some inner
+            elif rawNewName.Contains("`", StringComparison.Ordinal) then
+                None
             else
-                Ok rawNewName
+                Some rawNewName
 
-        match innerRes with
-        | Error msg -> Error msg
-        | Ok clean ->
-            let needsBackticks = fsharpKeywords.Contains clean || not (isValidBareIdent clean)
-            Ok(if needsBackticks then $"``%s{clean}``" else clean)
+        match candidate with
+        | None -> Error $"Invalid identifier name: '%s{rawNewName}'."
+        | Some clean ->
+            let normalized = PrettyNaming.NormalizeIdentifierBackticks clean
+
+            if
+                normalized.Length > 4
+                && normalized.StartsWith("``", StringComparison.Ordinal)
+                && normalized.EndsWith("``", StringComparison.Ordinal)
+            then
+                let inner = normalized.Substring(2, normalized.Length - 4)
+
+                if String.IsNullOrWhiteSpace inner || inner.Contains("`", StringComparison.Ordinal) then
+                    Error $"Invalid identifier name: '%s{rawNewName}'."
+                else
+                    Ok(normalized, inner)
+            elif PrettyNaming.IsIdentifierName clean && not (fsharpKeywords.Contains clean) then
+                Ok(clean, clean)
+            elif fsharpKeywords.Contains clean then
+                Ok($"``%s{clean}``", clean)
+            else
+                Error $"Invalid identifier name: '%s{rawNewName}'."
+
+let private validateAndFormatNewNameForKind (symKind: RenameSymbolKind) (rawNewName: string) : Result<string * string, string> =
+    if isNull rawNewName || String.IsNullOrWhiteSpace rawNewName then
+        Error "Invalid rename name: name cannot be empty."
+    elif rawNewName.IndexOfAny([| '\r'; '\n'; '\t' |]) >= 0 then
+        Error "Invalid rename name: name cannot contain newlines or tabs."
+    else
+        match symKind with
+        | OperatorSymbol ->
+            let trimmed = rawNewName.Trim()
+
+            let inner =
+                if trimmed.Length > 2 && trimmed.StartsWith("(", StringComparison.Ordinal) && trimmed.EndsWith(")", StringComparison.Ordinal) then
+                    trimmed.Substring(1, trimmed.Length - 2).Trim()
+                else
+                    trimmed
+
+            if
+                String.IsNullOrWhiteSpace inner
+                || inner.Contains(' ')
+                || not (PrettyNaming.IsOperatorDisplayName inner)
+            then
+                Error $"Invalid operator name: '%s{rawNewName}' is not a valid F# operator."
+            else
+                Ok(inner, inner)
+        | IdentifierSymbol
+        | PropertySymbol
+        | TypeOrAttributeSymbol -> validateAndFormatIdentifier rawNewName
+
+let internal validateAndFormatNewName (rawNewName: string) : Result<string, string> =
+    validateAndFormatIdentifier rawNewName |> Result.map fst
 
 [<Struct>]
 type private LexTok =
@@ -173,35 +209,49 @@ let private lexLineAt (text: string) (targetLine: int) : (string * LexTok[]) opt
 
         Some(targetStr, targetTokens)
 
-/// Finds an Identifier token (never Operator or Keyword) at `(line, character)` and returns `(lineStr, longIdentNames, endColExclusive, tokLspRange)`.
+/// Finds an Identifier or custom Operator token at `(line, character)` and returns `(lineStr, longIdentNames, endColExclusive, tokLspRange)`.
 let private lookupIdentifierAt (text: string) (line: int) (character: int) : (string * string list * int * LspRange) option =
     match lexLineAt text line with
     | None -> None
     | Some(lineStr, tokens) ->
+        let nonWsTokens =
+            tokens |> Array.filter (fun t -> t.Kind <> FSharpTokenCharKind.WhiteSpace)
+
         let hitIdx =
-            tokens
+            nonWsTokens
             |> Array.tryFindIndex (fun t -> t.Left <= character && character <= t.Right)
             |> Option.orElseWith (fun () ->
                 if character > 0 then
-                    tokens
+                    nonWsTokens
                     |> Array.tryFindIndex (fun t -> t.Left <= character - 1 && character - 1 <= t.Right && t.Right + 1 = character)
                 else
                     None)
 
         match hitIdx with
         | None -> None
-        | Some k ->
-            let tok = tokens[k]
+        | Some rawIdx ->
+            // If cursor is on `(` of `( |+| )`, step onto the operator token inside the parens.
+            let k =
+                if
+                    nonWsTokens[rawIdx].Text = "("
+                    && rawIdx + 2 < nonWsTokens.Length
+                    && nonWsTokens[rawIdx + 1].Kind = FSharpTokenCharKind.Operator
+                    && nonWsTokens[rawIdx + 2].Text = ")"
+                then
+                    rawIdx + 1
+                else
+                    rawIdx
 
-            if tok.Kind <> FSharpTokenCharKind.Identifier then
-                None
-            else
+            let tok = nonWsTokens[k]
+
+            match tok.Kind with
+            | FSharpTokenCharKind.Identifier ->
                 let mutable first = k
 
-                while first >= 2 && tokens[first - 1].Text = "." && tokens[first - 2].Kind = FSharpTokenCharKind.Identifier do
+                while first >= 2 && nonWsTokens[first - 1].Text = "." && nonWsTokens[first - 2].Kind = FSharpTokenCharKind.Identifier do
                     first <- first - 2
 
-                let names = [ for i in first..2 .. k -> unquote tokens[i].Text ]
+                let names = [ for i in first..2 .. k -> unquote nonWsTokens[i].Text ]
 
                 let tokRange: LspRange =
                     { Start = { Line = uint32 line; Character = uint32 tok.Left }
@@ -209,11 +259,35 @@ let private lookupIdentifierAt (text: string) (line: int) (character: int) : (st
 
                 Some(lineStr, names, tok.Right + 1, tokRange)
 
+            | FSharpTokenCharKind.Operator when tok.Text <> "." ->
+                let names =
+                    if
+                        k >= 3
+                        && nonWsTokens[k - 1].Text = "("
+                        && nonWsTokens[k - 2].Text = "."
+                        && nonWsTokens[k - 3].Kind = FSharpTokenCharKind.Identifier
+                    then
+                        let mutable first = k - 3
+
+                        while first >= 2 && nonWsTokens[first - 1].Text = "." && nonWsTokens[first - 2].Kind = FSharpTokenCharKind.Identifier do
+                            first <- first - 2
+
+                        [ for i in first..2 .. (k - 3) -> unquote nonWsTokens[i].Text ] @ [ tok.Text ]
+                    else
+                        [ tok.Text ]
+
+                let tokRange: LspRange =
+                    { Start = { Line = uint32 line; Character = uint32 tok.Left }
+                      End = { Line = uint32 line; Character = uint32 (tok.Right + 1) } }
+
+                Some(lineStr, names, tok.Right + 1, tokRange)
+
+            | _ -> None
+
 let private isForbiddenSymbol (symbol: FSharpSymbol) : bool =
     match symbol with
     | :? FSharpActivePatternCase -> true
-    | :? FSharpEntity as ent ->
-        ent.IsNamespace
+    | :? FSharpEntity as ent -> ent.IsNamespace
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         mfv.IsConstructor
         || mfv.IsImplicitConstructor
@@ -221,37 +295,91 @@ let private isForbiddenSymbol (symbol: FSharpSymbol) : bool =
         || mfv.CompiledName = ".ctor"
         || mfv.CompiledName = ".cctor"
         || mfv.LogicalName.StartsWith("(|", StringComparison.Ordinal)
-        || PrettyNaming.IsOperatorDisplayName mfv.DisplayName
         || PrettyNaming.IsActivePatternName mfv.LogicalName
     | _ -> false
 
-let private cleanSymbolName (symbol: FSharpSymbol) : string option =
+let private classifySymbol (symbol: FSharpSymbol) : RenameSymbolKind =
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        if PrettyNaming.IsOperatorDisplayName mfv.DisplayName then
+            OperatorSymbol
+        elif mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
+            PropertySymbol
+        else
+            IdentifierSymbol
+    | :? FSharpEntity -> TypeOrAttributeSymbol
+    | _ -> IdentifierSymbol
+
+let private cleanSymbolName (symbol: FSharpSymbol) : (string * RenameSymbolKind) option =
     if isForbiddenSymbol symbol then
         None
     else
-        let raw =
-            let core =
-                try
-                    symbol.DisplayNameCore
-                with _ ->
-                    ""
+        let symKind = classifySymbol symbol
 
-            if String.IsNullOrWhiteSpace core then symbol.DisplayName else core
+        match symKind with
+        | OperatorSymbol ->
+            let rawOp =
+                let d = symbol.DisplayName.Trim()
 
-        let cleaned = unquote raw
+                if d.Length > 2 && d.StartsWith("(", StringComparison.Ordinal) && d.EndsWith(")", StringComparison.Ordinal) then
+                    d.Substring(1, d.Length - 2).Trim()
+                else
+                    let core =
+                        try
+                            symbol.DisplayNameCore.Trim()
+                        with _ ->
+                            ""
 
-        if
-            String.IsNullOrWhiteSpace cleaned
-            || cleaned = ".ctor"
-            || cleaned = ".cctor"
-            || cleaned.StartsWith("(", StringComparison.Ordinal)
-        then
-            None
-        else
-            Some cleaned
+                    if String.IsNullOrWhiteSpace core then d else core
 
-/// Strips any leading `Namespace.Module.` qualifier from an FCS symbol-use range and verifies the unqualified slice matches `expectedCore`.
-let private stripQualifierAndVerify (lines: string[]) (expectedCore: string) (r: range) : Result<LspRange option, string> =
+            if String.IsNullOrWhiteSpace rawOp then
+                None
+            else
+                Some(rawOp, OperatorSymbol)
+        | PropertySymbol
+        | IdentifierSymbol
+        | TypeOrAttributeSymbol ->
+            let raw =
+                let core =
+                    try
+                        symbol.DisplayNameCore
+                    with _ ->
+                        ""
+
+                if String.IsNullOrWhiteSpace core then symbol.DisplayName else core
+
+            let unquoted = unquote raw
+
+            let cleaned =
+                match symbol with
+                | :? FSharpMemberOrFunctionOrValue as mfv when
+                    (mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod)
+                    && unquoted.Length > 4
+                    && (unquoted.StartsWith("get_", StringComparison.Ordinal) || unquoted.StartsWith("set_", StringComparison.Ordinal))
+                    ->
+                    unquoted.Substring 4
+                | _ -> unquoted
+
+            if
+                String.IsNullOrWhiteSpace cleaned
+                || cleaned = ".ctor"
+                || cleaned = ".cctor"
+                || cleaned.StartsWith("(", StringComparison.Ordinal)
+            then
+                None
+            else
+                Some(cleaned, symKind)
+
+/// Strips any leading `Namespace.Module.` qualifier (or `( ... )` around an operator), handles property `get`/`set`
+/// accessor keywords and `[<Foo>]` attribute shorthand, and verifies the settled text slice matches `expectedCore`.
+let private stripQualifierAndVerify
+    (symKind: RenameSymbolKind)
+    (lines: string[])
+    (expectedCore: string)
+    (formattedName: string)
+    (cleanNewName: string)
+    (r: range)
+    : Result<TextEdit option, string> =
     if r.IsSynthetic && r.StartLine = r.EndLine && r.StartColumn = r.EndColumn then
         Ok None
     elif r.StartLine < 1 || r.EndLine < r.StartLine || r.EndLine > lines.Length then
@@ -272,39 +400,160 @@ let private stripQualifierAndVerify (lines: string[]) (expectedCore: string) (r:
             else
                 let raw = endLine.Substring(baseStartCol, r.EndColumn - baseStartCol)
 
-                let strippedOffset =
-                    if raw.EndsWith("``", StringComparison.Ordinal) && raw.Length >= 4 then
-                        let openBt = raw.LastIndexOf("``", raw.Length - 3, StringComparison.Ordinal)
-                        if openBt >= 0 then openBt else 0
+                match symKind with
+                | OperatorSymbol ->
+                    if raw.Contains('(') then
+                        let openP = raw.LastIndexOf '('
+                        let closeP = raw.LastIndexOf ')'
+
+                        let insideOpt =
+                            if closeP > openP then
+                                Some(raw.Substring(openP + 1, closeP - openP - 1))
+                            elif openP >= 0 then
+                                // FCS ends qualified parenthesized operator ranges like `Demo.Ops.(|+|)` right before `)`.
+                                Some(raw.Substring(openP + 1))
+                            else
+                                None
+
+                        match insideOpt with
+                        | Some inside ->
+                            let leadSpaces = inside.Length - inside.TrimStart(' ').Length
+                            let trimmed = inside.Trim ' '
+
+                            if trimmed = expectedCore then
+                                let sCol = baseStartCol + openP + 1 + leadSpaces
+                                let eCol = sCol + trimmed.Length
+
+                                let lspRange: LspRange =
+                                    { Start = { Line = uint32 endLineIdx; Character = uint32 sCol }
+                                      End = { Line = uint32 endLineIdx; Character = uint32 eCol } }
+
+                                Ok(Some { Range = lspRange; NewText = formattedName })
+                            elif r.IsSynthetic then
+                                Ok None
+                            else
+                                Error $"Operator slice '%s{trimmed}' does not match expected operator '%s{expectedCore}'."
+                        | None ->
+                            if r.IsSynthetic then
+                                Ok None
+                            else
+                                Error $"Operator slice '%s{raw}' does not match expected operator '%s{expectedCore}'."
+                    elif raw = expectedCore then
+                        let lspRange: LspRange =
+                            { Start = { Line = uint32 endLineIdx; Character = uint32 baseStartCol }
+                              End = { Line = uint32 endLineIdx; Character = uint32 r.EndColumn } }
+
+                        Ok(Some { Range = lspRange; NewText = formattedName })
+                    elif raw.EndsWith("." + expectedCore, StringComparison.Ordinal) then
+                        let sCol = r.EndColumn - expectedCore.Length
+
+                        let lspRange: LspRange =
+                            { Start = { Line = uint32 endLineIdx; Character = uint32 sCol }
+                              End = { Line = uint32 endLineIdx; Character = uint32 r.EndColumn } }
+
+                        Ok(Some { Range = lspRange; NewText = formattedName })
+                    elif r.IsSynthetic then
+                        Ok None
                     else
-                        let lastDot = raw.LastIndexOf '.'
-                        if lastDot >= 0 then lastDot + 1 else 0
+                        Error $"Operator slice '%s{raw}' does not match expected operator '%s{expectedCore}'."
 
-                let finalStartCol = baseStartCol + strippedOffset
-                let identSlice = raw.Substring strippedOffset
-                let unquotedSlice = unquote identSlice
+                | IdentifierSymbol
+                | PropertySymbol
+                | TypeOrAttributeSymbol ->
+                    let strippedOffset =
+                        if raw.EndsWith("``", StringComparison.Ordinal) && raw.Length >= 4 then
+                            let openBt = raw.LastIndexOf("``", raw.Length - 3, StringComparison.Ordinal)
+                            if openBt >= 0 then openBt else 0
+                        else
+                            let lastDot = raw.LastIndexOf '.'
+                            if lastDot >= 0 then lastDot + 1 else 0
 
-                if unquotedSlice = expectedCore then
+                    let finalStartCol = baseStartCol + strippedOffset
+                    let identSlice = raw.Substring strippedOffset
+                    let unquotedSlice = unquote identSlice
+
                     let lspRange: LspRange =
                         { Start = { Line = uint32 endLineIdx; Character = uint32 finalStartCol }
                           End = { Line = uint32 endLineIdx; Character = uint32 r.EndColumn } }
 
-                    Ok(Some lspRange)
-                elif r.IsSynthetic then
-                    Ok None
-                else
-                    Error $"Source slice '%s{identSlice}' does not match expected symbol '%s{expectedCore}'."
+                    if unquotedSlice = expectedCore then
+                        Ok(Some { Range = lspRange; NewText = formattedName })
+                    elif
+                        symKind = PropertySymbol
+                        && expectedCore <> "get"
+                        && expectedCore <> "set"
+                        && (unquotedSlice = "get" || unquotedSlice = "set")
+                    then
+                        Ok None
+                    elif
+                        symKind = TypeOrAttributeSymbol
+                        && expectedCore.Length > 9
+                        && expectedCore.EndsWith("Attribute", StringComparison.Ordinal)
+                        && unquotedSlice = expectedCore.Substring(0, expectedCore.Length - 9)
+                    then
+                        let shortReplacement =
+                            if cleanNewName.Length > 9 && cleanNewName.EndsWith("Attribute", StringComparison.Ordinal) then
+                                let shortCore = cleanNewName.Substring(0, cleanNewName.Length - 9)
+
+                                match validateAndFormatIdentifier shortCore with
+                                | Ok(fmtShort, _) -> fmtShort
+                                | Error _ -> formattedName
+                            else
+                                formattedName
+
+                        Ok(Some { Range = lspRange; NewText = shortReplacement })
+                    elif r.IsSynthetic then
+                        Ok None
+                    else
+                        Error $"Source slice '%s{identSlice}' does not match expected symbol '%s{expectedCore}'."
 
 [<NoComparison; NoEquality>]
 type private ResolvedRenameTarget =
     | NotRenameable of reason: string
-    | LocalTarget of cleanName: string * tokRange: LspRange * text: string * uses: range list
+    | LocalTarget of
+        symKind: RenameSymbolKind *
+        cleanName: string *
+        tokRange: LspRange *
+        text: string *
+        viewVersion: int64 *
+        uses: range list
     | WorkspaceTarget of
+        symKind: RenameSymbolKind *
         key: string *
         landed: string *
         spelled: string option *
         cleanName: string *
         tokRange: LspRange
+
+let private collectLocalSymbolUses
+    (check: FSharpCheckFileResults)
+    (sym: FSharpSymbol)
+    (cleanName: string)
+    (symKind: RenameSymbolKind)
+    (ct: CancellationToken)
+    : range list =
+    let symbolsToQuery =
+        if symKind = PropertySymbol then
+            match sym with
+            | :? FSharpMemberOrFunctionOrValue as mfv ->
+                match mfv.DeclaringEntity with
+                | Some ent ->
+                    ent.MembersFunctionsAndValues
+                    |> Seq.filter (fun m ->
+                        (m.IsProperty || m.IsPropertyGetterMethod || m.IsPropertySetterMethod)
+                        && (match cleanSymbolName m with
+                            | Some(cn, _) -> cn = cleanName
+                            | None -> false))
+                    |> Seq.cast<FSharpSymbol>
+                    |> List.ofSeq
+                | None -> [ sym ]
+            | _ -> [ sym ]
+        else
+            [ sym ]
+
+    [ for s in symbolsToQuery do
+          for d in check.GetUsesOfSymbolInFile(s, cancellationToken = ct) do
+              yield d.Range ]
 
 let private resolveInFs (graph: ProjectGraph) (path: string) (line: int) (character: int) (ct: CancellationToken) : Task<ResolvedRenameTarget> =
     graph.ReadFile(
@@ -325,11 +574,15 @@ let private resolveInFs (graph: ProjectGraph) (path: string) (line: int) (charac
                 | Some u ->
                     match cleanSymbolName u.Symbol with
                     | None -> NotRenameable "This symbol kind cannot be renamed."
-                    | Some cleanName ->
+                    | Some(cleanName, symKind) ->
                         let keysIn = SymbolUses.keysIn check ct
 
                         match keysIn u with
                         | Some key ->
+                            let effectiveKind =
+                                let parts = key.Split '|'
+                                if parts.Length > 1 && parts[1] = "property" then PropertySymbol else symKind
+
                             let landedOpt =
                                 u.Symbol.SignatureLocation
                                 |> Option.orElse u.Symbol.DeclarationLocation
@@ -342,7 +595,7 @@ let private resolveInFs (graph: ProjectGraph) (path: string) (line: int) (charac
                                     SymbolUses.spelledName u.Symbol
                                     |> Option.filter (fun n -> List.tryLast names = Some n)
 
-                                WorkspaceTarget(key, landedFile, spelled, cleanName, tokRange)
+                                WorkspaceTarget(effectiveKind, key, landedFile, spelled, cleanName, tokRange)
                         | None ->
                             let declaredHere =
                                 match u.Symbol.DeclarationLocation with
@@ -352,10 +605,8 @@ let private resolveInFs (graph: ProjectGraph) (path: string) (line: int) (charac
                             if not declaredHere then
                                 NotRenameable "Cannot rename symbol declared outside this file."
                             else
-                                let localRanges =
-                                    [ for d in check.GetUsesOfSymbolInFile(u.Symbol, cancellationToken = ct) -> d.Range ]
-
-                                LocalTarget(cleanName, tokRange, view.Text, localRanges)),
+                                let localRanges = collectLocalSymbolUses check u.Symbol cleanName symKind ct
+                                LocalTarget(symKind, cleanName, tokRange, view.Text, view.Version, localRanges)),
         ct
     )
 
@@ -381,10 +632,14 @@ let private resolveInFsi (graph: ProjectGraph) (path: string) (line: int) (chara
                 | Some(struct (_, isDef, sym)) ->
                     match cleanSymbolName sym with
                     | None -> NotRenameable "This symbol kind cannot be renamed."
-                    | Some cleanName ->
+                    | Some(cleanName, symKind) ->
                         match SymbolUses.keyOf sym with
                         | None -> NotRenameable "Unkeyed signature symbol cannot be renamed."
                         | Some key ->
+                            let effectiveKind =
+                                let parts = key.Split '|'
+                                if parts.Length > 1 && parts[1] = "property" then PropertySymbol else symKind
+
                             let landedOpt =
                                 if isDef then
                                     Some path
@@ -400,7 +655,7 @@ let private resolveInFsi (graph: ProjectGraph) (path: string) (line: int) (chara
                                     SymbolUses.spelledName sym
                                     |> Option.filter (fun n -> List.tryLast names = Some n)
 
-                                WorkspaceTarget(key, landedFile, spelled, cleanName, tokRange)),
+                                WorkspaceTarget(effectiveKind, key, landedFile, spelled, cleanName, tokRange)),
         ct
     )
 
@@ -428,17 +683,16 @@ let private hitsOfKey (key: string) (uses: FileUses) : range[] =
 
 let private buildWorkspaceEdit
     (canDocumentChanges: bool)
-    (versionOf: string -> int option)
-    (editsPerFile: (string * TextEdit[]) list)
+    (editsPerFile: (string * int option * TextEdit[]) list)
     : WorkspaceEdit =
     if canDocumentChanges then
         let docChanges =
-            [| for filePath, edits in editsPerFile ->
+            [| for filePath, verOpt, edits in editsPerFile ->
                    let uri = Paths.toUri filePath
 
                    let docId: OptionalVersionedTextDocumentIdentifier =
                        { Uri = uri
-                         Version = versionOf filePath }
+                         Version = verOpt }
 
                    U4.C1
                        { TextDocument = docId
@@ -450,18 +704,17 @@ let private buildWorkspaceEdit
     else
         let map =
             editsPerFile
-            |> Seq.map (fun (filePath, edits) -> Paths.toUri filePath, edits)
+            |> Seq.map (fun (filePath, _, edits) -> Paths.toUri filePath, edits)
             |> Map.ofSeq
 
         { Changes = Some map
           DocumentChanges = None
           ChangeAnnotations = None }
 
-let private deduplicateAndBuildEdits (formattedName: string) (ranges: LspRange seq) : TextEdit[] =
-    ranges
-    |> Seq.distinctBy (fun r -> r.Start.Line, r.Start.Character, r.End.Line, r.End.Character)
-    |> Seq.sortBy (fun r -> r.Start.Line, r.Start.Character)
-    |> Seq.map (fun r -> { Range = r; NewText = formattedName })
+let private deduplicateEdits (edits: TextEdit seq) : TextEdit[] =
+    edits
+    |> Seq.distinctBy (fun e -> e.Range.Start.Line, e.Range.Start.Character, e.Range.End.Line, e.Range.End.Character)
+    |> Seq.sortBy (fun e -> e.Range.Start.Line, e.Range.Start.Character)
     |> Array.ofSeq
 
 let prepare
@@ -475,14 +728,14 @@ let prepare
     task {
         match! resolveTarget graph path line character ct with
         | NotRenameable _ -> return None
-        | LocalTarget(cleanName, tokRange, _, _) ->
+        | LocalTarget(_, cleanName, tokRange, _, _, _) ->
             return
                 Some(
                     U3.C2
                         { Range = tokRange
                           Placeholder = cleanName }
                 )
-        | WorkspaceTarget(_, landedFile, _, cleanName, tokRange) ->
+        | WorkspaceTarget(_, _, landedFile, _, cleanName, tokRange) ->
             // Graph-thread affinity: `ownersOf` may read `Ranvier.Memo.Value` (`References.Scope.OwnersOf` / `workspace.OwnersNow`),
             // so always evaluate it inside `graph.Host.WhenSettled` on the GraphHost thread.
             let! definedInWorkspace =
@@ -501,7 +754,7 @@ let prepare
 
 let internal renameWithCapabilities
     (canDocumentChanges: bool)
-    (versionOf: string -> int option)
+    (versionNow: string -> int option)
     (scope: References.Scope)
     (graph: ProjectGraph)
     (path: string)
@@ -510,171 +763,231 @@ let internal renameWithCapabilities
     (newName: string)
     (ct: CancellationToken)
     : Task<Result<WorkspaceEdit option, string>> =
-    task {
-        match validateAndFormatNewName newName with
-        | Error msg -> return Error msg
-        | Ok formattedName ->
-            match! resolveTarget graph path line character ct with
-            | NotRenameable reason -> return Error reason
-            | LocalTarget(cleanName, _, text, localRanges) ->
-                let lines = text.Split '\n'
-                let verified = ResizeArray<LspRange>()
-                let mutable errOpt: string option = None
+    let rec readWorkspaceTarget
+        (symKind: RenameSymbolKind)
+        (key: string)
+        (landedFile: string)
+        (spelled: string option)
+        (cleanName: string)
+        (attempt: int)
+        : Task<Result<WorkspaceEdit option, string>> =
+        task {
+            let turnScope () : TurnScope<bool> =
+                if scope.IsLoading() then
+                    { Loading = true
+                      Projects = [||]
+                      Name = None
+                      Extra = false }
+                else
+                    let definers = scope.OwnersOf landedFile
 
-                for r in localRanges do
-                    if errOpt.IsNone then
-                        match stripQualifierAndVerify lines cleanName r with
-                        | Ok(Some lspR) -> verified.Add lspR
-                        | Ok None -> ()
-                        | Error e -> errOpt <- Some e
+                    if definers.IsEmpty then
+                        { Loading = false
+                          Projects = [||]
+                          Name = None
+                          Extra = false }
+                    else
+                        let askingGraph =
+                            match scope.OwnersOf path with
+                            | g :: _ -> g
+                            | [] -> graph
 
-                match errOpt with
-                | Some e -> return Error e
-                | None ->
-                    let edits = deduplicateAndBuildEdits formattedName verified
+                        let projects =
+                            askingGraph :: definers @ (definers |> List.collect scope.ReferencingProjects)
+                            |> List.distinct
 
-                    if edits.Length = 0 then
+                        { Loading = false
+                          Projects = [| for p in projects -> p, scope.FilesOf p |]
+                          Name = spelled
+                          Extra = true }
+
+            match! graph.ReadInOneTurn(turnScope, ct) with
+            | TurnRead.Gone -> return Error "Workspace changed while computing rename."
+            | TurnRead.Read(false, _) ->
+                return Error "Cannot rename external symbol defined outside the workspace."
+            | TurnRead.Read(true, projectFiles) ->
+                match validateAndFormatNewNameForKind symKind newName with
+                | Error msg -> return Error msg
+                | Ok(formattedName, cleanNewName) ->
+                    let byFile = Dictionary<string, ProjectGraph * int64 * ResizeArray<range>>(StringComparer.OrdinalIgnoreCase)
+
+                    for g, turnFiles in projectFiles do
+                        for tf in turnFiles do
+                            match tf with
+                            | TurnFile.Indexed(filePath, ver, uses)
+                            | TurnFile.Signature(filePath, ver, uses) ->
+                                let hits = hitsOfKey key uses
+
+                                if hits.Length > 0 then
+                                    let full = Path.GetFullPath filePath
+
+                                    match byFile.TryGetValue full with
+                                    | true, (_, _, acc) -> acc.AddRange hits
+                                    | _ ->
+                                        let acc = ResizeArray<range>(hits.Length)
+                                        acc.AddRange hits
+                                        byFile[full] <- (g, ver, acc)
+                            | TurnFile.Skipped _ -> ()
+
+                    if byFile.Count = 0 then
                         return Ok None
                     else
-                        return Ok(Some(buildWorkspaceEdit canDocumentChanges versionOf [ Path.GetFullPath path, edits ]))
+                        let byGraph =
+                            byFile
+                            |> Seq.groupBy (fun kv ->
+                                let g, _, _ = kv.Value
+                                g)
+                            |> Seq.map (fun (g, kvs) -> g, [ for kv in kvs -> kv.Key ])
+                            |> Array.ofSeq
 
-            | WorkspaceTarget(key, landedFile, spelled, cleanName, _) ->
-                let rec readAndVerify (attempt: int) : Task<Result<WorkspaceEdit option, string>> =
-                    task {
-                        let turnScope () : TurnScope<bool> =
-                            if scope.IsLoading() then
-                                { Loading = true
-                                  Projects = [||]
-                                  Name = None
-                                  Extra = false }
-                            else
-                                let definers = scope.OwnersOf landedFile
+                        let capturedVersions = Dictionary<string, int option>(StringComparer.OrdinalIgnoreCase)
 
-                                if definers.IsEmpty then
-                                    { Loading = false
-                                      Projects = [||]
-                                      Name = None
-                                      Extra = false }
+                        let! parsesOpt =
+                            graph.LatestParsesInOneTurn(
+                                (fun () ->
+                                    capturedVersions.Clear()
+                                    let loading = scope.IsLoading()
+
+                                    if not loading then
+                                        for _, paths in byGraph do
+                                            for p in paths do
+                                                capturedVersions[p] <- versionNow p
+
+                                    struct (loading, byGraph)),
+                                ct
+                            )
+
+                        match parsesOpt with
+                        | ValueNone -> return Error "Workspace changed while computing rename."
+                        | ValueSome parsedProjects ->
+                            let textMap = Dictionary<string, TextView>(StringComparer.OrdinalIgnoreCase)
+
+                            for _, fileViews in parsedProjects do
+                                for filePath, tv in fileViews do
+                                    textMap[Path.GetFullPath filePath] <- tv
+
+                            let versionsMatch =
+                                byFile
+                                |> Seq.forall (fun kv ->
+                                    let _, expectedVer, _ = kv.Value
+
+                                    match textMap.TryGetValue kv.Key with
+                                    | true, tv -> tv.Version = expectedVer
+                                    | _ -> false)
+
+                            if not versionsMatch then
+                                if attempt < 3 then
+                                    return! readWorkspaceTarget symKind key landedFile spelled cleanName (attempt + 1)
                                 else
-                                    let askingGraph =
-                                        match scope.OwnersOf path with
-                                        | g :: _ -> g
-                                        | [] -> graph
-
-                                    let projects =
-                                        askingGraph :: definers @ (definers |> List.collect scope.ReferencingProjects)
-                                        |> List.distinct
-
-                                    { Loading = false
-                                      Projects = [| for p in projects -> p, scope.FilesOf p |]
-                                      Name = spelled
-                                      Extra = true }
-
-                        match! graph.ReadInOneTurn(turnScope, ct) with
-                        | TurnRead.Gone -> return Error "Workspace changed while computing rename."
-                        | TurnRead.Read(false, _) ->
-                            return Error "Cannot rename external symbol defined outside the workspace."
-                        | TurnRead.Read(true, projectFiles) ->
-                            // Group hits by normalized file path along with the ProjectGraph and settled version from this turn.
-                            let byFile = Dictionary<string, ProjectGraph * int64 * ResizeArray<range>>(StringComparer.OrdinalIgnoreCase)
-
-                            for g, turnFiles in projectFiles do
-                                for tf in turnFiles do
-                                    match tf with
-                                    | TurnFile.Indexed(filePath, ver, uses)
-                                    | TurnFile.Signature(filePath, ver, uses) ->
-                                        let hits = hitsOfKey key uses
-
-                                        if hits.Length > 0 then
-                                            let full = Path.GetFullPath filePath
-
-                                            match byFile.TryGetValue full with
-                                            | true, (_, _, acc) -> acc.AddRange hits
-                                            | _ ->
-                                                let acc = ResizeArray<range>(hits.Length)
-                                                acc.AddRange hits
-                                                byFile[full] <- (g, ver, acc)
-                                    | TurnFile.Skipped _ -> ()
-
-                            if byFile.Count = 0 then
-                                return Ok None
+                                    return Error "Files changed while computing rename."
                             else
-                                // Read settled TextViews for all touched files in one turn and confirm versions match `ReadInOneTurn`.
-                                let byGraph =
-                                    byFile
-                                    |> Seq.groupBy (fun kv ->
-                                        let g, _, _ = kv.Value
-                                        g)
-                                    |> Seq.map (fun (g, kvs) -> g, [ for kv in kvs -> kv.Key ])
-                                    |> Array.ofSeq
+                                let editsPerFile = ResizeArray<string * int option * TextEdit[]>()
+                                let mutable errOpt: string option = None
 
-                                let! parsesOpt =
-                                    graph.LatestParsesInOneTurn((fun () -> struct (scope.IsLoading(), byGraph)), ct)
+                                for kv in byFile do
+                                    if errOpt.IsNone then
+                                        let fullPath = kv.Key
+                                        let _, _, rawRanges = kv.Value
+                                        let tv = textMap[fullPath]
+                                        let lines = tv.Text.Split '\n'
+                                        let verified = ResizeArray<TextEdit>()
 
-                                match parsesOpt with
-                                | ValueNone -> return Error "Workspace changed while computing rename."
-                                | ValueSome parsedProjects ->
-                                    let textMap = Dictionary<string, TextView>(StringComparer.OrdinalIgnoreCase)
-
-                                    for _, fileViews in parsedProjects do
-                                        for filePath, tv in fileViews do
-                                            textMap[Path.GetFullPath filePath] <- tv
-
-                                    let versionsMatch =
-                                        byFile
-                                        |> Seq.forall (fun kv ->
-                                            let _, expectedVer, _ = kv.Value
-
-                                            match textMap.TryGetValue kv.Key with
-                                            | true, tv -> tv.Version = expectedVer
-                                            | _ -> false)
-
-                                    if not versionsMatch then
-                                        if attempt < 3 then
-                                            return! readAndVerify (attempt + 1)
-                                        else
-                                            return Error "Files changed while computing rename."
-                                    else
-                                        let editsPerFile = ResizeArray<string * TextEdit[]>()
-                                        let mutable errOpt: string option = None
-
-                                        for kv in byFile do
+                                        for r in rawRanges do
                                             if errOpt.IsNone then
-                                                let fullPath = kv.Key
-                                                let _, _, rawRanges = kv.Value
-                                                let tv = textMap[fullPath]
-                                                let lines = tv.Text.Split '\n'
-                                                let verified = ResizeArray<LspRange>()
+                                                match stripQualifierAndVerify symKind lines cleanName formattedName cleanNewName r with
+                                                | Ok(Some edit) -> verified.Add edit
+                                                | Ok None -> ()
+                                                | Error e -> errOpt <- Some e
 
-                                                for r in rawRanges do
-                                                    if errOpt.IsNone then
-                                                        match stripQualifierAndVerify lines cleanName r with
-                                                        | Ok(Some lspR) -> verified.Add lspR
-                                                        | Ok None -> ()
-                                                        | Error e -> errOpt <- Some e
+                                        if errOpt.IsNone then
+                                            let fileEdits = deduplicateEdits verified
 
-                                                if errOpt.IsNone then
-                                                    let fileEdits = deduplicateAndBuildEdits formattedName verified
+                                            if fileEdits.Length > 0 then
+                                                let verOpt =
+                                                    match capturedVersions.TryGetValue fullPath with
+                                                    | true, v -> v
+                                                    | _ -> None
 
-                                                    if fileEdits.Length > 0 then
-                                                        editsPerFile.Add(fullPath, fileEdits)
+                                                editsPerFile.Add(fullPath, verOpt, fileEdits)
 
-                                        match errOpt with
-                                        | Some e -> return Error e
-                                        | None ->
-                                            if editsPerFile.Count = 0 then
-                                                return Ok None
-                                            else
-                                                let sortedFiles =
-                                                    editsPerFile
-                                                    |> Seq.sortBy (fun (p, _) -> p.ToUpperInvariant())
-                                                    |> List.ofSeq
+                                match errOpt with
+                                | Some e -> return Error e
+                                | None ->
+                                    if editsPerFile.Count = 0 then
+                                        return Ok None
+                                    else
+                                        let sortedFiles =
+                                            editsPerFile
+                                            |> Seq.sortBy (fun (p, _, _) -> p.ToUpperInvariant())
+                                            |> List.ofSeq
 
-                                                return Ok(Some(buildWorkspaceEdit canDocumentChanges versionOf sortedFiles))
-                    }
+                                        return Ok(Some(buildWorkspaceEdit canDocumentChanges sortedFiles))
+        }
 
-                return! readAndVerify 0
-    }
+    let rec runAttempt (outerAttempt: int) : Task<Result<WorkspaceEdit option, string>> =
+        task {
+            match! resolveTarget graph path line character ct with
+            | NotRenameable reason -> return Error reason
+            | LocalTarget(symKind, cleanName, _, text, viewVer, localRanges) ->
+                match validateAndFormatNewNameForKind symKind newName with
+                | Error msg -> return Error msg
+                | Ok(formattedName, cleanNewName) ->
+                    let fullPath = Path.GetFullPath path
+                    let mutable capturedLspVersion: int option = None
+
+                    let! parsesOpt =
+                        graph.LatestParsesInOneTurn(
+                            (fun () ->
+                                let loading = scope.IsLoading()
+
+                                if not loading then
+                                    capturedLspVersion <- versionNow fullPath
+
+                                struct (loading, [| graph, [ fullPath ] |])),
+                            ct
+                        )
+
+                    match parsesOpt with
+                    | ValueNone -> return Error "Workspace changed while computing rename."
+                    | ValueSome parsedProjects ->
+                        let tvOpt =
+                            parsedProjects
+                            |> Seq.collect snd
+                            |> Seq.tryPick (fun (fp, tv) -> if sameFile fp fullPath then Some tv else None)
+
+                        match tvOpt with
+                        | Some tv when tv.Version <> viewVer ->
+                            if outerAttempt < 3 then
+                                return! runAttempt (outerAttempt + 1)
+                            else
+                                return Error "File changed while computing rename."
+                        | _ ->
+                            let lines = text.Split '\n'
+                            let verified = ResizeArray<TextEdit>()
+                            let mutable errOpt: string option = None
+
+                            for r in localRanges do
+                                if errOpt.IsNone then
+                                    match stripQualifierAndVerify symKind lines cleanName formattedName cleanNewName r with
+                                    | Ok(Some edit) -> verified.Add edit
+                                    | Ok None -> ()
+                                    | Error e -> errOpt <- Some e
+
+                            match errOpt with
+                            | Some e -> return Error e
+                            | None ->
+                                let edits = deduplicateEdits verified
+
+                                if edits.Length = 0 then
+                                    return Ok None
+                                else
+                                    return Ok(Some(buildWorkspaceEdit canDocumentChanges [ fullPath, capturedLspVersion, edits ]))
+
+            | WorkspaceTarget(symKind, key, landedFile, spelled, cleanName, _) ->
+                return! readWorkspaceTarget symKind key landedFile spelled cleanName 0
+        }
+
+    runAttempt 0
 
 let rename
     (scope: References.Scope)

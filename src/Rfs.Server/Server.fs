@@ -136,6 +136,21 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     // JSON-RPC's InternalError. LspResult.internalError in Ionide.LanguageServerProtocol 0.7.0 sends -32602 (InvalidParams)
     let internalError (message: string) : LspResult<'T> = Error(JsonRpc.Error.Create(-32603, message))
 
+    let rec unwrapRootExn (e: exn) : exn =
+        match e with
+        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> unwrapRootExn a.InnerException
+        | e -> e
+
+    let handleReadExn (what: string) (none: 'T) (ex: exn) : LspResult<'T> =
+        match unwrapRootExn ex with
+        | :? OperationCanceledException
+        | :? ObjectDisposedException
+        // The file's #line directives stayed another parse's for as long as a check waits for them
+        | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> Ok none
+        | e ->
+            eprintfn "[ranvierautocomplete] %s failed: %O" what e
+            internalError e.Message
+
     /// A request that reads a source file: `none` when no project holds it, or the project goes away (a reload hides it
     /// while it loads again) or the server shuts down meanwhile. A request the client cancelled never gets to the handler:
     /// the library cancels the async itself. The edits before the request may still be queued; its answer is for the text
@@ -167,19 +182,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     let! answer = run graph path ct |> Async.AwaitTask
                     return Ok answer
             with ex ->
-                let rec root (e: exn) =
-                    match e with
-                    | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
-                    | e -> e
-
-                match root ex with
-                | :? OperationCanceledException
-                | :? ObjectDisposedException
-                // The file's #line directives stayed another parse's for as long as a check waits for them
-                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
-                | e ->
-                    eprintfn "[ranvierautocomplete] %s failed: %O" what e
-                    return internalError e.Message
+                return handleReadExn what none ex
         }
 
     let reading what none path run = readingCore false what none path run
@@ -229,18 +232,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     let! answer = run graph ct |> Async.AwaitTask
                     return Ok answer
             with ex ->
-                let rec root (e: exn) =
-                    match e with
-                    | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
-                    | e -> e
-
-                match root ex with
-                | :? OperationCanceledException
-                | :? ObjectDisposedException
-                | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok none
-                | e ->
-                    eprintfn "[ranvierautocomplete] %s failed: %O" what e
-                    return internalError e.Message
+                return handleReadExn what none ex
         }
 
     /// FSAC's `AutomaticWorkspaceInit`: peek the root, load the single solution if there is one, else every project
@@ -361,6 +353,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         | Some p -> p.Changes()
         | None -> Task.FromResult 0
 
+    /// Exercises `handleReadExn` (unwrapping `AggregateException` and swallowing benign turn aborts). For tests.
+    member internal _.HandleReadExn(what: string, none: 'T, ex: exn) : LspResult<'T> =
+        handleReadExn what none ex
+
     member _.FSharpWorkspacePeek(p: WorkspacePeekRequest) : Async<LspResult<PlainNotification>> =
         async {
             try
@@ -382,7 +378,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 let! _ = workspace.Load projects |> Async.AwaitTask
                 return plain (Responses.workspaceLoad true)
             with ex ->
-                return internalError ex.Message
+                return handleReadExn "fsharp/workspaceLoad" { Content = Responses.workspaceLoad false } ex
         }
 
     /// `rfs/why`: why the declaration at the position was checked again. Waits like the queries do.
@@ -404,7 +400,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     | Some spec -> return plain (Responses.project spec)
                     | None -> return internalError $"Project '%s{projPath}' failed to load."
             with ex ->
-                return internalError ex.Message
+                return internalError (unwrapRootExn ex).Message
         }
 
     member _.FSharpSignature(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
@@ -465,7 +461,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
 
                 let! s =
-                    IonideEndpoints.documentationSymbolOnHost
+                    IonideEndpoints.documentationSymbol
                         host
                         workspace.ProjectsNow
                         workspace.LoadingNow
@@ -476,21 +472,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                 return Ok(s |> Option.map (fun c -> { Content = c }))
             with ex ->
-                match ex with
-                | :? OperationCanceledException
-                | :? ObjectDisposedException -> return Ok None
-                | e -> return internalError e.Message
+                return handleReadExn "fsharp/documentationSymbol" None ex
         }
 
     member _.FSharpDocumentationGenerator(p: TextDocumentPositionParams) : Async<LspResult<unit>> =
         async {
             let! res =
                 readingAny "fsharp/documentationGenerator" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
-                    let verOpt = documents.TryFind path |> Option.map _.LspVersion
-
                     IonideEndpoints.documentationGeneratorWithCapabilities
                         canDocumentChanges
-                        verOpt
+                        documents.TryVersionNow
                         graph
                         path
                         (int p.Position.Line)
@@ -501,12 +492,15 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             | Error e -> return Error e
             | Ok None -> return Ok()
             | Ok(Some edit) ->
-                let! _ =
-                    (client :> ILspClient).WorkspaceApplyEdit
-                        { Label = Some "Generate Xml Documentation"
-                          Edit = edit }
+                try
+                    let! _ =
+                        (client :> ILspClient).WorkspaceApplyEdit
+                            { Label = Some "Generate Xml Documentation"
+                              Edit = edit }
 
-                return Ok()
+                    return Ok()
+                with ex ->
+                    return handleReadExn "fsharp/documentationGenerator" () ex
         }
 
     member _.FSharpCompilerLocation(_: obj) : Async<LspResult<PlainNotification>> =
@@ -746,12 +740,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     let! resolved = CodeLens.resolve scope workspace.OwnersOf lens ct |> Async.AwaitTask
                     return Ok resolved
                 with ex ->
-                    match ex with
-                    | :? OperationCanceledException
-                    | :? ObjectDisposedException -> return Ok lens
-                    | e ->
-                        eprintfn "[ranvierautocomplete] codeLens/resolve failed: %O" e
-                        return internalError e.Message
+                    return handleReadExn "codeLens/resolve" lens ex
             }
         member _.CompletionItemResolve(item: CompletionItem) =
             match Completion.positionOf item with
@@ -972,31 +961,25 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             }
         member _.TextDocumentRename(p: RenameParams) =
             async {
-                match Rename.validateAndFormatNewName p.NewName with
-                | Error msg -> return Error(JsonRpc.Error.Create(-32602, msg))
-                | Ok _ ->
-                    let scope = makeScope ()
+                let scope = makeScope ()
 
-                    let versionOf (filePath: string) =
-                        documents.TryFind filePath |> Option.map _.LspVersion
+                let! res =
+                    readingAny "rename" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                        Rename.renameWithCapabilities
+                            canDocumentChanges
+                            documents.TryVersionNow
+                            scope
+                            graph
+                            path
+                            (int p.Position.Line)
+                            (int p.Position.Character)
+                            p.NewName
+                            ct)
 
-                    let! res =
-                        readingAny "rename" (Ok None) (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
-                            Rename.renameWithCapabilities
-                                canDocumentChanges
-                                versionOf
-                                scope
-                                graph
-                                path
-                                (int p.Position.Line)
-                                (int p.Position.Character)
-                                p.NewName
-                                ct)
-
-                    match res with
-                    | Error e -> return Error e
-                    | Ok(Error msg) -> return Error(JsonRpc.Error.Create(-32602, msg))
-                    | Ok(Ok editOpt) -> return Ok editOpt
+                match res with
+                | Error e -> return Error e
+                | Ok(Error msg) -> return Error(JsonRpc.Error.Create(-32602, msg))
+                | Ok(Ok editOpt) -> return Ok editOpt
             }
         member _.TextDocumentSelectionRange(p: SelectionRangeParams) =
             readingAny "selectionRange" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->

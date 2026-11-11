@@ -292,42 +292,62 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
     /// Emits `fsharp/fileParsed` once per open-row epoch as soon as the latest parse lands, without waiting on typecheck. Graph thread.
     let publishingParsed (item: unit -> Row) : unit =
+        let retryTick: Signal<int64> = createSignal 0L
         let mutable parsedSent = Int64.MinValue
-        let mutable inFlight = Int64.MinValue
+        let mutable inFlight: struct (ProjectGraph * int64) voption = ValueNone
 
         createEffect (fun () ->
             let r = item ()
+            let _ = retryTick.Value
+            let owners = workspace.OwnersNow r.Path
 
             try
-                if r.Open && r.Uri <> "" && r.Epoch <> parsedSent && r.Epoch <> inFlight then
-                    match workspace.OwnersNow r.Path with
+                if r.Open && r.Uri <> "" && r.Epoch <> parsedSent then
+                    match owners with
                     | [] -> ()
                     | g :: _ ->
-                        let path = r.Path
-                        let uri = r.Uri
-                        let targetEpoch = r.Epoch
-                        inFlight <- targetEpoch
+                        let alreadyInFlightOnSameOwner =
+                            match inFlight with
+                            | ValueSome(struct (fg, fe)) -> obj.ReferenceEquals(fg, g) && fe = r.Epoch
+                            | ValueNone -> false
 
-                        task {
-                            try
-                                let! _ = g.LatestParse(path, CancellationToken.None)
+                        if not alreadyInFlightOnSameOwner then
+                            let path = r.Path
+                            let uri = r.Uri
+                            let targetEpoch = r.Epoch
+                            inFlight <- ValueSome(struct (g, targetEpoch))
 
-                                if Volatile.Read &disposed = 0 then
-                                    GraphTurn.afterPump host (fun () ->
-                                        if Volatile.Read &disposed = 0 then
-                                            match rowOf path with
-                                            | Some now when now.Open && now.Epoch = targetEpoch && parsedSent <> targetEpoch ->
-                                                parsedSent <- targetEpoch
-                                                let body = box { Content = uri }
-                                                outbox.Enqueue(Notify(fun () -> client.Notify("fsharp/fileParsed", body) |> Async.StartAsTask :> Task))
-                                            | _ -> ())
-                            with _ ->
-                                if Volatile.Read &disposed = 0 then
-                                    GraphTurn.afterPump host (fun () ->
-                                        if inFlight = targetEpoch then
-                                            inFlight <- Int64.MinValue)
-                        }
-                        |> ignore
+                            task {
+                                try
+                                    let! _ = g.LatestParse(path, CancellationToken.None)
+
+                                    if Volatile.Read &disposed = 0 then
+                                        GraphTurn.afterPump host (fun () ->
+                                            if Volatile.Read &disposed = 0 then
+                                                match inFlight with
+                                                | ValueSome(struct (fg, fe)) when obj.ReferenceEquals(fg, g) && fe = targetEpoch ->
+                                                    inFlight <- ValueNone
+                                                | _ -> ()
+
+                                                match rowOf path with
+                                                | Some now when now.Open && now.Epoch = targetEpoch && parsedSent <> targetEpoch ->
+                                                    parsedSent <- targetEpoch
+                                                    let body = box { Content = uri }
+                                                    outbox.Enqueue(Notify(fun () -> client.Notify("fsharp/fileParsed", body) |> Async.StartAsTask :> Task))
+                                                | _ -> ())
+                                with _ ->
+                                    if Volatile.Read &disposed = 0 then
+                                        GraphTurn.afterPump host (fun () ->
+                                            if Volatile.Read &disposed = 0 then
+                                                match inFlight with
+                                                | ValueSome(struct (fg, fe)) when obj.ReferenceEquals(fg, g) && fe = targetEpoch ->
+                                                    inFlight <- ValueNone
+                                                | _ -> ()
+
+                                                if parsedSent <> targetEpoch then
+                                                    retryTick.Value <- retryTick.Value + 1L)
+                            }
+                            |> ignore
             with ex ->
                 log $"publishing fileParsed %s{r.Path} failed: %O{ex}")
 

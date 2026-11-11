@@ -54,41 +54,42 @@ module IonideEndpoints =
         | FSharpGlyph.Constant -> "Constant", "Cn"
         | FSharpGlyph.Delegate -> "Delegate", "D"
         | FSharpGlyph.Enum -> "Enum", "E"
-        | FSharpGlyph.EnumMember -> "EnumMember", "En"
-        | FSharpGlyph.Event -> "Event", "Ev"
-        | FSharpGlyph.Exception -> "Exception", "Ex"
+        | FSharpGlyph.EnumMember -> "Property", "P"
+        | FSharpGlyph.Event -> "Event", "e"
+        | FSharpGlyph.Exception -> "Exception", "X"
         | FSharpGlyph.Field -> "Field", "F"
         | FSharpGlyph.Interface -> "Interface", "I"
         | FSharpGlyph.Method -> "Method", "M"
         | FSharpGlyph.OverridenMethod -> "Method", "M"
-        | FSharpGlyph.Module -> "Module", "Mo"
+        | FSharpGlyph.Module -> "Module", "N"
         | FSharpGlyph.NameSpace -> "Namespace", "N"
         | FSharpGlyph.Property -> "Property", "P"
         | FSharpGlyph.Struct -> "Struct", "S"
-        | FSharpGlyph.Typedef -> "Typedef", "T"
+        | FSharpGlyph.Typedef -> "Class", "C"
         | FSharpGlyph.Type -> "Type", "T"
-        | FSharpGlyph.Union -> "Union", "U"
+        | FSharpGlyph.TypeParameter -> "Type", "T"
+        | FSharpGlyph.Union -> "Type", "T"
         | FSharpGlyph.Variable -> "Variable", "V"
-        | FSharpGlyph.ExtensionMethod -> "ExtensionMethod", "Em"
+        | FSharpGlyph.ExtensionMethod -> "Extension Method", "M"
         | FSharpGlyph.Error
-        | _ -> "Error", "Err"
+        | _ -> "Error", "E"
 
     let private enclosingChar (k: NavigationEntityKind) : string =
         match k with
         | NavigationEntityKind.Namespace -> "N"
         | NavigationEntityKind.Module -> "M"
         | NavigationEntityKind.Class -> "C"
-        | NavigationEntityKind.Exception -> "Ex"
+        | NavigationEntityKind.Exception -> "E"
         | NavigationEntityKind.Interface -> "I"
         | NavigationEntityKind.Record -> "R"
-        | NavigationEntityKind.Enum -> "E"
+        | NavigationEntityKind.Enum -> "En"
         | NavigationEntityKind.Union -> "D"
 
     let private fcsRangeJson (r: range) : JsonObject =
         let o = JsonObject()
-        o["StartColumn"] <- JsonValue.Create r.StartColumn
+        o["StartColumn"] <- JsonValue.Create(r.StartColumn + 1)
         o["StartLine"] <- JsonValue.Create r.StartLine
-        o["EndColumn"] <- JsonValue.Create r.EndColumn
+        o["EndColumn"] <- JsonValue.Create(r.EndColumn + 1)
         o["EndLine"] <- JsonValue.Create r.EndLine
         o
 
@@ -311,42 +312,78 @@ module IonideEndpoints =
         (character: int)
         (ct: CancellationToken)
         : Task<string option> =
-        let buildFromSymbol (ctx: FSharpDisplayContext) (sym: FSharpSymbol) : string option =
+        let buildFromSymbol (rawCtx: FSharpDisplayContext) (sym: FSharpSymbol) : string option =
             try
-                match sym with
-                | :? FSharpMemberOrFunctionOrValue as mfv ->
-                    let outType = mfv.ReturnParameter.Type.Format ctx
+                let ctx = rawCtx.WithPrefixGenericParameters()
 
+                let renderSignatureData (outType: string) (parms: (string * string) list list) (generics: string list) : string =
                     let paramGroups =
                         JsonArray(
-                            [| for grp in mfv.CurriedParameterGroups ->
+                            [| for grp in parms ->
                                    JsonArray(
-                                       [| for (idx, p) in Seq.indexed grp ->
+                                       [| for pName, pType in grp ->
                                               let po = JsonObject()
-                                              let pName = p.Name |> Option.defaultWith (fun () -> $"arg%d{idx}")
                                               po["Name"] <- JsonValue.Create pName
-                                              po["Type"] <- JsonValue.Create(p.Type.Format ctx)
+                                              po["Type"] <- JsonValue.Create pType
                                               po :> JsonNode |]
                                    )
                                    :> JsonNode |]
                         )
 
-                    let generics =
-                        [ for gp in mfv.GenericParameters ->
-                              let n = gp.Name
-                              if n.StartsWith("'", StringComparison.Ordinal) then n else "'" + n ]
-
                     let data = JsonObject()
                     data["OutputType"] <- JsonValue.Create outType
                     data["Parameters"] <- paramGroups
                     data["Generics"] <- strArray generics
-                    Some(envelope "signatureData" data)
-                | :? FSharpField as fld ->
-                    let data = JsonObject()
-                    data["OutputType"] <- JsonValue.Create(fld.FieldType.Format ctx)
-                    data["Parameters"] <- JsonArray()
-                    data["Generics"] <- JsonArray()
-                    Some(envelope "signatureData" data)
+                    envelope "signatureData" data
+
+                match sym with
+                | :? FSharpMemberOrFunctionOrValue as mfv ->
+                    let outType =
+                        if mfv.IsPropertySetterMethod then
+                            mfv.CurriedParameterGroups
+                            |> Seq.collect id
+                            |> Seq.tryLast
+                            |> Option.map (fun p -> p.Type.Format ctx)
+                            |> Option.defaultWith (fun () -> mfv.ReturnParameter.Type.Format ctx)
+                        else
+                            mfv.ReturnParameter.Type.Format ctx
+
+                    let isReadOnlyPropWithoutIndex =
+                        mfv.IsProperty
+                        && not mfv.HasSetterMethod
+                        && (mfv.CurriedParameterGroups.Count = 0
+                            || (mfv.CurriedParameterGroups.Count = 1 && mfv.CurriedParameterGroups[0].Count = 0))
+
+                    if mfv.IsPropertyGetterMethod || isReadOnlyPropWithoutIndex then
+                        Some(renderSignatureData outType [] [])
+                    else
+                        let effectiveSym =
+                            if mfv.HasGetterMethod && mfv.HasSetterMethod then
+                                mfv.SetterMethod
+                            else
+                                mfv
+
+                        let parms =
+                            [ for grp in effectiveSym.CurriedParameterGroups ->
+                                  [ for (idx, p) in Seq.indexed grp ->
+                                        let pName =
+                                            if not (String.IsNullOrEmpty p.DisplayName) then
+                                                p.DisplayName
+                                            else
+                                                p.Name |> Option.defaultWith (fun () -> $"arg%d{idx}")
+
+                                        pName, p.Type.Format ctx ] ]
+
+                        let generics =
+                            [ for gp in effectiveSym.GenericParameters ->
+                                  let n = gp.Name
+                                  if n.StartsWith("'", StringComparison.Ordinal) then n.Substring 1 else n ]
+
+                        match parms with
+                        | [ [] ] when effectiveSym.IsMember && not effectiveSym.IsProperty && not effectiveSym.IsPropertyGetterMethod ->
+                            Some(renderSignatureData outType [ [ ("unit", "unit") ] ] [])
+                        | _ -> Some(renderSignatureData outType parms generics)
+                | :? FSharpField as fld -> Some(renderSignatureData (fld.FieldType.Format ctx) [] [])
                 | _ -> None
             with _ ->
                 None
@@ -686,6 +723,11 @@ module IonideEndpoints =
 
         entities |> Seq.tryPick searchEntity
 
+    let rec private unwrapExn (e: exn) : exn =
+        match e with
+        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> unwrapExn a.InnerException
+        | _ -> e
+
     let private searchSymbolInProjects
         (projects: ProjectGraph list)
         (xmlSig: string)
@@ -693,17 +735,22 @@ module IonideEndpoints =
         (ct: CancellationToken)
         : Task<string option> =
         task {
-            if String.IsNullOrWhiteSpace xmlSig then
+            if isNull xmlSig || String.IsNullOrWhiteSpace xmlSig || isNull assembly then
                 return None
             else
                 let mutable answer: string option = None
 
                 for g in projects do
                     if answer.IsNone then
-                        let implFiles = g.FilesOf |> Array.filter (not << isSignature)
+                        // Inspect the last `.fs` implementation file first so `PartialAssemblySignature` includes all earlier files.
+                        let implFiles = g.FilesOf |> Array.filter (not << isSignature) |> Array.rev
+                        let mutable checkedRefsForGraph = false
 
                         for implFile in implFiles do
                             if answer.IsNone then
+                                let scanRefs = not checkedRefsForGraph
+                                checkedRefsForGraph <- true
+
                                 let! foundInFile =
                                     task {
                                         try
@@ -716,7 +763,12 @@ module IonideEndpoints =
                                                             if view.Whole then
                                                                 view.Result.CheckResultsNotKept
                                                             else
-                                                                view.CheckResultsAt(1, 0)
+                                                                // On an open/promoted file, `CheckResultsAt(1, 0)` builds `PartialAssemblySignature`
+                                                                // BEFORE line 1 (excluding declarations inside `implFile`). Check at the last line instead.
+                                                                let textLines = view.Text.Split '\n'
+                                                                let lastLine = max 1 textLines.Length
+                                                                let lastCol = textLines[lastLine - 1].TrimEnd('\r').Length
+                                                                view.CheckResultsAt(lastLine, lastCol)
 
                                                         let ownMatch =
                                                             try
@@ -727,7 +779,7 @@ module IonideEndpoints =
                                                         let symOpt =
                                                             match ownMatch with
                                                             | Some s -> Some s
-                                                            | None ->
+                                                            | None when scanRefs ->
                                                                 try
                                                                     let refs = check.ProjectContext.GetReferencedAssemblies()
 
@@ -738,6 +790,7 @@ module IonideEndpoints =
                                                                     |> Seq.tryPick (fun a -> tryFindSymbolByXmlKeyInEntities xmlSig a.Contents.Entities)
                                                                 with _ ->
                                                                     None
+                                                            | None -> None
 
                                                         match symOpt with
                                                         | None -> None
@@ -773,9 +826,12 @@ module IonideEndpoints =
                                                             Some(formatDocumentationJson (xmlKeyOf sym) sigStr comment footer (Some sym))),
                                                     ct
                                                 )
-                                        with
-                                        | :? ObjectDisposedException -> return None
-                                        | :? OperationCanceledException when not ct.IsCancellationRequested -> return None
+                                        with ex ->
+                                            match unwrapExn ex with
+                                            | :? ObjectDisposedException -> return None
+                                            | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return None
+                                            | :? OperationCanceledException when not ct.IsCancellationRequested -> return None
+                                            | _ -> return raise ex
                                     }
 
                                 if foundInFile.IsSome then
@@ -784,8 +840,8 @@ module IonideEndpoints =
                 return answer
         }
 
-    /// GraphHost-safe `fsharp/documentationSymbol` lookup: evaluates `loadingNow` and `projectsNow` strictly on the `GraphHost` thread.
-    let documentationSymbolOnHost
+    /// `fsharp/documentationSymbol` lookup: evaluates `loadingNow` and `projectsNow` strictly on the `GraphHost` thread.
+    let documentationSymbol
         (host: GraphHost)
         (projectsNow: unit -> ProjectGraph list)
         (loadingNow: unit -> bool)
@@ -793,28 +849,22 @@ module IonideEndpoints =
         (assembly: string)
         (ct: CancellationToken)
         : Task<string option> =
-        task {
-            let! projects =
-                host.WhenSettled(
-                    (fun () ->
-                        if loadingNow () then
-                            ValueNone
-                        else
-                            ValueSome(projectsNow ())),
-                    ct
-                )
+        if isNull xmlSig || String.IsNullOrWhiteSpace xmlSig || isNull assembly then
+            Task.FromResult None
+        else
+            task {
+                let! projects =
+                    host.WhenSettled(
+                        (fun () ->
+                            if loadingNow () then
+                                ValueNone
+                            else
+                                ValueSome(projectsNow ())),
+                        ct
+                    )
 
-            return! searchSymbolInProjects projects xmlSig assembly ct
-        }
-
-    /// `fsharp/documentationSymbol` lookup over `projectsNow`.
-    let documentationSymbol
-        (projectsNow: unit -> ProjectGraph list)
-        (xmlSig: string)
-        (assembly: string)
-        (ct: CancellationToken)
-        : Task<string option> =
-        searchSymbolInProjects (projectsNow ()) xmlSig assembly ct
+                return! searchSymbolInProjects projects xmlSig assembly ct
+            }
 
     let private extractParamNamesFromPat (pat: SynPat) : string list =
         let rec collect (p: SynPat) : string list =
@@ -852,86 +902,64 @@ module IonideEndpoints =
         : (int * string list * string list) option =
         StackGuard.onLargeStack (fun () ->
             let mutable found: (int * string list * string list) option = None
+            let mutable alreadyDocumented = false
 
-            let checkBinding (SynBinding(attributes = attrs; headPat = headPat; range = bindRange)) =
-                let startLine =
-                    attrs
-                    |> List.collect _.Attributes
-                    |> List.tryHead
-                    |> Option.map _.Range.StartLine
-                    |> Option.defaultValue bindRange.StartLine
+            let firstAttrLineOr (attrs: SynAttributes) (fallbackLine: int) =
+                attrs
+                |> List.collect _.Attributes
+                |> List.tryHead
+                |> Option.map _.Range.StartLine
+                |> Option.defaultValue fallbackLine
 
-                if found.IsNone && startLine <= fcsTargetLine && fcsTargetLine <= bindRange.EndLine then
-                    let typars, paramNames =
-                        match headPat with
-                        | SynPat.LongIdent(typarDecls = tpOpt; argPats = SynArgPats.Pats pats) ->
-                            extractTyparNames tpOpt, (pats |> List.collect extractParamNamesFromPat)
-                        | _ -> [], []
+            let extractSynTyparDecls (tpOpt: SynTyparDecls option) =
+                match tpOpt with
+                | None -> []
+                | Some td ->
+                    let ds =
+                        match td with
+                        | SynTyparDecls.PostfixList(decls = ds) -> ds
+                        | SynTyparDecls.PrefixList(decls = ds) -> ds
+                        | SynTyparDecls.SinglePrefix(decl = d) -> [ d ]
 
-                    found <- Some(startLine, typars, paramNames)
+                    [ for SynTyparDecl(typar = SynTypar(id, _, _)) in ds -> "'" + id.idText ]
+
+            let checkBinding (SynBinding(attributes = attrs; xmlDoc = xmlDoc; headPat = headPat) as b) =
+                if found.IsNone && not alreadyDocumented then
+                    let headerRange = b.RangeOfBindingWithoutRhs
+                    let startLine = firstAttrLineOr attrs headerRange.StartLine
+
+                    if startLine <= fcsTargetLine && fcsTargetLine <= headerRange.EndLine then
+                        if not xmlDoc.IsEmpty then
+                            alreadyDocumented <- true
+                        else
+                            let typars, paramNames =
+                                match headPat with
+                                | SynPat.LongIdent(typarDecls = tpOpt; argPats = SynArgPats.Pats pats) ->
+                                    extractTyparNames tpOpt, (pats |> List.collect extractParamNamesFromPat)
+                                | _ -> [], []
+
+                            found <- Some(startLine, typars, paramNames)
 
             let rec walkMember (m: SynMemberDefn) =
-                if found.IsNone then
+                if found.IsNone && not alreadyDocumented then
                     match m with
                     | SynMemberDefn.Member(memberDefn = b) -> checkBinding b
                     | SynMemberDefn.LetBindings(bindings = bs) ->
                         for b in bs do
                             checkBinding b
-                    | SynMemberDefn.AbstractSlot(slotSig = SynValSig(synType = _; arity = SynValInfo(curriedArgInfos, _); range = r)) ->
-                        if r.StartLine <= fcsTargetLine && fcsTargetLine <= r.EndLine then
-                            let pNames =
-                                [ for grp in curriedArgInfos do
-                                      for SynArgInfo(ident = idOpt) in grp do
-                                          match idOpt with
-                                          | Some id when id.idText <> "_" -> yield id.idText
-                                          | _ -> () ]
+                    | SynMemberDefn.AbstractSlot(
+                        slotSig = SynValSig(
+                            attributes = sAttrs
+                            xmlDoc = sXmlDoc
+                            explicitTypeParams = tp
+                            arity = SynValInfo(curriedArgInfos, _)
+                            range = r)) ->
+                        let startLine = firstAttrLineOr sAttrs r.StartLine
 
-                            found <- Some(r.StartLine, [], pNames)
-                    | SynMemberDefn.Interface(members = msOpt) ->
-                        msOpt |> Option.iter (List.iter walkMember)
-                    | _ -> ()
-
-            let rec walkDecls (decls: SynModuleDecl list) =
-                for d in decls do
-                    if found.IsNone && d.Range.StartLine <= fcsTargetLine && fcsTargetLine <= d.Range.EndLine then
-                        match d with
-                        | SynModuleDecl.Let(bindings = bs) ->
-                            for b in bs do
-                                checkBinding b
-                        | SynModuleDecl.NestedModule(decls = nested) -> walkDecls nested
-                        | SynModuleDecl.Types(typeDefns = tds) ->
-                            for SynTypeDefn(typeInfo = SynComponentInfo(typeParams = tpOpt); typeRepr = repr; members = ms; range = tr) in tds do
-                                match repr with
-                                | SynTypeDefnRepr.ObjectModel(members = oms) ->
-                                    for m in oms do
-                                        walkMember m
-                                | _ -> ()
-
-                                for m in ms do
-                                    walkMember m
-
-                                if found.IsNone && tr.StartLine <= fcsTargetLine && fcsTargetLine <= tr.EndLine then
-                                    let typars =
-                                        match tpOpt with
-                                        | None -> []
-                                        | Some td ->
-                                            let ds =
-                                                match td with
-                                                | SynTyparDecls.PostfixList(decls = ds) -> ds
-                                                | SynTyparDecls.PrefixList(decls = ds) -> ds
-                                                | SynTyparDecls.SinglePrefix(decl = d) -> [ d ]
-
-                                            [ for SynTyparDecl(typar = SynTypar(id, _, _)) in ds -> "'" + id.idText ]
-
-                                    found <- Some(tr.StartLine, typars, [])
-                        | _ -> ()
-
-            let rec walkSigDecls (decls: SynModuleSigDecl list) =
-                for d in decls do
-                    if found.IsNone && d.Range.StartLine <= fcsTargetLine && fcsTargetLine <= d.Range.EndLine then
-                        match d with
-                        | SynModuleSigDecl.Val(valSig = SynValSig(explicitTypeParams = tp; arity = SynValInfo(curriedArgInfos, _); range = r)) ->
-                            if r.StartLine <= fcsTargetLine && fcsTargetLine <= r.EndLine then
+                        if startLine <= fcsTargetLine && fcsTargetLine <= r.EndLine then
+                            if not sXmlDoc.IsEmpty then
+                                alreadyDocumented <- true
+                            else
                                 let pNames =
                                     [ for grp in curriedArgInfos do
                                           for SynArgInfo(ident = idOpt) in grp do
@@ -939,7 +967,85 @@ module IonideEndpoints =
                                               | Some id when id.idText <> "_" -> yield id.idText
                                               | _ -> () ]
 
-                                found <- Some(r.StartLine, extractTyparNames (Some tp), pNames)
+                                found <- Some(startLine, extractTyparNames (Some tp), pNames)
+                    | SynMemberDefn.Interface(members = msOpt) ->
+                        msOpt |> Option.iter (List.iter walkMember)
+                    | _ -> ()
+
+            let rec walkDecls (decls: SynModuleDecl list) =
+                for d in decls do
+                    if found.IsNone && not alreadyDocumented && d.Range.StartLine <= fcsTargetLine && fcsTargetLine <= d.Range.EndLine then
+                        match d with
+                        | SynModuleDecl.Let(bindings = bs) ->
+                            for b in bs do
+                                checkBinding b
+                        | SynModuleDecl.NestedModule(decls = nested) -> walkDecls nested
+                        | SynModuleDecl.Types(typeDefns = tds) ->
+                            for SynTypeDefn(
+                                    typeInfo = SynComponentInfo(attributes = tAttrs; xmlDoc = tXmlDoc; typeParams = tpOpt; range = compRange)
+                                    typeRepr = repr
+                                    members = ms
+                                    range = tr) in tds do
+                                let mutable headerEndLine = compRange.EndLine
+
+                                match repr with
+                                | SynTypeDefnRepr.ObjectModel(members = oms) ->
+                                    for m in oms do
+                                        match m with
+                                        | SynMemberDefn.ImplicitCtor(range = ctorR) ->
+                                            if ctorR.EndLine > headerEndLine then
+                                                headerEndLine <- ctorR.EndLine
+                                        | _ -> walkMember m
+                                | _ -> ()
+
+                                for m in ms do
+                                    walkMember m
+
+                                let tStartLine = firstAttrLineOr tAttrs (min tr.StartLine compRange.StartLine)
+
+                                if found.IsNone && not alreadyDocumented && tStartLine <= fcsTargetLine && fcsTargetLine <= headerEndLine then
+                                    if not tXmlDoc.IsEmpty then
+                                        alreadyDocumented <- true
+                                    else
+                                        found <- Some(tStartLine, extractSynTyparDecls tpOpt, [])
+                        | _ -> ()
+
+            let rec walkSigDecls (decls: SynModuleSigDecl list) =
+                for d in decls do
+                    if found.IsNone && not alreadyDocumented && d.Range.StartLine <= fcsTargetLine && fcsTargetLine <= d.Range.EndLine then
+                        match d with
+                        | SynModuleSigDecl.Val(
+                            valSig = SynValSig(
+                                attributes = vAttrs
+                                xmlDoc = vXmlDoc
+                                explicitTypeParams = tp
+                                arity = SynValInfo(curriedArgInfos, _)
+                                range = r)) ->
+                            let startLine = firstAttrLineOr vAttrs r.StartLine
+
+                            if startLine <= fcsTargetLine && fcsTargetLine <= r.EndLine then
+                                if not vXmlDoc.IsEmpty then
+                                    alreadyDocumented <- true
+                                else
+                                    let pNames =
+                                        [ for grp in curriedArgInfos do
+                                              for SynArgInfo(ident = idOpt) in grp do
+                                                  match idOpt with
+                                                  | Some id when id.idText <> "_" -> yield id.idText
+                                                  | _ -> () ]
+
+                                    found <- Some(startLine, extractTyparNames (Some tp), pNames)
+                        | SynModuleSigDecl.Types(types = sigTds) ->
+                            for SynTypeDefnSig(
+                                    typeInfo = SynComponentInfo(attributes = tAttrs; xmlDoc = tXmlDoc; typeParams = tpOpt; range = compRange)
+                                    range = tr) in sigTds do
+                                let tStartLine = firstAttrLineOr tAttrs (min tr.StartLine compRange.StartLine)
+
+                                if found.IsNone && not alreadyDocumented && tStartLine <= fcsTargetLine && fcsTargetLine <= compRange.EndLine then
+                                    if not tXmlDoc.IsEmpty then
+                                        alreadyDocumented <- true
+                                    else
+                                        found <- Some(tStartLine, extractSynTyparDecls tpOpt, [])
                         | SynModuleSigDecl.NestedModule(moduleDecls = nested) -> walkSigDecls nested
                         | _ -> ()
 
@@ -955,7 +1061,7 @@ module IonideEndpoints =
 
     let internal documentationGeneratorWithCapabilities
         (canDocumentChanges: bool)
-        (versionOpt: int option)
+        (versionNow: string -> int option)
         (graph: ProjectGraph)
         (path: string)
         (line: int)
@@ -963,48 +1069,69 @@ module IonideEndpoints =
         (ct: CancellationToken)
         : Task<WorkspaceEdit option> =
         task {
-            let! textView = graph.LatestParse(path, ct)
-            let lines = textView.Text.Split '\n' |> Array.map (fun s -> s.TrimEnd '\r')
+            let fullPath = Path.GetFullPath path
+            let mutable capturedLspVersion: int option = None
 
-            if line < 0 || line >= lines.Length then
-                return None
-            else
-                match tryFindDocTargetOnLine textView.Parse.ParseTree (line + 1) with
-                | None -> return None
-                | Some(insertFcsLine, typars, paramNames) ->
-                    let insertLine0 = max 0 (insertFcsLine - 1)
-                    let targetLineText = if insertLine0 < lines.Length then lines[insertLine0] else ""
-                    let indentLen = targetLineText.Length - targetLineText.TrimStart(' ').Length
-                    let indent = String(' ', indentLen)
+            let! parsesOpt =
+                graph.LatestParsesInOneTurn(
+                    (fun () ->
+                        capturedLspVersion <- versionNow fullPath
+                        struct (false, [| graph, [ fullPath ] |])),
+                    ct
+                )
 
-                    let docLines =
-                        [ yield $"%s{indent}/// <summary></summary>"
-                          for tp in typars do
-                              yield $"%s{indent}/// <typeparam name=\"%s{tp}\"></typeparam>"
-                          for p in paramNames do
-                              yield $"%s{indent}/// <param name=\"%s{p}\"></param>"
-                          yield $"%s{indent}/// <returns></returns>" ]
+            let textViewOpt =
+                match parsesOpt with
+                | ValueNone -> None
+                | ValueSome parsedProjects ->
+                    parsedProjects
+                    |> Seq.collect snd
+                    |> Seq.tryPick (fun (fp, tv) -> if sameFile fp fullPath then Some tv else None)
 
-                    let newText = (String.concat "\n" docLines) + "\n"
-                    let insertPos: Position = { Line = uint32 insertLine0; Character = 0u }
-                    let edit: TextEdit = { Range = { Start = insertPos; End = insertPos }; NewText = newText }
-                    let uri = Paths.toUri path
+            match textViewOpt with
+            | None -> return None
+            | Some textView ->
+                let lines = textView.Text.Split '\n' |> Array.map (fun s -> s.TrimEnd '\r')
 
-                    if canDocumentChanges then
-                        let docId: OptionalVersionedTextDocumentIdentifier =
-                            { Uri = uri; Version = versionOpt }
+                if line < 0 || line >= lines.Length then
+                    return None
+                else
+                    match tryFindDocTargetOnLine textView.Parse.ParseTree (line + 1) with
+                    | None -> return None
+                    | Some(insertFcsLine, typars, paramNames) ->
+                        let insertLine0 = max 0 (insertFcsLine - 1)
+                        let targetLineText = if insertLine0 < lines.Length then lines[insertLine0] else ""
+                        let indentLen = targetLineText.Length - targetLineText.TrimStart(' ').Length
+                        let indent = String(' ', indentLen)
 
-                        return
-                            Some
-                                { Changes = None
-                                  DocumentChanges = Some [| U4.C1 { TextDocument = docId; Edits = [| U2.C1 edit |] } |]
-                                  ChangeAnnotations = None }
-                    else
-                        return
-                            Some
-                                { Changes = Some(Map.ofList [ uri, [| edit |] ])
-                                  DocumentChanges = None
-                                  ChangeAnnotations = None }
+                        let docLines =
+                            [ yield $"%s{indent}/// <summary></summary>"
+                              for tp in typars do
+                                  yield $"%s{indent}/// <typeparam name=\"%s{tp}\"></typeparam>"
+                              for p in paramNames do
+                                  yield $"%s{indent}/// <param name=\"%s{p}\"></param>"
+                              yield $"%s{indent}/// <returns></returns>" ]
+
+                        let newText = (String.concat "\n" docLines) + "\n"
+                        let insertPos: Position = { Line = uint32 insertLine0; Character = 0u }
+                        let edit: TextEdit = { Range = { Start = insertPos; End = insertPos }; NewText = newText }
+                        let uri = Paths.toUri path
+
+                        if canDocumentChanges then
+                            let docId: OptionalVersionedTextDocumentIdentifier =
+                                { Uri = uri; Version = capturedLspVersion }
+
+                            return
+                                Some
+                                    { Changes = None
+                                      DocumentChanges = Some [| U4.C1 { TextDocument = docId; Edits = [| U2.C1 edit |] } |]
+                                      ChangeAnnotations = None }
+                        else
+                            return
+                                Some
+                                    { Changes = Some(Map.ofList [ uri, [| edit |] ])
+                                      DocumentChanges = None
+                                      ChangeAnnotations = None }
         }
 
     /// `fsharp/documentationGenerator` -> generates XML `///` documentation stub `WorkspaceEdit`.
@@ -1015,7 +1142,7 @@ module IonideEndpoints =
         (character: int)
         (ct: CancellationToken)
         : Task<WorkspaceEdit option> =
-        documentationGeneratorWithCapabilities false None graph path line character ct
+        documentationGeneratorWithCapabilities false (fun _ -> None) graph path line character ct
 
     /// `fsharp/compilerLocation` -> `{"Kind":"compilerlocation","Data":{"Fsc":...,"Fsi":...,"MSBuild":...,"SdkRoot":...}}`
     let compilerLocation () : string =

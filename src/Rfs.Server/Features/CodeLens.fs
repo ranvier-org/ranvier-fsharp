@@ -26,19 +26,30 @@ let inline private toLspRange (r: range) : LspRange =
           Character = uint32 (max 0 r.EndColumn) } }
 
 let private shouldEmitCodeLens (item: NavigationItem) : bool =
-    if String.IsNullOrWhiteSpace item.LogicalName || Range.equals item.Range Range.range0 then
+    if
+        String.IsNullOrWhiteSpace item.LogicalName
+        || Range.equals item.Range Range.range0
+        || item.IsAbstract
+    then
         false
     else
-        match item.Glyph with
-        | FSharpGlyph.Method
-        | FSharpGlyph.OverridenMethod
-        | FSharpGlyph.ExtensionMethod
-        | FSharpGlyph.Delegate
-        | FSharpGlyph.Variable
-        | FSharpGlyph.Constant
-        | FSharpGlyph.Property
-        | FSharpGlyph.Field -> true
-        | _ -> false
+        match item.EnclosingEntityKind with
+        | NavigationEntityKind.Interface
+        | NavigationEntityKind.Record
+        | NavigationEntityKind.Union
+        | NavigationEntityKind.Enum
+        | NavigationEntityKind.Exception -> false
+        | _ ->
+            match item.Glyph with
+            | FSharpGlyph.Method
+            | FSharpGlyph.OverridenMethod
+            | FSharpGlyph.ExtensionMethod
+            | FSharpGlyph.Delegate
+            | FSharpGlyph.Variable
+            | FSharpGlyph.Constant
+            | FSharpGlyph.Property
+            | FSharpGlyph.Field -> true
+            | _ -> false
 
 let private makeData (uri: string) (kind: string) (line: int) (char: int) : JToken =
     let o = JObject()
@@ -71,7 +82,11 @@ let private formatSymbolSignature (displayContext: FSharpDisplayContext) (symbol
         | :? FSharpMemberOrFunctionOrValue as mfv ->
             let groups = mfv.CurriedParameterGroups
 
-            if groups.Count = 0 then
+            if mfv.IsPropertyGetterMethod && (groups.Count = 0 || (groups.Count = 1 && groups[0].Count = 0)) then
+                Some(mfv.ReturnParameter.Type.Format displayContext)
+            elif mfv.IsPropertySetterMethod && groups.Count = 1 && groups[0].Count = 1 then
+                Some((groups[0]).[0].Type.Format displayContext)
+            elif groups.Count = 0 then
                 Some(mfv.FullType.Format displayContext)
             else
                 let formattedGroups =
@@ -126,9 +141,13 @@ let lenses
                 StackGuard.onLargeStack (fun () ->
                     let nav = Navigation.getNavigation textView.Parse.ParseTree
                     let out = ResizeArray<CodeLens>()
+                    let seenStarts = System.Collections.Generic.HashSet<int * int>()
 
                     let emitFor (decl: NavigationItem) =
-                        if shouldEmitCodeLens decl then
+                        if
+                            shouldEmitCodeLens decl
+                            && seenStarts.Add(decl.Range.StartLine, decl.Range.StartColumn)
+                        then
                             let lspRange = toLspRange decl.Range
                             let line = max 0 (decl.Range.StartLine - 1)
                             let col = findDeclColumn decl line (max 0 decl.Range.StartColumn)
@@ -164,6 +183,67 @@ let private withoutSetter (key: string) =
     else
         key
 
+let private queryUnifiedUsesAcrossWorkspace
+    (scope: References.Scope)
+    (graph: ProjectGraph)
+    (path: string)
+    (key: string)
+    (landed: string option)
+    (spelled: string option)
+    (ct: CancellationToken)
+    : Task<range[]> =
+    task {
+        let turnScope () : TurnScope<unit> =
+            if scope.IsLoading() then
+                { Loading = true
+                  Projects = [||]
+                  Name = None
+                  Extra = () }
+            else
+                let definers =
+                    match landed with
+                    | Some f -> scope.OwnersOf f
+                    | None -> []
+
+                let askingGraph =
+                    match scope.OwnersOf path with
+                    | g :: _ -> g
+                    | [] -> graph
+
+                let projects =
+                    match definers with
+                    | [] -> scope.Projects()
+                    | defs -> defs @ (defs |> List.collect scope.ReferencingProjects)
+                    |> fun ps -> askingGraph :: ps
+                    |> List.distinct
+
+                { Loading = false
+                  Projects = [| for p in projects -> p, scope.FilesOf p |]
+                  Name = if definers.IsEmpty then None else spelled
+                  Extra = () }
+
+        match! graph.ReadInOneTurn(turnScope, ct) with
+        | TurnRead.Gone -> return [||]
+        | TurnRead.Read((), projectFiles) ->
+            let plain = withoutSetter key
+
+            return
+                [| for _, turnFiles in projectFiles do
+                       for tf in turnFiles do
+                           match tf with
+                           | TurnFile.Indexed(_, _, uses)
+                           | TurnFile.Signature(_, _, uses) ->
+                               for struct (r, isDef) in (uses.Of plain).Hits do
+                                   if not isDef then
+                                       yield r
+
+                               for struct (r, isDef) in (uses.Of(plain + setterSuffix)).Hits do
+                                   if not isDef then
+                                       yield r
+                           | TurnFile.Skipped _ -> () |]
+                |> Array.distinctBy (fun r -> r.FileName.ToUpperInvariant(), r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
+    }
+
 let private countReferencesAcrossWorkspace
     (scope: References.Scope)
     (graph: ProjectGraph)
@@ -174,15 +254,71 @@ let private countReferencesAcrossWorkspace
     : Task<range[]> =
     task {
         if not (isSignature path) then
-            match! References.find scope graph path line char ct with
-            | References.Answer.Moved -> return [||]
-            | References.Answer.Found uses ->
-                return
-                    [| for struct (r, isDef) in uses do
-                           if not isDef then
-                               yield r |]
+            let! fsLookup =
+                graph.ReadFile(
+                    path,
+                    (fun view -> Hover.lookupOf view.Text line char),
+                    (fun view lookup ->
+                        match lookup with
+                        | None -> Choice1Of2 [||]
+                        | Some(lineStr, names, endCol) ->
+                            let check =
+                                if view.Whole then
+                                    view.Result.CheckResultsNotKept
+                                else
+                                    view.CheckResultsAt(line + 1, endCol)
+
+                            match check.GetSymbolUseAtLocation(line + 1, endCol, lineStr, names) with
+                            | None -> Choice1Of2 [||]
+                            | Some u ->
+                                match SymbolUses.keysIn check ct u with
+                                | Some key ->
+                                    let landed =
+                                        u.Symbol.SignatureLocation
+                                        |> Option.orElse u.Symbol.DeclarationLocation
+                                        |> Option.map _.FileName
+
+                                    let spelled =
+                                        SymbolUses.spelledName u.Symbol
+                                        |> Option.filter (fun n -> List.tryLast names = Some n)
+
+                                    Choice2Of2(key, landed, spelled)
+                                | None ->
+                                    let companionSymbols =
+                                        match u.Symbol with
+                                        | :? FSharpMemberOrFunctionOrValue as mfv when
+                                            mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod ->
+                                            match mfv.DeclaringEntity with
+                                            | Some ent ->
+                                                let clean =
+                                                    let c = mfv.DisplayNameCore
+                                                    if c.StartsWith("get_", StringComparison.Ordinal) || c.StartsWith("set_", StringComparison.Ordinal) then c.Substring 4 else c
+
+                                                ent.MembersFunctionsAndValues
+                                                |> Seq.filter (fun m ->
+                                                    (m.IsProperty || m.IsPropertyGetterMethod || m.IsPropertySetterMethod)
+                                                    && (let mc = m.DisplayNameCore in (if mc.StartsWith("get_", StringComparison.Ordinal) || mc.StartsWith("set_", StringComparison.Ordinal) then mc.Substring 4 else mc) = clean))
+                                                |> Seq.cast<FSharpSymbol>
+                                                |> List.ofSeq
+                                            | None -> [ u.Symbol ]
+                                        | _ -> [ u.Symbol ]
+
+                                    let localNonDefs =
+                                        [| for sym in companionSymbols do
+                                               for d in check.GetUsesOfSymbolInFile(sym, cancellationToken = ct) do
+                                                   if not d.IsFromDefinition then
+                                                       yield d.Range |]
+                                        |> Array.distinctBy (fun r -> r.FileName.ToUpperInvariant(), r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
+
+                                    Choice1Of2 localNonDefs),
+                    ct
+                )
+
+            match fsLookup with
+            | Choice1Of2 localRanges -> return localRanges
+            | Choice2Of2(key, landed, spelled) ->
+                return! queryUnifiedUsesAcrossWorkspace scope graph path key landed spelled ct
         else
-            // `.fsi` signature CodeLens reference resolution: resolve symbol key via `ReadSignature`, then query `ReadInOneTurn` on the GraphHost thread.
             let! keyAndLanded =
                 graph.ReadSignature(
                     path,
@@ -229,50 +365,7 @@ let private countReferencesAcrossWorkspace
             match keyAndLanded with
             | None -> return [||]
             | Some(key, landed, spelled) ->
-                let turnScope () : TurnScope<unit> =
-                    if scope.IsLoading() then
-                        { Loading = true
-                          Projects = [||]
-                          Name = None
-                          Extra = () }
-                    else
-                        let definers =
-                            match landed with
-                            | Some f -> scope.OwnersOf f
-                            | None -> []
-
-                        let projects =
-                            match definers with
-                            | [] -> scope.Projects()
-                            | defs -> defs @ (defs |> List.collect scope.ReferencingProjects)
-                            |> fun ps -> graph :: ps
-                            |> List.distinct
-
-                        { Loading = false
-                          Projects = [| for p in projects -> p, scope.FilesOf p |]
-                          Name = if definers.IsEmpty then None else spelled
-                          Extra = () }
-
-                match! graph.ReadInOneTurn(turnScope, ct) with
-                | TurnRead.Gone -> return [||]
-                | TurnRead.Read((), projectFiles) ->
-                    let plain = withoutSetter key
-
-                    return
-                        [| for _, turnFiles in projectFiles do
-                               for tf in turnFiles do
-                                   match tf with
-                                   | TurnFile.Indexed(_, _, uses)
-                                   | TurnFile.Signature(_, _, uses) ->
-                                       for struct (r, isDef) in (uses.Of plain).Hits do
-                                           if not isDef then
-                                               yield r
-
-                                       for struct (r, isDef) in (uses.Of(plain + setterSuffix)).Hits do
-                                           if not isDef then
-                                               yield r
-                                   | TurnFile.Skipped _ -> () |]
-                        |> Array.distinct
+                return! queryUnifiedUsesAcrossWorkspace scope graph path key landed spelled ct
     }
 
 let private resolveSignatureText (graph: ProjectGraph) (path: string) (line: int) (char: int) (ct: CancellationToken) : Task<string option> =

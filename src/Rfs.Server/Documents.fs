@@ -48,6 +48,10 @@ type Documents(host: GraphHost) =
     /// Graph thread, tracked: the document at `path`, as the collection holds it in this turn
     member _.TryFindNow(path: string) : OpenDocument option = rows.Rows.TryGet(keyOf path)
 
+    /// Graph thread, untracked: the open document's LSP version as the collection holds it in this turn
+    member _.TryVersionNow(path: string) : int option =
+        untrack (fun () -> rows.Rows.TryGet(keyOf path)) |> Option.map _.LspVersion
+
     /// Graph thread
     member this.Update(path: string, update: OpenDocument -> OpenDocument) : OpenDocument option =
         match this.TryFind path with
