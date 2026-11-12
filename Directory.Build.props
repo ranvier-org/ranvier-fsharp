@@ -4,18 +4,13 @@
     <NoWarn>$(NoWarn);NU1507</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <FickleFcsDir>C:\Users\shaya\RiderProjects\fickle-fsharp\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\</FickleFcsDir>
-    <!-- The main Ranvier checkout next to this repo: master, with the lost wake-up fixes (#290, #303) merged. The graph needs both. -->
-    <RanvierDir>$(MSBuildThisFileDirectory)..\Ranvier\src\Ranvier\</RanvierDir>
     <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
-    <!-- A solution build otherwise gives Ranvier, outside the solution, its default Configuration: a Debug Ranvier is a traced one, whose event log keeps every value it published alive -->
-    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
   </PropertyGroup>
   <!--
-    `RanvierTrace=true` compiles in the Trace.named labels of the checker's nodes and the answer to `rfs/why` (RANVIER_TRACE),
-    as Ranvier's own Directory.Build.targets does: Debug is traced, anything else is not, and an explicit value wins. Ranvier
-    is built traced or not by the same rule, so the two agree for a project built in one configuration. Configuration is
-    still unset here when it is not passed, which builds as Debug.
+    `RanvierTrace=true` selects the `Ranvier.Traced` NuGet package and compiles in the Trace.named labels of the checker's
+    nodes and the answer to `rfs/why` (RANVIER_TRACE): Debug is traced, anything else selects `Ranvier`, and an explicit
+    value wins. Configuration is still unset here when it is not passed, which builds as Debug.
   -->
   <PropertyGroup>
     <RanvierTrace Condition="'$(RanvierTrace)' == '' and ('$(Configuration)' == 'Debug' or '$(Configuration)' == '')">true</RanvierTrace>

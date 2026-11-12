@@ -22,7 +22,8 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="$(RanvierDir)Ranvier.fsproj" />
+    <PackageReference Include="Ranvier" Condition="'$(RanvierTrace)' != 'true'" />
+    <PackageReference Include="Ranvier.Traced" Condition="'$(RanvierTrace)' == 'true'" />
     <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" />
   </ItemGroup>
 </Project>
