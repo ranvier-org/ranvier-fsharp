@@ -3,14 +3,14 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,18 +19,16 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
 
 jobs:
-  build-and-test:
-    name: Build, Test & Pack (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+  fork:
+    name: Build FCS fork (net10.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout ranvier-fsharp
         uses: actions/checkout@v4
         with:
           path: ranvier-fsharp
+          persist-credentials: false
 
       - name: Checkout fickle-fsharp (FCS fork)
         uses: actions/checkout@v4
@@ -38,88 +36,208 @@ jobs:
           repository: shayanhabibi/fickle-fsharp
           ref: fickle_decl
           path: fickle-fsharp
+          persist-credentials: false
 
-      - name: Setup .NET 10 SDK (runtime & MSBuildLocator host)
+      - name: Setup .NET 10 & 11 SDKs
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: ranvier-fsharp/global.json
+          dotnet-version: 11.0.x
 
-      - name: Setup .NET SDK for fickle-fsharp build
+      - name: Cache NuGet packages (fork)
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-fork-${{ runner.os }}-${{ hashFiles('fickle-fsharp/eng/Versions.props', 'fickle-fsharp/src/Compiler/FSharp.Compiler.Service.fsproj') }}
+          restore-keys: nuget-fork-${{ runner.os }}-
+
+      - name: Build FCS fork
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: ./build/fork.ps1 -ForkDir ../fickle-fsharp
+
+      - name: Upload built FCS fork assemblies
+        uses: actions/upload-artifact@v4
+        with:
+          name: fickle-fcs-net10
+          path: |
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Compiler.Service.dll
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Compiler.Service.xml
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Core.dll
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Core.xml
+          if-no-files-found: error
+
+  tests:
+    name: Tests (${{ matrix.suite }})
+    needs: fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [fast, decl-checker, server]
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download FCS fork assemblies
+        uses: actions/download-artifact@v4
+        with:
+          name: fickle-fcs-net10
+          path: .fcs/net10.0
+
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: fickle-fsharp/global.json
+          global-json-file: global.json
 
       - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('ranvier-fsharp/global.json', 'ranvier-fsharp/Directory.Packages.props', 'ranvier-fsharp/**/*.fsproj', 'fickle-fsharp/eng/Versions.props') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'Directory.Packages.props', '**/*.fsproj') }}
           restore-keys: nuget-${{ runner.os }}-
-
-      - name: Build FCS fork (net10.0)
-        shell: pwsh
-        working-directory: ranvier-fsharp
-        run: ./build/fork.ps1 -ForkDir ../fickle-fsharp
 
       - name: Build solution (Release)
         shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet build RanvierFSharp.slnx -c Release
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet build RanvierFSharp.slnx -c Release "-p:FickleFcsDir=$fcs"
 
-      - name: Run Rfs.Lsp.Tests
+      - name: Run fast suites (Lsp, Harness, Checkpoint)
+        if: matrix.suite == 'fast'
         shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj -c Release --no-build
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tests/Rfs.Checkpoint.Tests/Rfs.Checkpoint.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Rfs.Harness.Tests
+      - name: Run Decl & Checker suites
+        if: matrix.suite == 'decl-checker'
         shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj -c Release --no-build
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Rfs.Checkpoint.Tests
+      - name: Run Server suite
+        if: matrix.suite == 'server'
         shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Checkpoint.Tests/Rfs.Checkpoint.Tests.fsproj -c Release --no-build
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
 
-      - name: Run Rfs.Decl.Tests
-        shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj -c Release --no-build
+  windows:
+    name: Windows Build & Tool Smoke
+    needs: fork
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Run Rfs.Checker.Tests
-        shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build
+      - name: Download FCS fork assemblies
+        uses: actions/download-artifact@v4
+        with:
+          name: fickle-fcs-net10
+          path: .fcs/net10.0
 
-      - name: Run Rfs.Server.Tests
-        shell: pwsh
-        working-directory: ranvier-fsharp
-        run: dotnet run --project tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj -c Release --no-build
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
 
-      - name: Pack and publish distribution artifacts
+      - name: Build solution & run Lifecycle + Lsp tests
         shell: pwsh
-        working-directory: ranvier-fsharp
-        run: ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '\'
+          dotnet build RanvierFSharp.slnx -c Release "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tests\Rfs.Server.Tests\bin\Release\net10.0\Rfs.Server.Tests.exe --filter-test-list Lifecycle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  packages:
+    name: Packages
+    needs: fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download FCS fork assemblies
+        uses: actions/download-artifact@v4
+        with:
+          name: fickle-fcs-net10
+          path: ../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Pack .NET tool and distribution bundles
+        shell: pwsh
+        run: |
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp
+          Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
+          $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
+          foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+            $out = "./artifacts/publish-$rid"
+            dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir"
+            if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
+            Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+          }
 
       - name: Smoke-test packed .NET tool
         shell: pwsh
-        working-directory: ranvier-fsharp
         run: |
           $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-tool-smoke"
           if (Test-Path $toolDir) { Remove-Item -Recurse -Force $toolDir }
           dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
           if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
-          $exe = Join-Path $toolDir ($IsWindows ? 'ranvierautocomplete.exe' : 'ranvierautocomplete')
-          $ver = & $exe --version
+          $ver = & (Join-Path $toolDir 'ranvierautocomplete') --version
           if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
           Write-Host "Verified tool: $ver"
 
-      - name: Upload NuGet tool package & portable bundle
-        if: matrix.os == 'ubuntu-latest'
+      - name: Upload NuGet packages
         uses: actions/upload-artifact@v4
         with:
-          name: ranvierautocomplete-packages
-          path: |
-            ranvier-fsharp/artifacts/nupkg/*.nupkg
-            ranvier-fsharp/artifacts/publish/**
+          name: nuget-packages
+          path: artifacts/nupkg/*.nupkg
           if-no-files-found: error
+
+      - name: Upload standalone release bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+  result:
+    name: CI result
+    needs: [fork, tests, windows, packages]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success) ;; *) exit 1 ;; esac
+          done

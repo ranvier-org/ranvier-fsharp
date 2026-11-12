@@ -1,0 +1,157 @@
+# NuGet.org's Trusted Publishing policy targets `ranvier-org/ranvier-fsharp`, workflow `publish.yml`, and owner `shayan.habibi`.
+# Do not rename this file without updating the NuGet.org policy.
+name: Publish NuGet
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_run:
+    workflows: [CI]
+    branches: [main, master]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate OIDC login and package artifacts without pushing to NuGet.org'
+        type: boolean
+        default: true
+      version:
+        description: 'Optional package version override when packing on tag/dispatch (defaults to Directory.Build.props / tag)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nuget-publish
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       startsWith(github.event.workflow_run.head_commit.message, 'chore: release '))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          path: ranvier-fsharp
+          persist-credentials: false
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ranvier-fsharp/global.json
+
+      - name: Download artifacts from CI workflow_run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ranvier-fsharp/artifacts/nupkg
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Checkout fickle-fsharp (for tag or manual dispatch build)
+        if: github.event_name != 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          repository: shayanhabibi/fickle-fsharp
+          ref: fickle_decl
+          path: fickle-fsharp
+          persist-credentials: false
+
+      - name: Setup .NET 11 SDK for FCS fork build
+        if: github.event_name != 'workflow_run'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Build FCS fork & pack release artifacts
+        if: github.event_name != 'workflow_run'
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $ver = '${{ inputs.version }}'
+          if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
+            $ver = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          ./build/fork.ps1 -ForkDir ../fickle-fsharp
+          $verArgs = if ($ver) { @('-Version', $ver) } else { @() }
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp @verArgs
+          Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
+          $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
+          $verProps = if ($ver) { @("-p:Version=$ver") } else { @() }
+          foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+            $out = "./artifacts/publish-$rid"
+            dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" @verProps
+            if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
+            Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+          }
+
+      - name: Smoke-test packed .NET tool
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $pkgs = @(Get-ChildItem ./artifacts/nupkg/*.nupkg)
+          if ($pkgs.Count -eq 0) { throw "No .nupkg found in ./artifacts/nupkg" }
+          foreach ($p in $pkgs) { Write-Host "Validated package: $($p.Name)" }
+          $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-publish-smoke"
+          if (Test-Path $toolDir) { Remove-Item -Recurse -Force $toolDir }
+          dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
+          & (Join-Path $toolDir 'ranvierautocomplete') --version
+          if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
+
+      - name: Authenticate to NuGet with Trusted Publishing (OIDC)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER || 'shayan.habibi' }}
+
+      - name: Dry-run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          Write-Host "NuGet Trusted Publishing OIDC login succeeded for shayan.habibi! Skipping push because dry_run=true."
+          Get-ChildItem ./artifacts/nupkg/*.nupkg | ForEach-Object { Write-Host "Would push: $($_.Name)" }
+
+      - name: Publish packages to NuGet.org
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet nuget push ./artifacts/nupkg/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "$env:NUGET_API_KEY" --skip-duplicate
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          gh release create '${{ github.ref_name }}' `
+            ./artifacts/nupkg/*.nupkg `
+            ./artifacts/*.zip `
+            --generate-notes `
+            --title '${{ github.ref_name }}'

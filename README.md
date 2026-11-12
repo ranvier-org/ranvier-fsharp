@@ -341,7 +341,7 @@ This outputs:
    git tag v0.1.0-preview.1
    git push origin v0.1.0-preview.1
    ```
-   The [`.github/workflows/release.yml`](.github/workflows/release.yml) workflow builds `fickle-fsharp` + `ranvier-fsharp`, smoke-tests the `.NET` tool, attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` to a GitHub Release, and pushes `Ranvier.AutoComplete` to NuGet.org when `NUGET_API_KEY` is configured in repository secrets.
+   The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, smoke-tests the `.NET` tool, pushes `Ranvier.AutoComplete` to NuGet.org, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` to a GitHub Release.
 
 For manual NuGet publication:
 ```bash
