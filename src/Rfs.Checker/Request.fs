@@ -65,12 +65,21 @@ module Request =
         // Graph thread only
         let root = ref ValueNone
 
+        let mutable closePosted = 0
+
         let close () =
             match root.Value with
             | ValueSome(r: Owner) ->
                 root.Value <- ValueNone
                 r.Dispose()
             | ValueNone -> ()
+
+        let postClose () =
+            if Interlocked.Exchange(&closePosted, 1) = 0 then
+                try
+                    host.Post close
+                with :? ObjectDisposedException ->
+                    ()
 
         if ct.IsCancellationRequested then
             answer.TrySetCanceled ct |> ignore
@@ -84,8 +93,12 @@ module Request =
 
                                 createEffect (fun () ->
                                     match flight.TryValue with
-                                    | Ready v -> answer.TrySetResult v |> ignore
-                                    | Failed e -> answer.TrySetException e |> ignore
+                                    | Ready v ->
+                                        postClose ()
+                                        answer.TrySetResult v |> ignore
+                                    | Failed e ->
+                                        postClose ()
+                                        answer.TrySetException e |> ignore
                                     | Pending -> ())
 
                                 ValueSome owner)
@@ -94,16 +107,15 @@ module Request =
                         if answer.Task.IsCompleted then
                             close ())
 
-                let registration = ct.Register(fun () -> answer.TrySetCanceled ct |> ignore)
+                let registration =
+                    ct.Register(fun () ->
+                        postClose ()
+                        answer.TrySetCanceled ct |> ignore)
 
                 answer.Task.ContinueWith(
                     (fun (_: Task<'T>) ->
                         registration.Dispose()
-
-                        try
-                            host.Post close
-                        with :? ObjectDisposedException ->
-                            ()),
+                        postClose ()),
                     TaskContinuationOptions.ExecuteSynchronously
                 )
                 |> ignore

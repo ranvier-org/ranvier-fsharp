@@ -216,22 +216,31 @@ let tests =
 
                   t, cts
 
+              let runBatch (batch: int) =
+                  task {
+                      let started = [| for n in batch * 1000 .. batch * 1000 + 999 -> run n |]
+                      // Every root is made and its body has run before the cancels
+                      do! turn host
+
+                      for _, cts in started do
+                          cts.Cancel()
+
+                      let tasks = started |> Array.map fst
+
+                      try
+                          let! _ = Task.WhenAll tasks |> within
+                          ()
+                      with _ ->
+                          ()
+
+                      Expect.isTrue (tasks |> Array.forall _.IsCompleted) "every request ended"
+
+                      for _, cts in started do
+                          cts.Dispose()
+                  }
+
               for batch in 0..99 do
-                  let started = [| for n in batch * 1000 .. batch * 1000 + 999 -> run n |]
-                  // Every root is made and its body has run before the cancels
-                  do! turn host
-
-                  for _, cts in started do
-                      cts.Cancel()
-
-                  let tasks = started |> Array.map fst
-
-                  try
-                      do! Task.WhenAll tasks |> within
-                  with _ ->
-                      ()
-
-                  Expect.isTrue (tasks |> Array.forall _.IsCompleted) "every request ended"
+                  do! runBatch batch
 
               do! turn host
               do! turn host
