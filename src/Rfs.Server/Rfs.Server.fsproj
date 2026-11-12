@@ -35,6 +35,8 @@
     <Compile Include="Features/CodeLens.fs" />
     <Compile Include="Features/InlineValue.fs" />
     <Compile Include="Features/IonideEndpoints.fs" />
+    <Compile Include="Features/CodeActions.fs" />
+    <Compile Include="Features/Formatting.fs" />
     <Compile Include="Features/Why.fs" />
     <Compile Include="Server.fs" />
     <Compile Include="Program.fs" />

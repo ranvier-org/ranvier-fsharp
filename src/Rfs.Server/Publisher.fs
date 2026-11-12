@@ -6,6 +6,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.Diagnostics
+open FSharp.Compiler.EditorServices
 open Ranvier
 open Rfs.Checker
 open Rfs.Lsp
@@ -46,6 +47,30 @@ type private Found =
         { Groups = Dictionary<string, Rfs.Lsp.Diagnostic list>() :> IReadOnlyDictionary<_, _>
           Current = false
           Waiting = false }
+
+[<Struct; CustomEquality; NoComparison>]
+type private AnalyzerFlags =
+    { UnusedOpens: bool
+      SimplifyNames: bool
+      UnusedDeclarations: bool }
+
+    member this.Any = this.UnusedOpens || this.SimplifyNames || this.UnusedDeclarations
+
+    override this.Equals(other: obj) =
+        match other with
+        | :? AnalyzerFlags as o ->
+            this.UnusedOpens = o.UnusedOpens
+            && this.SimplifyNames = o.SimplifyNames
+            && this.UnusedDeclarations = o.UnusedDeclarations
+        | _ -> false
+
+    override this.GetHashCode() =
+        HashCode.Combine(this.UnusedOpens, this.SimplifyNames, this.UnusedDeclarations)
+
+    static member Off =
+        { UnusedOpens = false
+          SimplifyNames = false
+          UnusedDeclarations = false }
 
 module internal GraphTurn =
     /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush: a settle
@@ -94,22 +119,41 @@ module internal GraphTurn =
 /// It touches no other row: no row waits on the shared host, so nothing a fault aborts there reaches it.
 /// </para>
 /// </remarks>
-type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, documents: Documents) =
+type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, documents: Documents, ?getConfig: unit -> FSharpConfig) =
+    let readConfig = defaultArg getConfig (fun () -> FSharpConfig.Default)
     let outbox = new Outbox()
     let mutable disposed = 0
     // Graph thread
     let lastKeys = Dictionary<string, struct (Rfs.Lsp.Range * int * string * string) list>(StringComparer.OrdinalIgnoreCase)
     let lastAdopted = Dictionary<ProjectGraph, int64>(HashIdentity.Reference)
     let mutable rows: Signal<Map<string, Row>> = Unchecked.defaultof<_>
+    let mutable analyzerFlags: Signal<AnalyzerFlags> = Unchecked.defaultof<_>
     let mutable epoch = 0L
     let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let mutable onClose: string -> unit = ignore
     let mutable diskPasses = 0
     let nothing = Found.None
 
+    let flagsOf (cfg: FSharpConfig) : AnalyzerFlags =
+        { UnusedOpens = cfg.UnusedOpensAnalyzer
+          SimplifyNames = cfg.SimplifyNameAnalyzer
+          UnusedDeclarations = cfg.UnusedDeclarationsAnalyzer }
+
     let log (text: string) = eprintfn "[ranvierautocomplete] %s" text
 
     let keyOf (d: Rfs.Lsp.Diagnostic) = struct (d.Range, d.Severity, d.Code, d.Message)
+
+    let tagsOfCode (code: string) : DiagnosticTag[] option =
+        match code with
+        | "FS1182"
+        | "1182"
+        | "FSAC0001"
+        | "FSAC0002"
+        | "FSAC0003" -> Some [| DiagnosticTag.Unnecessary |]
+        | "FS0044"
+        | "0044"
+        | "44" -> Some [| DiagnosticTag.Deprecated |]
+        | _ -> None
 
     let toLsp (d: Rfs.Lsp.Diagnostic) : Diagnostic =
         let position (p: Rfs.Lsp.Position) : Position =
@@ -121,7 +165,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
           CodeDescription = None
           Source = Some d.Source
           Message = d.Message
-          Tags = None
+          Tags = tagsOfCode d.Code
           RelatedInformation = None
           Data = None }
 
@@ -290,6 +334,13 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
                     last
 
+    let post (work: unit -> unit) =
+        if Volatile.Read &disposed = 0 then
+            try
+                host.Post work
+            with :? ObjectDisposedException ->
+                ()
+
     /// Emits `fsharp/fileParsed` once per open-row epoch as soon as the latest parse lands, without waiting on typecheck. Graph thread.
     let publishingParsed (item: unit -> Row) : unit =
         let retryTick: Signal<int64> = createSignal 0L
@@ -322,7 +373,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                                     let! _ = g.LatestParse(path, CancellationToken.None)
 
                                     if Volatile.Read &disposed = 0 then
-                                        GraphTurn.afterPump host (fun () ->
+                                        post (fun () ->
                                             if Volatile.Read &disposed = 0 then
                                                 match inFlight with
                                                 | ValueSome(struct (fg, fe)) when obj.ReferenceEquals(fg, g) && fe = targetEpoch ->
@@ -337,7 +388,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                                                 | _ -> ())
                                 with _ ->
                                     if Volatile.Read &disposed = 0 then
-                                        GraphTurn.afterPump host (fun () ->
+                                        post (fun () ->
                                             if Volatile.Read &disposed = 0 then
                                                 match inFlight with
                                                 | ValueSome(struct (fg, fe)) when obj.ReferenceEquals(fg, g) && fe = targetEpoch ->
@@ -351,21 +402,183 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
             with ex ->
                 log $"publishing fileParsed %s{r.Path} failed: %O{ex}")
 
+    /// Runs optional built-in open-file analyzers (`FSAC0001`, `FSAC0002`, `FSAC0003`) when enabled in `FSharpConfig`,
+    /// extracting plain `Rfs.Lsp.Diagnostic` values immediately without retaining any compiler or view objects. Graph thread.
+    let analyzing
+        (item: unit -> Row)
+        (own: Memo<Found>)
+        (analyzed: Signal<struct (int64 * AnalyzerFlags * Rfs.Lsp.Diagnostic list)>)
+        : unit =
+        let mutable inFlight: struct (int64 * AnalyzerFlags) voption = ValueNone
+
+        createEffect (fun () ->
+            let r = item ()
+            let flags = analyzerFlags.Value
+            let found = own.Value
+            let owners = workspace.OwnersNow r.Path
+
+            try
+                if not r.Open || not flags.Any || r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                    inFlight <- ValueNone
+                    let struct (_, _, prevList) = analyzed.Value
+
+                    if not prevList.IsEmpty then
+                        analyzed.Value <- struct (Int64.MinValue, AnalyzerFlags.Off, [])
+                elif found.Current && r.Uri <> "" then
+                    match owners with
+                    | [] -> ()
+                    | g :: _ ->
+                        let struct (doneEpoch, doneFlags, _) = analyzed.Value
+
+                        let alreadyDone = doneEpoch = r.Epoch && doneFlags = flags
+
+                        let alreadyInFlight =
+                            match inFlight with
+                            | ValueSome(struct (fe, ff)) -> fe = r.Epoch && ff = flags
+                            | ValueNone -> false
+
+                        if not alreadyDone && not alreadyInFlight then
+                            let path = r.Path
+                            let targetEpoch = r.Epoch
+                            let targetFlags = flags
+                            inFlight <- ValueSome(struct (targetEpoch, targetFlags))
+
+                            Task.Run(fun () ->
+                                (task {
+                                    try
+                                        let! plainDiags =
+                                            g.ReadFile(
+                                                path,
+                                                (fun view ->
+                                                    let lines = view.Text.Split '\n'
+                                                    let lastLine = max 1 lines.Length
+
+                                                    let lastCol =
+                                                        if lines.Length = 0 then
+                                                            0
+                                                        else
+                                                            lines[lines.Length - 1].TrimEnd('\r').Length
+
+                                                    lines, lastLine, lastCol),
+                                                (fun view (lines, lastLine, lastCol) ->
+                                                    StackGuard.onLargeStack (fun () ->
+                                                        let check =
+                                                            if view.Whole then
+                                                                view.Result.CheckResultsNotKept
+                                                            else
+                                                                view.CheckResultsAt(lastLine, lastCol)
+
+                                                        let getLineStr (line1Based: int) =
+                                                            if line1Based >= 1 && line1Based <= lines.Length then
+                                                                lines[line1Based - 1].TrimEnd '\r'
+                                                            else
+                                                                ""
+
+                                                        let out = ResizeArray<Rfs.Lsp.Diagnostic>()
+
+                                                        let mkDiag (code: string) (msg: string) (rng: FSharp.Compiler.Text.range) : Rfs.Lsp.Diagnostic =
+                                                            { File = path
+                                                              Range =
+                                                                { Start =
+                                                                    { Line = max 0 (rng.StartLine - 1)
+                                                                      Character = max 0 rng.StartColumn }
+                                                                  End =
+                                                                    { Line = max 0 (rng.EndLine - 1)
+                                                                      Character = max 0 rng.EndColumn } }
+                                                              Severity = 4
+                                                              Code = code
+                                                              Message = msg
+                                                              Source = "F# Analyzers" }
+
+                                                        if targetFlags.UnusedOpens then
+                                                            let unusedOpens =
+                                                                UnusedOpens.getUnusedOpens (check, getLineStr)
+                                                                |> Async.RunSynchronously
+
+                                                            for rng in unusedOpens do
+                                                                out.Add(mkDiag "FSAC0001" "Unused open statement" rng)
+
+                                                        if targetFlags.SimplifyNames then
+                                                            let simplifiable =
+                                                                SimplifyNames.getSimplifiableNames (check, getLineStr)
+                                                                |> Async.RunSynchronously
+
+                                                            for sr in simplifiable do
+                                                                out.Add(mkDiag "FSAC0002" "This qualifier is redundant" sr.Range)
+
+                                                        if targetFlags.UnusedDeclarations then
+                                                            let isScript =
+                                                                path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+                                                                || path.EndsWith(".fsscript", StringComparison.OrdinalIgnoreCase)
+
+                                                            let unusedDecls =
+                                                                UnusedDeclarations.getUnusedDeclarations (check, isScript)
+                                                                |> Async.RunSynchronously
+
+                                                            for rng in unusedDecls do
+                                                                out.Add(mkDiag "FSAC0003" "This value is unused" rng)
+
+                                                        out |> Seq.toList)),
+                                                CancellationToken.None
+                                            )
+
+                                        if Volatile.Read &disposed = 0 then
+                                            post (fun () ->
+                                                if Volatile.Read &disposed = 0 then
+                                                    match inFlight with
+                                                    | ValueSome(struct (fe, ff)) when fe = targetEpoch && ff = targetFlags ->
+                                                        inFlight <- ValueNone
+                                                    | _ -> ()
+
+                                                    match rowOf path with
+                                                    | Some now when now.Open && now.Epoch = targetEpoch && analyzerFlags.Value = targetFlags ->
+                                                        analyzed.Value <- struct (targetEpoch, targetFlags, plainDiags)
+                                                    | _ -> ())
+                                    with ex ->
+                                        match ex with
+                                        | :? OperationCanceledException
+                                        | :? ObjectDisposedException -> ()
+                                        | _ -> log $"analyzing read %s{path} failed: %O{ex}"
+
+                                        if Volatile.Read &disposed = 0 then
+                                            post (fun () ->
+                                                match inFlight with
+                                                | ValueSome(struct (fe, ff)) when fe = targetEpoch && ff = targetFlags ->
+                                                    inFlight <- ValueNone
+                                                | _ -> ())
+                                })
+                                :> Task)
+                            |> ignore
+            with ex ->
+                log $"analyzing %s{r.Path} failed: %O{ex}")
+
     /// The effect of one row, over the row's own value. Graph thread.
-    let publishing (item: unit -> Row) (own: Memo<Found>) : unit =
+    let publishing
+        (item: unit -> Row)
+        (own: Memo<Found>)
+        (analyzed: Signal<struct (int64 * AnalyzerFlags * Rfs.Lsp.Diagnostic list)>)
+        : unit =
         let mutable sent = Int64.MinValue
 
         createEffect (fun () ->
             let r = item ()
             let found = own.Value
+            let flags = analyzerFlags.Value
 
             try
                 // The row is the document: close changes it in the item that queues the empty list
                 if r.Open then
                     if found.Current then
+                        let extraAnalyzers =
+                            if not flags.Any || r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
+                                []
+                            else
+                                let struct (ae, af, adiags) = analyzed.Value
+                                if ae = r.Epoch && af = flags then adiags else []
+
                         let fresh = r.Epoch <> sent
                         sent <- r.Epoch
-                        send r.Path r.Uri (Some r.LspVersion) (union r.Path found) fresh true
+                        send r.Path r.Uri (Some r.LspVersion) ((union r.Path found) @ extraAnalyzers) fresh true
 
                         if fresh then
                             notifyChecks ()
@@ -386,6 +599,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         host.Post(fun () ->
             createRoot (fun _ ->
                 rows <- createSignal Map.empty
+                analyzerFlags <- createSignal (flagsOf (readConfig ()))
 
                 projection <-
                     createProjectionWith
@@ -393,8 +607,10 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                         (fun item ->
                             let read = finding item
                             let own = createMemo (fun _ -> read ())
+                            let analyzed = createSignal (struct (Int64.MinValue, AnalyzerFlags.Off, ([] : Rfs.Lsp.Diagnostic list)))
                             publishingParsed item
-                            publishing item own
+                            analyzing item own analyzed
+                            publishing item own analyzed
                             fun () -> own.Value)
                         (fun () -> rows.Value |> Map.values :> seq<_>)
 
@@ -510,13 +726,6 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | Some r when not r.Owners.IsEmpty -> setRow { r with Owners = [] }
                 | _ -> ()
 
-    let post (work: unit -> unit) =
-        if Volatile.Read &disposed = 0 then
-            try
-                host.Post work
-            with :? ObjectDisposedException ->
-                ()
-
     do workspace.OnLoadEnd(fun () -> post sweepNow)
 
     /// The editor opened the document: the file's text is the document's, and the project that owns it checks it
@@ -544,6 +753,15 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
     /// A project has loaded: its open documents were given their texts, so they are promoted and published
     member _.Loaded(graph: ProjectGraph) : unit = post (fun () -> loadedNow graph)
+
+    /// Re-evaluates open-file built-in analyzers when `FSharpConfig` analyzer flags change
+    member _.NotifyConfigChanged() : unit =
+        post (fun () ->
+            if not (isNull (box analyzerFlags)) then
+                let next = flagsOf (readConfig ())
+
+                if analyzerFlags.Value <> next then
+                    analyzerFlags.Value <- next)
 
     /// Runs `hook` with the LSP version of a file's own list before it is sent, holding the sends queued after it. For
     /// tests.

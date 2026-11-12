@@ -62,20 +62,20 @@ let tests =
               use _ = { new IAsyncDisposable with member _.DisposeAsync() = (owner.Dispose(); ValueTask()) }
               let! _ = request lsp "initialize" (initializeParams ())
 
-              let formatting =
+              let onTypeFormatting =
                   JsonNode.Parse
-                      """{"textDocument":{"uri":"file:///a.fs"},"options":{"tabSize":4,"insertSpaces":true}}"""
+                      """{"textDocument":{"uri":"file:///a.fs"},"position":{"line":0,"character":0},"ch":";","options":{"tabSize":4,"insertSpaces":true}}"""
 
               let! failure =
                   task {
                       try
-                          let! _ = request lsp "textDocument/formatting" formatting
+                          let! _ = request lsp "textDocument/onTypeFormatting" onTypeFormatting
                           return None
                       with e ->
                           return Some e
                   }
 
-              Expect.isSome failure "formatting is answered with an error"
+              Expect.isSome failure "onTypeFormatting is answered with an error"
               let! second = request lsp "initialize" (initializeParams ())
               Expect.isNotNull (fst second |> at "capabilities") "the server still answers"
           }

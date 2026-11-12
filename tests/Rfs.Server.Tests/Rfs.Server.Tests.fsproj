@@ -33,6 +33,7 @@
     <Compile Include="HierarchyAndWorkspaceSymbolsTests.fs" />
     <Compile Include="RenameAndIonideTests.fs" />
     <Compile Include="Task6bWorkspaceItemsTests.fs" />
+    <Compile Include="CodeActionsAndFormattingTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -21,9 +21,11 @@ open Helpers
 
 type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable disposed = 0
+    let configGate = obj ()
+    let mutable config = FSharpConfig.Default
     let workspace = new Workspace(host, client)
     let documents = Documents(host)
-    let publisher = new Publisher(host, workspace, client, documents)
+    let publisher = new Publisher(host, workspace, client, documents, fun () -> Volatile.Read &config)
     // The hovers given on settled results, for answers from the last state while a check is pending
     let lastAnswers = Hover.LastAnswers()
     // The references and definitions given on settled states, for answers from the last state marked by the progress
@@ -100,8 +102,6 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
             |> ignore
 
     let mutable rootPath: string option = None
-    let configGate = obj ()
-    let mutable config = FSharpConfig.Default
     let tokenCache = SemanticTokens.TokenDeltaCache()
     let mutable canPullConfiguration = false
     let mutable canRegisterWatchers = false
@@ -113,6 +113,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         lock configGate (fun () ->
             let updated = FSharpConfig.UpdateFromJson (Volatile.Read &config) token
             Volatile.Write(&config, updated))
+
+        publisher.NotifyConfigChanged()
 
     let pullConfiguration () =
         async {
@@ -322,6 +324,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     member _.Workspace = workspace
     member internal _.Documents = documents
     member internal _.Publisher = publisher
+    member val internal FormattingRunnerOverride: Formatting.FormattingRunner option = None with get, set
 
     /// How many references and definitions were answered from the last state. For tests.
     member internal _.LastStateAnswers: int64 = lastUses.Answered + lastDefinitions.Answered
@@ -606,6 +609,20 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                     { ResolveProvider = Some false
                                       WorkDoneProgress = None }
                             )
+                        CodeActionProvider =
+                            Some(
+                                U2.C2
+                                    { CodeActionKinds =
+                                        Some
+                                            [| CodeActionKind.QuickFix
+                                               CodeActionKind.Refactor
+                                               CodeActionKind.RefactorRewrite
+                                               "source.organizeImports" |]
+                                      ResolveProvider = Some false
+                                      WorkDoneProgress = None }
+                            )
+                        DocumentFormattingProvider = Some(U2.C1 true)
+                        DocumentRangeFormattingProvider = Some(U2.C1 true)
                         CodeLensProvider =
                             Some
                                 { ResolveProvider = Some true
@@ -776,7 +793,19 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.DocumentLinkResolve(_) = notImplemented
         member _.InlayHintResolve(_) = notImplemented
-        member _.TextDocumentCodeAction(_) = notImplemented
+        member _.TextDocumentCodeAction(p: CodeActionParams) =
+            let scope = makeScope ()
+
+            readingAny "codeAction" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                CodeActions.provideWithCapabilities
+                    (Volatile.Read &config)
+                    canDocumentChanges
+                    documents.TryVersionNow
+                    scope
+                    graph
+                    path
+                    p
+                    ct)
         member _.TextDocumentCodeLens(p: CodeLensParams) =
             readingAny "codeLens" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 CodeLens.lenses (Volatile.Read &config) graph path ct)
@@ -855,7 +884,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
         member _.TextDocumentFoldingRange(p: FoldingRangeParams) =
             readingAny "foldingRange" None (fun () -> Paths.ofUri p.TextDocument.Uri) Folding.ranges
-        member _.TextDocumentFormatting(_) = notImplemented
+
+        member this.TextDocumentFormatting(p: DocumentFormattingParams) =
+            readingAny "formatting" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                Formatting.formatDocument this.FormattingRunnerOverride graph path p.Options ct)
         member _.TextDocumentHover(p: HoverParams) =
             reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
@@ -939,7 +971,10 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
             readingAny "prepareTypeHierarchy" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 TypeHierarchy.prepare scope graph path (int p.Position.Line) (int p.Position.Character) ct)
-        member _.TextDocumentRangeFormatting(_) = notImplemented
+
+        member this.TextDocumentRangeFormatting(p: DocumentRangeFormattingParams) =
+            readingAny "rangeFormatting" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
+                Formatting.formatRange this.FormattingRunnerOverride graph path p.Range p.Options ct)
         member this.TextDocumentReferences(p: ReferenceParams) =
             async {
                 // Read on the graph thread, tracked, in the turn that reads the files
@@ -1213,6 +1248,9 @@ module Server =
               "textDocument/prepareRename"
               "textDocument/rename"
               "textDocument/inlayHint"
+              "textDocument/codeAction"
+              "textDocument/formatting"
+              "textDocument/rangeFormatting"
               "textDocument/codeLens"
               "codeLens/resolve"
               "textDocument/inlineValue"

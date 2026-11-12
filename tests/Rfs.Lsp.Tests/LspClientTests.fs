@@ -349,4 +349,92 @@ let tests =
 
                           Expect.isSome recorded "workspace/applyEdit request recorded on client.ServerRequests"
                       })
+          }
+
+          testTask "codeAction, formatting, rangeFormatting, and publishDiagnostics with tags round-trip over JSON-RPC" {
+              do!
+                  withClient (fun server client ->
+                      task {
+                          let rawNotifications = Collector<Received>()
+                          let parsedDiags = Collector<int64 * string * int option * Diagnostic list>()
+                          use _ = client.Notifications.Subscribe rawNotifications
+                          use _ = client.Diagnostics.Subscribe parsedDiags
+
+                          server.OnRequest(
+                              "textDocument/codeAction",
+                              fun p ->
+                                  let uri = p |> at [ "textDocument"; "uri" ] |> str
+
+                                  JsonNode.Parse(
+                                      $"""[{{"title":"Remove unused open","kind":"quickfix","edit":{{"changes":{{"{uri}":[{{"range":{{"start":{{"line":2,"character":0}},"end":{{"line":3,"character":0}}}},"newText":""}}]}}}}}}]"""
+                                  )
+                          )
+
+                          server.OnRequest(
+                              "textDocument/formatting",
+                              fun _ ->
+                                  JsonNode.Parse
+                                      """[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}},"newText":"let x = 1"}]"""
+                          )
+
+                          server.OnRequest(
+                              "textDocument/rangeFormatting",
+                              fun p ->
+                                  let startLine = p |> at [ "range"; "start"; "line" ] |> num
+
+                                  JsonNode.Parse(
+                                      $"""[{{"range":{{"start":{{"line":{startLine},"character":0}},"end":{{"line":{startLine},"character":7}}}},"newText":"let y = 2"}}]"""
+                                  )
+                          )
+
+                          let uri = Uri(filePath).AbsoluteUri
+
+                          let! caRes, _ =
+                              client.Request(
+                                  "textDocument/codeAction",
+                                  JsonNode.Parse(
+                                      $"""{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":2,"character":0}},"end":{{"line":2,"character":4}}}},"context":{{"diagnostics":[]}}}}"""
+                                  )
+                              )
+
+                          Expect.equal (caRes.AsArray()[0] |> at [ "title" ] |> str) "Remove unused open" "codeAction title round-tripped"
+                          Expect.equal (caRes.AsArray()[0] |> at [ "kind" ] |> str) "quickfix" "codeAction kind round-tripped"
+
+                          let! fmtRes, _ =
+                              client.Request(
+                                  "textDocument/formatting",
+                                  JsonNode.Parse($"""{{"textDocument":{{"uri":"{uri}"}},"options":{{"tabSize":4,"insertSpaces":true}}}}""")
+                              )
+
+                          Expect.equal (fmtRes.AsArray()[0] |> at [ "newText" ] |> str) "let x = 1" "formatting edit round-tripped"
+
+                          let! rfmtRes, _ =
+                              client.Request(
+                                  "textDocument/rangeFormatting",
+                                  JsonNode.Parse(
+                                      $"""{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":4,"character":0}},"end":{{"line":4,"character":7}}}},"options":{{"tabSize":4,"insertSpaces":true}}}}"""
+                                  )
+                              )
+
+                          Expect.equal (rfmtRes.AsArray()[0] |> at [ "range"; "start"; "line" ] |> num) 4 "rangeFormatting start line round-tripped"
+
+                          do!
+                              server.Notify(
+                                  "textDocument/publishDiagnostics",
+                                  JsonNode.Parse(
+                                      $"""{{"uri":"{uri}","version":5,"diagnostics":[{{"range":{{"start":{{"line":1,"character":0}},"end":{{"line":1,"character":11}}}},"severity":4,"code":"FSAC0001","source":"F# Analyzers","message":"Unused open statement","tags":[1]}}]}}"""
+                                  )
+                              )
+
+                          let! raw = rawNotifications.Next()
+                          let firstDiag = (raw.Message |> at [ "params"; "diagnostics" ]).AsArray()[0]
+                          let rawTags = (firstDiag |> at [ "tags" ]).AsArray()
+                          Expect.equal (rawTags[0] |> num) 1 "DiagnosticTag.Unnecessary (1) preserved on wire"
+
+                          let! (_, parsedFile, ver, diags) = parsedDiags.Next()
+                          Expect.equal parsedFile filePath "parsed diagnostic file"
+                          Expect.equal ver (Some 5) "parsed diagnostic version"
+                          Expect.equal diags.Head.Code "FSAC0001" "parsed analyzer code"
+                          Expect.isFalse (Diagnostics.isCompiler diags.Head) "FSAC0001 is not classified as an F# compiler error"
+                      })
           } ]
