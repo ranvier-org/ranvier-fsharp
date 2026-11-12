@@ -78,6 +78,9 @@ try {
     if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
     dotnet publish $toolProj -c $Configuration --no-build -o $publishDir $fcsProp @verArgs
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
+    foreach ($doc in 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md') {
+        Copy-Item -LiteralPath (Join-Path $repoRoot $doc) -Destination (Join-Path $publishDir $doc) -Force
+    }
 
     foreach ($rid in $allRids) {
         $ridDir = [System.IO.Path]::Combine($OutputDir, "publish-$rid")
@@ -85,6 +88,9 @@ try {
         if (Test-Path $ridDir) { Remove-Item -Recurse -Force $ridDir }
         dotnet publish $toolProj -c $Configuration -r $rid --self-contained false -o $ridDir $fcsProp @verArgs
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($rid) failed with exit code $LASTEXITCODE" }
+        foreach ($doc in 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md') {
+            Copy-Item -LiteralPath (Join-Path $repoRoot $doc) -Destination (Join-Path $ridDir $doc) -Force
+        }
     }
 
     Write-Host "=== Packing untraced NuGet packages -> $nupkgDir" -ForegroundColor Cyan

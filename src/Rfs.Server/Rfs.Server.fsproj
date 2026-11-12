@@ -5,8 +5,8 @@
     <RanvierTracedPackage>true</RanvierTracedPackage>
     <PackageId>Ranvier.FSharp.Server</PackageId>
     <PackageId Condition="'$(_RanvierTraceExplicit)' == 'true'">Ranvier.FSharp.Server.Traced</PackageId>
-    <Description>Embeddable F# Language Server Protocol (LSP) server and Ionide endpoint implementation powered by Ranvier.FSharp.Checker.</Description>
-    <Description Condition="'$(_RanvierTraceExplicit)' == 'true'">The traced build of Ranvier.FSharp.Server: the same assembly, namespaces, and version, with `rfs/why` causal graph inspection enabled. Depends on Ranvier.FSharp.Checker.Traced.</Description>
+    <Description>Embeddable F# Language Server Protocol (LSP) server and Ionide endpoint implementation powered by Ranvier.FSharp.Checker, built upon the Ionide ecosystem (FsAutoComplete, Ionide.LanguageServerProtocol, Ionide.ProjInfo).</Description>
+    <Description Condition="'$(_RanvierTraceExplicit)' == 'true'">The traced build of Ranvier.FSharp.Server: the same assembly, namespaces, and version, with `rfs/why` causal graph inspection enabled, built upon the Ionide ecosystem. Depends on Ranvier.FSharp.Checker.Traced.</Description>
     <PackageTags>fsharp;lsp;language-server;ionide;ranvier;fsautocomplete</PackageTags>
   </PropertyGroup>
   <ItemGroup>

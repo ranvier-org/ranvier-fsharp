@@ -73,7 +73,7 @@ let slnxAndWorkspaceItemsTests =
     testSequenced
     <| testList
         "Task6b.SlnxAndWorkspaceItems"
-        [ test "peeks real RanvierFSharp.slnx with leaf folder names, non-empty stable GUIDs, and all 13 fsprojs" {
+        [ test "peeks real RanvierFSharp.slnx with leaf folder names, non-empty stable GUIDs, and all 14 fsprojs" {
               let repoRoot = findRepoRoot ()
               let slnxPath = Path.Combine(repoRoot, "RanvierFSharp.slnx")
               let found = WorkspacePeek.peek repoRoot 2 [ ".git"; "artifacts"; ".worktrees" ]
@@ -108,7 +108,7 @@ let slnxAndWorkspaceItemsTests =
                   Expect.equal (again.Items |> List.map _.Guid) (items |> List.map _.Guid) "GUIDs are deterministic across calls"
 
               let projects = WorkspacePeek.projectsOf [ WorkspacePeek.Interesting.Solution(slnxPath, slnData.Value) ]
-              Expect.equal projects.Length 13 "All 13 .fsproj projects resolved across /src/ and /tests/ folders"
+              Expect.equal projects.Length 14 "All 14 .fsproj projects resolved across /src/ and /tests/ folders"
               Expect.isTrue (projects |> List.forall File.Exists) "Every resolved project path exists on disk"
 
               // Verify JSON serialization in Responses.workspacePeek matches FSAC schema
@@ -119,7 +119,7 @@ let slnxAndWorkspaceItemsTests =
               let jsonFolders = solNode["Data"].["Items"].AsArray()
               Expect.equal (jsonFolders[0].["Name"].GetValue<string>()) "src" "JSON folder Name is 'src'"
               Expect.equal (jsonFolders[0].["Kind"].["Kind"].GetValue<string>()) "folder" "JSON folder Kind"
-              Expect.equal (jsonFolders[0].["Kind"].["Data"].["Items"].AsArray().Count) 7 "7 src projects"
+              Expect.equal (jsonFolders[0].["Kind"].["Data"].["Items"].AsArray().Count) 8 "8 src projects"
               Expect.equal (jsonFolders[1].["Kind"].["Data"].["Items"].AsArray().Count) 6 "6 test projects"
           }
 

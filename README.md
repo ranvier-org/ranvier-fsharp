@@ -4,6 +4,8 @@ Demand-driven, declaration-incremental F# Language Server Protocol (LSP) server 
 
 `ranvierautocomplete` is a drop-in replacement for `fsautocomplete` (FSAC) in **Ionide for VS Code**, **Neovim**, **Helix**, **Zed**, **Emacs**, and any stdio LSP client.
 
+> **Massive Props to the [Ionide](https://ionide.io) Team:** `Ranvier.AutoComplete` would not exist without the talent and dedication of the **[Ionide](https://github.com/ionide)** maintainers and contributors. The language server surface, protocol handling, workspace loading, analyzers, code actions, and editor feature behavior in this repository are largely based on and adapted from their landmark work across **[FsAutoComplete (FSAC)](https://github.com/ionide/FsAutoComplete)**, **[Ionide.LanguageServerProtocol](https://github.com/ionide/LanguageServerProtocol)**, **[Ionide.ProjInfo](https://github.com/ionide/proj-info)**, and **[ionide-vscode-fsharp](https://github.com/ionide/ionide-vscode-fsharp)**. While `ranvier-fsharp` introduces a new declaration-incremental [Ranvier](https://github.com/ranvier-org/Ranvier) checking graph underneath, the rich F# IDE experience it delivers stands squarely on the foundation Ionide built for the F# community. See [Acknowledgements & Attribution](#acknowledgements--attribution) for full credit.
+
 ## Why Ranvier.AutoComplete?
 
 Traditional F# language servers re-typecheck entire files (and downstream files) on edits or retain heavy compiler `TcState` / `FSharpCheckFileResults` graphs across open buffers. `ranvierautocomplete` models F# parsing, dependency extraction, declaration-level type-checking, symbol uses, and cross-project signatures as a reactive [Ranvier](https://github.com/ranvier-org/Ranvier) computation graph:
@@ -372,6 +374,23 @@ To verify published packages live from `https://api.nuget.org/v3/index.json` in 
 pwsh -File build/verify-packages.ps1 -OnlineOnly -Version 0.1.0-preview.2
 ```
 
+---
+
+## Acknowledgements & Attribution
+
+`ranvier-fsharp` stands on the shoulders of the **[Ionide](https://ionide.io)** team ([github.com/ionide](https://github.com/ionide)), without whom this project simply would not be possible. Over more than a decade of open-source stewardship, the Ionide maintainers and contributors designed, refined, and maintained the modern cross-editor F# developer experience — and the code in this repository is largely based on their talented work:
+
+- **[FsAutoComplete (FSAC)](https://github.com/ionide/FsAutoComplete)** *(Apache-2.0 — Tomas Petricek, Ben Winkel, Igor Siguta, Robin Neatherway, Dave Thomas, Krzysztof Cieślak, Chet Husk, Jimmy Byrd, Florian Verdonck, and all FSAC contributors)*: `Ranvier.FSharp.Server` draws heavily on FSAC's architecture, protocol conventions, and feature semantics — including hover & signature formatting, completion & auto-open namespace edits, semantic token mapping, inlay hints, code lenses, pipeline/inline value hints, navigation & rename rules, built-in `FSAC0001`–`FSAC0004` analyzers, quick fixes & stub-generation code actions, and the custom `fsharp/*` (`workspacePeek`, `workspaceLoad`, `project`, `lineLens`, `pipelineHint`, `documentation*`) protocol surface.
+- **[Ionide.LanguageServerProtocol](https://github.com/ionide/LanguageServerProtocol)** *(MIT — Krzysztof Cieślak & Ionide contributors)*: Provides the strongly typed LSP protocol types and serialization contracts used across `Ranvier.FSharp.Server`.
+- **[Ionide.ProjInfo](https://github.com/ionide/proj-info)** *(MIT — Enrico Sada, Chet Husk & Ionide contributors)*: Powers MSBuild SDK discovery (`MSBuildLocator`), design-time F# project evaluation, and `.sln` inspection in `Ranvier.FSharp.Projects`.
+- **[ionide-vscode-fsharp](https://github.com/ionide/ionide-vscode-fsharp)** *(MIT — Krzysztof Cieślak, Chet Husk, Jimmy Byrd & Ionide contributors)*: The flagship F# extension for VS Code whose `FSharp.fsac.netCoreDllPath` integration makes `ranvierautocomplete` a seamless drop-in experience.
+
+Special thanks as well to:
+- **The F# Compiler & `FSharp.Compiler.Service` Team** ([dotnet/fsharp](https://github.com/dotnet/fsharp), `.NET Foundation` and contributors), upon which [`fickle-fsharp`](https://github.com/shayanhabibi/fickle-fsharp) builds declaration-level incremental type-checking.
+- **[Fantomas](https://github.com/fsprojects/fantomas)** *(Florian Verdonck, Dave Thomas & fsprojects contributors)* for F# source formatting.
+
+Full upstream copyright and license notices are included in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) (distributed in every NuGet package and release archive).
+
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 Shayan Habibi.
+[MIT](LICENSE) — Copyright (c) 2026 Shayan Habibi. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for third-party attribution and Apache-2.0 / MIT notices for adapted upstream components.

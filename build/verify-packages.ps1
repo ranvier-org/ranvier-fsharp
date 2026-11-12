@@ -123,6 +123,13 @@ if (-not $OnlineOnly) {
         try {
             $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
             Assert-True ($entries -contains 'README.md') "$id missing README.md"
+            Assert-True ($entries -contains 'LICENSE') "$id missing LICENSE"
+            Assert-True ($entries -contains 'THIRD-PARTY-NOTICES.md') "$id missing THIRD-PARTY-NOTICES.md"
+
+            $readmeText = [System.Text.Encoding]::UTF8.GetString((Read-ZipEntryBytes $zip 'README.md'))
+            Assert-True ($readmeText.Contains('Ionide') -and $readmeText.Contains('FsAutoComplete')) "$id README.md missing Ionide / FsAutoComplete attribution"
+            $noticesText = [System.Text.Encoding]::UTF8.GetString((Read-ZipEntryBytes $zip 'THIRD-PARTY-NOTICES.md'))
+            Assert-True ($noticesText.Contains('FsAutoComplete') -and $noticesText.Contains('Apache License')) "$id THIRD-PARTY-NOTICES.md missing FsAutoComplete Apache-2.0 notice"
 
             $nuspecEntry = $zip.Entries | Where-Object { $_.FullName.EndsWith('.nuspec', [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
             Assert-True ($null -ne $nuspecEntry) "$id missing .nuspec"
