@@ -95,11 +95,11 @@ jobs:
             $ver = '${{ github.ref_name }}'.TrimStart('v')
           }
           ./build/fork.ps1 -ForkDir ../fickle-fsharp
-          $verArgs = if ($ver) { @('-Version', $ver) } else { @() }
+          [string[]]$verArgs = if ($ver) { '-Version', $ver } else { @() }
           ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp @verArgs
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
           $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
-          $verProps = if ($ver) { @("-p:Version=$ver") } else { @() }
+          [string[]]$verProps = if ($ver) { "-p:Version=$ver" } else { @() }
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
             $out = "./artifacts/publish-$rid"
             dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" @verProps

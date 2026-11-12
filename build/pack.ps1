@@ -36,7 +36,7 @@ $nupkgDir = [System.IO.Path]::Combine($OutputDir, 'nupkg')
 $publishDir = [System.IO.Path]::Combine($OutputDir, 'publish')
 
 $fcsProp = "-p:FickleFcsDir=$([System.IO.Path]::TrimEndingDirectorySeparator($fcsDir))$([System.IO.Path]::DirectorySeparatorChar)"
-$versionProps = if ($Version) { @("-p:Version=$Version") } else { @() }
+[string[]]$versionProps = if ($Version) { "-p:Version=$Version" } else { @() }
 
 Push-Location $repoRoot
 try {

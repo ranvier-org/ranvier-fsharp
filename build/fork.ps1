@@ -15,25 +15,34 @@ $env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
 
 $fcsDir = [System.IO.Path]::Combine($ForkDir, 'artifacts', 'bin', 'FSharp.Compiler.Service', 'Release', 'net10.0')
 $fcsDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.dll')
+$fcsXml = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.xml')
 $fsharpCoreDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Core.dll')
+$fsharpCoreXml = [System.IO.Path]::Combine($fcsDir, 'FSharp.Core.xml')
 
 Push-Location $ForkDir
 try {
     # `src/FSharp.Build` must be restored and built before `src/Compiler` (`UseBootstrappedFSharpBuildTasks=true` invokes it
-    # via <MSBuild> without running Restore). `-p:FSHARPCORE_USE_PACKAGE=false` ensures the fork's `FSharp.Core.dll` is built
-    # and placed alongside `FSharp.Compiler.Service.dll` in `artifacts/bin/FSharp.Compiler.Service/Release/net10.0/`.
-    foreach ($project in 'buildtools/fslex', 'buildtools/fsyacc', 'src/FSharp.Build', 'src/Compiler') {
+    # via <MSBuild> without running Restore). `CopyLocalLockFileAssemblies=true` + `CopyDocumentationFilesFromPackages=true`
+    # places the referenced `FSharp.Core.dll` and `FSharp.Core.xml` (10.0.x) alongside `FSharp.Compiler.Service.dll`.
+    foreach ($project in 'buildtools/fslex', 'buildtools/fsyacc', 'src/FSharp.Build') {
         Write-Host "dotnet build -c Release $project"
-        $extraProps = if ($project -eq 'src/Compiler') { @('-p:FSHARPCORE_USE_PACKAGE=false') } else { @() }
-        dotnet build -c Release --no-incremental -p:FSharpNetCoreProductTargetFramework=net10.0 @extraProps $project
+        dotnet build -c Release --no-incremental -p:FSharpNetCoreProductTargetFramework=net10.0 $project
         if ($LASTEXITCODE -ne 0) { throw "Build of $project failed with exit code $LASTEXITCODE" }
     }
+
+    Write-Host "dotnet build -c Release src/Compiler"
+    dotnet build -c Release --no-incremental `
+        -p:FSharpNetCoreProductTargetFramework=net10.0 `
+        -p:CopyLocalLockFileAssemblies=true `
+        -p:CopyDocumentationFilesFromPackages=true `
+        src/Compiler
+    if ($LASTEXITCODE -ne 0) { throw "Build of src/Compiler failed with exit code $LASTEXITCODE" }
 }
 finally {
     Pop-Location
 }
 
-if (-not (Test-Path $fcsDll)) { throw "Expected $fcsDll after the build, but it does not exist" }
-if (-not (Test-Path $fsharpCoreDll)) { throw "Expected $fsharpCoreDll after the build, but it does not exist" }
-Write-Host "OK: $fcsDll ($((Get-Item $fcsDll).LastWriteTime))"
-Write-Host "OK: $fsharpCoreDll ($((Get-Item $fsharpCoreDll).LastWriteTime))"
+foreach ($expected in $fcsDll, $fcsXml, $fsharpCoreDll, $fsharpCoreXml) {
+    if (-not (Test-Path $expected)) { throw "Expected $expected after the build, but it does not exist" }
+    Write-Host "OK: $expected ($((Get-Item $expected).LastWriteTime))"
+}
