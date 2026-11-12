@@ -21,6 +21,8 @@
 param(
     [string]$NupkgDir = '',
     [string]$Version = '',
+    [string]$ToolVersion = '',
+    [switch]$ToolOnly,
     [switch]$OnlineOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -33,16 +35,22 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
-if (-not $Version) {
-    $propsXml = [xml](Get-Content -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Raw)
-    $verNode = $propsXml.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ } | Select-Object -First 1
-    if ($verNode -is [System.Xml.XmlElement]) {
-        $Version = $verNode.InnerText.Trim()
-    } else {
-        $Version = "$verNode".Trim()
-    }
+$propsXml = [xml](Get-Content -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Raw)
+$libVerNode = $propsXml.Project.PropertyGroup | ForEach-Object { if ($_.LibraryVersion) { $_.LibraryVersion } else { $_.Version } } | Where-Object { $_ } | Select-Object -First 1
+$defaultLibVer = if ($libVerNode -is [System.Xml.XmlElement]) { $libVerNode.InnerText.Trim() } else { "$libVerNode".Trim() }
+$toolVerNode = $propsXml.Project.PropertyGroup | ForEach-Object { $_.ToolVersion } | Where-Object { $_ } | Select-Object -First 1
+$defaultToolVer = if ($toolVerNode -is [System.Xml.XmlElement]) { $toolVerNode.InnerText.Trim() } elseif ($toolVerNode) { "$toolVerNode".Trim() } else { $defaultLibVer }
+
+if ($Version -and -not $ToolVersion) {
+    $ToolVersion = $Version
 }
-if (-not $Version) { throw "Could not determine package version." }
+if (-not $Version) {
+    $Version = $defaultLibVer
+}
+if (-not $ToolVersion) {
+    $ToolVersion = $defaultToolVer
+}
+if (-not $Version -or -not $ToolVersion) { throw "Could not determine package version(s)." }
 
 if (-not $OnlineOnly) {
     if (-not $NupkgDir) {
@@ -110,15 +118,18 @@ $expectedSpecs = @(
     @{ Id = 'Ranvier.AutoComplete';          Tool = $true;  Asm = 'ranvierautocomplete'; Traced = $false; Sibling = '';                      RanvierDep = '';               ExtraLibs = @(); HasTargets = $false }
 )
 
+$specsToCheck = if ($ToolOnly) { @($expectedSpecs | Where-Object { $_.Tool }) } else { $expectedSpecs }
+
 if (-not $OnlineOnly) {
-    Write-Host "=== [1/5] Inspecting 7 .nupkg archives in $NupkgDir (version $Version)" -ForegroundColor Cyan
+    Write-Host "=== [1/5] Inspecting $($specsToCheck.Count) .nupkg archive(s) in $NupkgDir (libs=$Version, tool=$ToolVersion, ToolOnly=$ToolOnly)" -ForegroundColor Cyan
     $actualFiles = @(Get-ChildItem -LiteralPath $NupkgDir -Filter '*.nupkg' | Select-Object -ExpandProperty Name | Sort-Object)
-    $expectedFiles = @($expectedSpecs | ForEach-Object { "$($_.Id).$Version.nupkg" } | Sort-Object)
+    $expectedFiles = @($specsToCheck | ForEach-Object { $v = if ($_.Tool) { $ToolVersion } else { $Version }; "$($_.Id).$v.nupkg" } | Sort-Object)
     Assert-True (($actualFiles -join ';') -eq ($expectedFiles -join ';')) "Expected packages [$($expectedFiles -join ', ')], found [$($actualFiles -join ', ')]"
 
-    foreach ($spec in $expectedSpecs) {
+    foreach ($spec in $specsToCheck) {
         $id = $spec.Id
-        $pkgPath = Join-Path $NupkgDir "$id.$Version.nupkg"
+        $expectedVer = if ($spec.Tool) { $ToolVersion } else { $Version }
+        $pkgPath = Join-Path $NupkgDir "$id.$expectedVer.nupkg"
         $zip = [System.IO.Compression.ZipFile]::OpenRead($pkgPath)
         try {
             $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
@@ -139,7 +150,7 @@ if (-not $OnlineOnly) {
             $meta = $nuspecXml.package.metadata
 
             Assert-True ($meta.id -eq $id) "$id .nuspec id mismatch: $($meta.id)"
-            Assert-True ($meta.version -eq $Version) "$id .nuspec version mismatch: $($meta.version)"
+            Assert-True ($meta.version -eq $expectedVer) "$id .nuspec version mismatch: $($meta.version)"
             Assert-True ($meta.license.InnerText -eq 'MIT') "$id missing MIT license"
             Assert-True ($meta.readme -eq 'README.md') "$id missing readme metadata"
             Assert-True ($meta.repository.url -eq 'https://github.com/ranvier-org/ranvier-fsharp') "$id missing repository url"
@@ -147,6 +158,9 @@ if (-not $OnlineOnly) {
             if ($spec.Tool) {
                 $pkgTypes = @($meta.packageTypes.packageType | ForEach-Object { $_.name })
                 Assert-True ($pkgTypes -contains 'DotnetTool') "$id missing DotnetTool packageType"
+                $toolGroupDeps = @($meta.dependencies.group | ForEach-Object { $_.dependency } | Where-Object { $null -ne $_ })
+                $toolTopDeps = @($meta.dependencies.dependency | Where-Object { $null -ne $_ })
+                Assert-True (($toolGroupDeps.Count + $toolTopDeps.Count) -eq 0) "$id DotnetTool .nuspec must not declare NuGet package dependencies"
                 Assert-True ($entries -contains 'tools/net10.0/any/DotnetToolSettings.xml') "$id missing DotnetToolSettings.xml"
                 Assert-True ($entries -contains 'tools/net10.0/any/ranvierautocomplete.dll') "$id missing ranvierautocomplete.dll"
                 Assert-True ($entries -contains 'tools/net10.0/any/FSharp.Compiler.Service.dll') "$id missing FSharp.Compiler.Service.dll"
@@ -198,7 +212,7 @@ if (-not $OnlineOnly) {
                 Assert-True ($hasTrace -eq $spec.Traced) "$id $dllEntry RanvierTrace attribute expected $($spec.Traced), got $hasTrace"
             }
 
-            Write-Host "  OK: $id.$Version.nupkg" -ForegroundColor Green
+            Write-Host "  OK: $id.$expectedVer.nupkg" -ForegroundColor Green
         }
         finally {
             $zip.Dispose()
@@ -275,17 +289,23 @@ let addNumbers (x: int) (y: int) : int =
     # -------------------------------------------------------------------------
     # Smoke Test 1: Ranvier.AutoComplete CLI tool
     # -------------------------------------------------------------------------
-    Write-Host "=== [3/5] Smoke-testing Ranvier.AutoComplete CLI tool ($Version)" -ForegroundColor Cyan
+    Write-Host "=== [3/5] Smoke-testing Ranvier.AutoComplete CLI tool ($ToolVersion)" -ForegroundColor Cyan
     $toolDir = Join-Path $workDir 'tool-bin'
-    dotnet tool install Ranvier.AutoComplete --tool-path $toolDir --version $Version --configfile $nugetConfigPath
+    dotnet tool install Ranvier.AutoComplete --tool-path $toolDir --version $ToolVersion --configfile $nugetConfigPath
     if ($LASTEXITCODE -ne 0) { throw "dotnet tool install Ranvier.AutoComplete failed" }
+
+    if (-not $ToolVersion.Contains('-')) {
+        $defaultToolDir = Join-Path $workDir 'tool-bin-default'
+        dotnet tool install Ranvier.AutoComplete --tool-path $defaultToolDir --configfile $nugetConfigPath
+        if ($LASTEXITCODE -ne 0) { throw "dotnet tool install Ranvier.AutoComplete (without --prerelease) failed" }
+    }
 
     $toolExe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { Join-Path $toolDir 'ranvierautocomplete.exe' } else { Join-Path $toolDir 'ranvierautocomplete' }
     Assert-True (Test-Path $toolExe) "Tool executable not found at $toolExe"
 
     $verOut = (& $toolExe --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
-    Assert-True ($verOut -eq "ranvierautocomplete $Version" -or $verOut.StartsWith("ranvierautocomplete $Version+")) "Expected 'ranvierautocomplete $Version[+sha]', got '$verOut'"
+    Assert-True ($verOut -eq "ranvierautocomplete $ToolVersion" -or $verOut.StartsWith("ranvierautocomplete $ToolVersion+")) "Expected 'ranvierautocomplete $ToolVersion[+sha]', got '$verOut'"
 
     $helpOut = (& $toolExe --help | Out-String)
     if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --help failed" }
@@ -333,7 +353,7 @@ let addNumbers (x: int) (y: int) : int =
         Send-LspFrame $proc.StandardInput.BaseStream "{`"jsonrpc`":`"2.0`",`"id`":1,`"method`":`"initialize`",`"params`":{`"processId`":$PID,`"rootUri`":`"$rootUri`",`"capabilities`":{}}}"
         $initResp = Read-LspFrame $proc.StandardOutput.BaseStream
         Assert-True ($initResp.Contains('"hoverProvider":true')) "CLI tool initialize response missing hoverProvider"
-        Assert-True ($initResp.Contains("`"version`":`"$Version`"")) "CLI tool initialize serverInfo.version mismatch: $initResp"
+        Assert-True ($initResp.Contains("`"version`":`"$ToolVersion`"")) "CLI tool initialize serverInfo.version mismatch: $initResp"
 
         Send-LspFrame $proc.StandardInput.BaseStream '{"jsonrpc":"2.0","method":"initialized","params":{}}'
         Send-LspFrame $proc.StandardInput.BaseStream '{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}'
@@ -354,6 +374,7 @@ let addNumbers (x: int) (y: int) : int =
         $proc.Dispose()
     }
 
+    if (-not $ToolOnly) {
     # -------------------------------------------------------------------------
     # Smoke Test 2: Untraced F# Library Stack + Traced F# Library Stack
     # -------------------------------------------------------------------------
@@ -647,9 +668,10 @@ Console.WriteLine("OK: CSharpConsumer resolved FSharp.Core + FSharp.Compiler.Ser
     finally {
         Pop-Location
     }
+    }
 
     Write-Host ""
-    Write-Host "ALL PACKAGE VERIFICATIONS PASSED (version $Version, OnlineOnly=$OnlineOnly)!" -ForegroundColor Green
+    Write-Host "ALL PACKAGE VERIFICATIONS PASSED (libs=$Version, tool=$ToolVersion, ToolOnly=$ToolOnly, OnlineOnly=$OnlineOnly)!" -ForegroundColor Green
 }
 finally {
     $env:NUGET_PACKAGES = $prevNugetPackages

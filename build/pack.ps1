@@ -23,6 +23,8 @@ param(
     [string]$Runtime = '',
     [string[]]$Runtimes = @(),
     [string]$Version = '',
+    [string]$ToolVersion = '',
+    [switch]$ToolOnly,
     [switch]$BuildFork
 )
 $ErrorActionPreference = 'Stop'
@@ -58,7 +60,19 @@ $nupkgDir = [System.IO.Path]::Combine($OutputDir, 'nupkg')
 $publishDir = [System.IO.Path]::Combine($OutputDir, 'publish')
 
 $fcsProp = "-p:FickleFcsDir=$([System.IO.Path]::TrimEndingDirectorySeparator($fcsDir))$([System.IO.Path]::DirectorySeparatorChar)"
-[string[]]$verArgs = if ($Version) { @("-p:Version=$Version") } else { @() }
+[string[]]$verArgs = @()
+if ($Version -and $ToolVersion) {
+    $verArgs += "-p:LibraryVersion=$Version"
+    $verArgs += "-p:ToolVersion=$ToolVersion"
+}
+elseif ($Version) {
+    $verArgs += "-p:Version=$Version"
+}
+elseif ($ToolVersion) {
+    $verArgs += "-p:ToolVersion=$ToolVersion"
+}
+
+$projectsToPackUntraced = if ($ToolOnly) { @($toolProj) } else { $untracedPackProjects }
 
 $allRids = @()
 if ($Runtime) { $allRids += $Runtime }
@@ -94,23 +108,25 @@ try {
     }
 
     Write-Host "=== Packing untraced NuGet packages -> $nupkgDir" -ForegroundColor Cyan
-    foreach ($proj in $untracedPackProjects) {
+    foreach ($proj in $projectsToPackUntraced) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($proj)
         Write-Host "  -> Packing $name ($Configuration)"
         dotnet pack $proj -c $Configuration --no-build --no-restore -o $nupkgDir $fcsProp @verArgs
         if ($LASTEXITCODE -ne 0) { throw "dotnet pack ($name) failed with exit code $LASTEXITCODE" }
     }
 
-    Write-Host "=== Building traced library graph ($Configuration, RanvierTrace=true)" -ForegroundColor Cyan
-    dotnet build $serverProj -c $Configuration -p:RanvierTrace=true --no-incremental $fcsProp @verArgs
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build (traced) failed with exit code $LASTEXITCODE" }
+    if (-not $ToolOnly) {
+        Write-Host "=== Building traced library graph ($Configuration, RanvierTrace=true)" -ForegroundColor Cyan
+        dotnet build $serverProj -c $Configuration -p:RanvierTrace=true --no-incremental $fcsProp @verArgs
+        if ($LASTEXITCODE -ne 0) { throw "dotnet build (traced) failed with exit code $LASTEXITCODE" }
 
-    Write-Host "=== Packing traced NuGet packages (.Traced) -> $nupkgDir" -ForegroundColor Cyan
-    foreach ($proj in $tracedPackProjects) {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($proj)
-        Write-Host "  -> Packing $name.Traced ($Configuration, RanvierTrace=true)"
-        dotnet pack $proj -c $Configuration -p:RanvierTrace=true --no-build --no-restore -o $nupkgDir $fcsProp @verArgs
-        if ($LASTEXITCODE -ne 0) { throw "dotnet pack ($name.Traced) failed with exit code $LASTEXITCODE" }
+        Write-Host "=== Packing traced NuGet packages (.Traced) -> $nupkgDir" -ForegroundColor Cyan
+        foreach ($proj in $tracedPackProjects) {
+            $name = [System.IO.Path]::GetFileNameWithoutExtension($proj)
+            Write-Host "  -> Packing $name.Traced ($Configuration, RanvierTrace=true)"
+            dotnet pack $proj -c $Configuration -p:RanvierTrace=true --no-build --no-restore -o $nupkgDir $fcsProp @verArgs
+            if ($LASTEXITCODE -ne 0) { throw "dotnet pack ($name.Traced) failed with exit code $LASTEXITCODE" }
+        }
     }
 }
 finally {

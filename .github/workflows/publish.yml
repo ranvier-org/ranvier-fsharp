@@ -6,6 +6,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'ranvierautocomplete-v*'
   workflow_run:
     workflows: [CI]
     branches: [main, master]
@@ -16,6 +17,10 @@ on:
         description: 'Validate OIDC login and package artifacts without pushing to NuGet.org'
         type: boolean
         default: true
+      tool_only:
+        description: 'Pack, verify, and publish only the Ranvier.AutoComplete CLI tool'
+        type: boolean
+        default: false
       version:
         description: 'Optional package version override when packing on tag/dispatch (defaults to Directory.Build.props / tag)'
         required: false
@@ -90,26 +95,50 @@ jobs:
         shell: pwsh
         working-directory: ranvier-fsharp
         run: |
+          $refName = '${{ github.ref_name }}'
+          $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
           $ver = '${{ inputs.version }}'
           if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
-            $ver = '${{ github.ref_name }}'.TrimStart('v')
+            if ($isToolTag) {
+              $ver = $refName.Substring('ranvierautocomplete-v'.Length)
+            } else {
+              $ver = $refName.TrimStart('v')
+            }
           }
           ./build/fork.ps1 -ForkDir ../fickle-fsharp
-          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
+          if ($toolOnly) {
+            ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -ToolOnly -ToolVersion $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
+          } else {
+            ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
+          }
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
             Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
           }
 
-      - name: Verify all 7 NuGet packages & isolated consumer smoke tests
+      - name: Verify NuGet packages & isolated consumer smoke tests
         shell: pwsh
         working-directory: ranvier-fsharp
         run: |
+          $refName = '${{ github.ref_name }}'
+          $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
           $ver = '${{ inputs.version }}'
           if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
-            $ver = '${{ github.ref_name }}'.TrimStart('v')
+            if ($isToolTag) {
+              $ver = $refName.Substring('ranvierautocomplete-v'.Length)
+            } else {
+              $ver = $refName.TrimStart('v')
+            }
           }
-          if ($ver) {
+          if ($toolOnly) {
+            if ($ver) {
+              ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -ToolOnly -ToolVersion $ver
+            } else {
+              ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -ToolOnly
+            }
+          } elseif ($ver) {
             ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -Version $ver
           } else {
             ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
@@ -136,15 +165,22 @@ jobs:
         shell: pwsh
         working-directory: ranvier-fsharp
         run: |
-          $orderedIds = @(
-            'Ranvier.FSharp.Lsp',
-            'Ranvier.FSharp.Projects',
-            'Ranvier.FSharp.Checker',
-            'Ranvier.FSharp.Checker.Traced',
-            'Ranvier.FSharp.Server',
-            'Ranvier.FSharp.Server.Traced',
-            'Ranvier.AutoComplete'
-          )
+          $refName = '${{ github.ref_name }}'
+          $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
+          $orderedIds = if ($toolOnly) {
+            @('Ranvier.AutoComplete')
+          } else {
+            @(
+              'Ranvier.FSharp.Lsp',
+              'Ranvier.FSharp.Projects',
+              'Ranvier.FSharp.Checker',
+              'Ranvier.FSharp.Checker.Traced',
+              'Ranvier.FSharp.Server',
+              'Ranvier.FSharp.Server.Traced',
+              'Ranvier.AutoComplete'
+            )
+          }
           $allNupkgs = @(Get-ChildItem ./artifacts/nupkg/*.nupkg)
           if ($allNupkgs.Count -ne $orderedIds.Count) {
             throw "Expected $($orderedIds.Count) .nupkg files in ./artifacts/nupkg, found $($allNupkgs.Count)"
@@ -164,8 +200,14 @@ jobs:
         shell: pwsh
         working-directory: ranvier-fsharp
         run: |
-          gh release create '${{ github.ref_name }}' `
+          $refName = '${{ github.ref_name }}'
+          $title = if ($refName.StartsWith('ranvierautocomplete-v')) {
+            "Ranvier.AutoComplete v$($refName.Substring('ranvierautocomplete-v'.Length))"
+          } else {
+            $refName
+          }
+          gh release create $refName `
             ./artifacts/nupkg/*.nupkg `
             ./artifacts/*.zip `
             --generate-notes `
-            --title '${{ github.ref_name }}'
+            --title $title

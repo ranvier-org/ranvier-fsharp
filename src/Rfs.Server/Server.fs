@@ -1149,7 +1149,16 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.SetTrace(_) = ignoreNotification
 
     static member val Version: string =
-        let asm = typeof<RanvierServer>.Assembly
+        let entryAsm = Reflection.Assembly.GetEntryAssembly()
+
+        let asm =
+            if
+                not (isNull entryAsm)
+                && String.Equals(entryAsm.GetName().Name, "ranvierautocomplete", StringComparison.OrdinalIgnoreCase)
+            then
+                entryAsm
+            else
+                typeof<RanvierServer>.Assembly
 
         match Attribute.GetCustomAttribute(asm, typeof<Reflection.AssemblyInformationalVersionAttribute>) with
         | :? Reflection.AssemblyInformationalVersionAttribute as attr when not (String.IsNullOrWhiteSpace attr.InformationalVersion) ->

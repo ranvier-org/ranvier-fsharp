@@ -27,12 +27,15 @@ type internal CliAction =
     | RunServer of RunOptions * unrecognized: string list
 
 let internal informationalVersion () : string =
-    let asm = typeof<RanvierServer>.Assembly
+    let asm = typeof<RunOptions>.Assembly
 
     match Attribute.GetCustomAttribute(asm, typeof<AssemblyInformationalVersionAttribute>) with
     | :? AssemblyInformationalVersionAttribute as attr when not (String.IsNullOrWhiteSpace attr.InformationalVersion) ->
         attr.InformationalVersion
-    | _ -> RanvierServer.Version
+    | _ ->
+        match asm.GetName().Version with
+        | null -> RanvierServer.Version
+        | v -> v.ToString()
 
 let internal helpText () : string =
     String.Join(

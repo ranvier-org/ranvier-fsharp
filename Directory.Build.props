@@ -8,7 +8,9 @@
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
 
     <!-- Package and SourceLink metadata (individual library/tool projects opt in with IsPackable=true). -->
-    <Version Condition="'$(Version)' == ''">0.1.0-preview.3</Version>
+    <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.0-preview.3</LibraryVersion>
+    <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.0</ToolVersion>
+    <Version Condition="'$(Version)' == ''">$(LibraryVersion)</Version>
     <Authors>shayanhabibi</Authors>
     <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

@@ -197,7 +197,11 @@ let tests =
               | other -> failtest $"expected RunServer, got %A{other}"
 
           testTask "--version and --help exit 0 without blocking on stdin" {
-              for flag, expectedPrefix in [ "--version", "ranvierautocomplete "; "--help", "ranvierautocomplete " ] do
+              let expectedToolVer = (Rfs.Server.Program.informationalVersion ()).Split('+')[0]
+
+              for flag, expectedPrefix in
+                  [ "--version", $"ranvierautocomplete {expectedToolVer}"
+                    "--help", $"ranvierautocomplete {expectedToolVer}" ] do
                   let info = ProcessStartInfo("dotnet")
                   info.ArgumentList.Add serverDll
                   info.ArgumentList.Add flag
@@ -274,8 +278,9 @@ let tests =
                       send """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}"""
                       let! (initReply: JsonNode) = readFrame proc.StandardOutput.BaseStream |> within
                       let serverInfo = initReply |> at "result" |> at "serverInfo"
+                      let expectedToolVer = (Rfs.Server.Program.informationalVersion ()).Split('+')[0]
                       Expect.equal ((at "name" serverInfo).GetValue<string>()) "ranvierautocomplete" "serverInfo.name"
-                      Expect.isNotEmpty ((at "version" serverInfo).GetValue<string>()) "serverInfo.version is populated"
+                      Expect.equal ((at "version" serverInfo).GetValue<string>()) expectedToolVer "serverInfo.version matches tool assembly version"
 
                       send """{"jsonrpc":"2.0","id":2,"method":"shutdown"}"""
                       let! _ = readFrame proc.StandardOutput.BaseStream |> within

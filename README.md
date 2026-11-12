@@ -52,12 +52,12 @@ Measured on identical multi-project corpora (`results/server-final/`):
 
 From NuGet.org:
 ```bash
-dotnet tool install -g Ranvier.AutoComplete --prerelease
+dotnet tool install -g Ranvier.AutoComplete
 ```
 
 Or from a locally packed `.nupkg` (see [Building & Packing from Source](#building--packing-from-source)):
 ```bash
-dotnet tool install -g Ranvier.AutoComplete --add-source ./artifacts/nupkg --prerelease
+dotnet tool install -g Ranvier.AutoComplete --add-source ./artifacts/nupkg
 ```
 
 Verify installation:
@@ -366,17 +366,27 @@ This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp
    ```bash
    git -C ../fickle-fsharp push origin fickle_decl
    ```
-2. Push `main` and tag a release (`v0.1.0-preview.3`):
+2. Push `main` and tag either a standalone CLI tool release (`ranvierautocomplete-v0.1.0`) or a full workspace suite release (`v0.1.0-preview.3`):
    ```bash
    git push -u origin main
-   git tag v0.1.0-preview.3
-   git push origin v0.1.0-preview.3
+
+   # Release Ranvier.AutoComplete CLI tool + standalone archives:
+   git tag ranvierautocomplete-v0.1.0
+   git push origin ranvierautocomplete-v0.1.0
+
+   # Or release all 7 NuGet packages (libraries + CLI tool):
+   # git tag v0.1.0-preview.3
+   # git push origin v0.1.0-preview.3
    ```
-   The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, runs isolated consumer smoke tests on all 7 packages (`build/verify-packages.ps1`), pushes them to NuGet.org in dependency tier order, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` files to a GitHub Release.
+   The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, runs isolated consumer smoke tests (`build/verify-packages.ps1`), pushes to NuGet.org, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` files to a GitHub Release.
 
 To verify published packages live from `https://api.nuget.org/v3/index.json` in a clean NuGet cache:
 ```powershell
-pwsh -File build/verify-packages.ps1 -OnlineOnly -Version 0.1.0-preview.3
+# Verify the 0.1.0 CLI tool:
+pwsh -File build/verify-packages.ps1 -OnlineOnly -ToolOnly -ToolVersion 0.1.0
+
+# Verify the full library + tool suite:
+pwsh -File build/verify-packages.ps1 -OnlineOnly
 ```
 
 ---
