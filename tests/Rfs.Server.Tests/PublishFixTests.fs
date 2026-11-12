@@ -221,16 +221,19 @@ let fixTests =
           }
 
           testTask "a reload keeps no state for the replaced graph" {
-              let! s = startSession () |> within
+              let dir = copyFixtureDir "Deps"
+              let proj = Path.Combine(dir, "Deps.fsproj")
+              let aCopy = Path.Combine(dir, "A.fs")
+              let! s = startSessionWith dir [ proj ] true ignore |> within
               use _ = disposing s
-              do! openAll s [ a ]
-              do! eventually "the open publish" (fun () -> hasVersion s a 0)
+              do! openAll s [ aCopy ]
+              do! eventually "the open publish" (fun () -> hasVersion s aCopy 0)
               do! s.Server.Publisher.Flushed()
               let! before = s.Server.Publisher.RetainedGraphs()
               let counts = s.Counts.Count
-              let published = (publishesOf s a).Length
-              do! s.Server.Workspace.Reload depsProject |> within
-              do! eventually "the publish after the reload" (fun () -> (publishesOf s a).Length > published && s.Counts.Count > counts)
+              let published = (publishesOf s aCopy).Length
+              do! s.Server.Workspace.Reload proj |> within
+              do! eventually "the publish after the reload" (fun () -> (publishesOf s aCopy).Length > published && s.Counts.Count > counts)
               do! s.Server.Publisher.Flushed()
               let! after = s.Server.Publisher.RetainedGraphs()
               Expect.equal after before "state is kept for the live graph only"

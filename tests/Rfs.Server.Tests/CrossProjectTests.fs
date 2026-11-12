@@ -37,9 +37,19 @@ let private copyMulti () =
     root
 
 let private buildAgain (project: string) =
-    let psi = ProcessStartInfo("dotnet", $"build \"{project}\" -v q --nologo")
+    let full = Path.GetFullPath project
+    let psi = ProcessStartInfo("dotnet", $"build \"{full}\" -v q --nologo --disable-build-servers")
+    psi.WorkingDirectory <- Path.GetDirectoryName full
+    psi.UseShellExecute <- false
+    psi.CreateNoWindow <- true
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
+    psi.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+    psi.Environment.Remove "MSBuildExtensionsPath" |> ignore
+    psi.Environment.Remove "MSBuildSDKsPath" |> ignore
+    psi.Environment.Remove "DOTNET_HOST_PATH" |> ignore
+    psi.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
+    psi.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
     use p = Process.Start psi
     let out = p.StandardOutput.ReadToEndAsync()
     let err = p.StandardError.ReadToEndAsync()
@@ -70,9 +80,11 @@ let private errorsOf (s: Session) (path: string) =
 let private toString = "let f (x: int) : string = string x"
 let private toInt = "let f (x: int) : int = x + 1"
 
+let private multiSequenced = testSequencedGroup "MultiSharedFixture"
+
 [<Tests>]
 let tests =
-    testSequenced
+    multiSequenced
     <| testList
         "CrossProject"
         [ testTask "server publishes App's open file after a Lib edit" {
@@ -206,7 +218,7 @@ let tests =
 
 [<Tests>]
 let burstTests =
-    testSequenced
+    multiSequenced
     <| testList
         "Workspace graph bursts"
         [ testTask "a branch switch's burst of watched-file changes reloads each project once" {

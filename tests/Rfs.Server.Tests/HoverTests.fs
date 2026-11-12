@@ -450,9 +450,11 @@ let tests =
           }
 
           testTask "a hover while its project reloads answers null" {
-              let! s = startSession () |> within
+              let dir = PublishFixTests.copyFixtureDir "Deps"
+              let proj = Path.Combine(dir, "Deps.fsproj")
+              let! s = startSessionWith dir [ proj ] true ignore |> within
               use _ = disposing s
-              let d = file "D.fs"
+              let d = Path.Combine(dir, "D.fs")
               let graph = (s.Server.Workspace.ProjectOf d).Value
               let gate = new ManualResetEventSlim(false)
               graph.OnScopedCheck(fun path -> if path.EndsWith "D.fs" then gate.Wait(TimeSpan.FromSeconds 60.) |> ignore)

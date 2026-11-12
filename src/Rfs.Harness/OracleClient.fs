@@ -38,8 +38,14 @@ type OracleClient private (proc: Process, stderrTail: Queue<string>) =
             psi.StandardInputEncoding <- UTF8Encoding false
             psi.StandardOutputEncoding <- UTF8Encoding false
             psi.UseShellExecute <- false
+            psi.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+            psi.Environment.Remove "MSBuildExtensionsPath" |> ignore
+            psi.Environment.Remove "MSBuildSDKsPath" |> ignore
+            psi.Environment.Remove "DOTNET_HOST_PATH" |> ignore
             // The oracle also sets it for itself; the child's environment is the one place it is certain to be read late enough.
             psi.Environment["FICKL_FCS_SIGNATURE_CUTOFF"] <- "0"
+            psi.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
+            psi.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
             let proc = Process.Start psi
             let tail = Queue<string>()
 

@@ -283,7 +283,7 @@ let slnxAndWorkspaceItemsTests =
   <ItemGroup>
     <PackageReference Include="FSharp.Core" Version="9.0.100" ExcludeAssets="all" />
     <Reference Include="FSharp.Core">
-      <HintPath>{Environment.GetEnvironmentVariable "RFS_TEST_FCS_DIR" |> Option.ofObj |> Option.defaultValue @"C:\Users\shaya\RiderProjects\fickle-fsharp-i1\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\"}FSharp.Core.dll</HintPath>
+      <HintPath>{Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")}</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>

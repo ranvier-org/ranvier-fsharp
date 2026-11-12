@@ -331,15 +331,17 @@ let tests =
           }
 
           test "the load timeout comes from RFS_LOAD_TIMEOUT_MS" {
-              let previous = Environment.GetEnvironmentVariable "RFS_LOAD_TIMEOUT_MS"
+              Expect.equal (Workspace.ParseLoadTimeout null) (TimeSpan.FromMinutes 10.) "ten minutes when unset"
+              Expect.equal (Workspace.ParseLoadTimeout "") (TimeSpan.FromMinutes 10.) "ten minutes when empty"
+              Expect.equal (Workspace.ParseLoadTimeout "250") (TimeSpan.FromMilliseconds 250.) "read from positive milliseconds"
+              Expect.equal (Workspace.ParseLoadTimeout "0") (TimeSpan.FromMinutes 10.) "non-positive falls back to default"
+              Expect.equal (Workspace.ParseLoadTimeout "-5") (TimeSpan.FromMinutes 10.) "negative falls back to default"
+              Expect.equal (Workspace.ParseLoadTimeout "invalid") (TimeSpan.FromMinutes 10.) "unparseable falls back to default"
 
-              try
-                  Environment.SetEnvironmentVariable("RFS_LOAD_TIMEOUT_MS", null)
-                  Expect.equal (Workspace.DefaultLoadTimeout()) (TimeSpan.FromMinutes 10.) "ten minutes by default"
-                  Environment.SetEnvironmentVariable("RFS_LOAD_TIMEOUT_MS", "250")
-                  Expect.equal (Workspace.DefaultLoadTimeout()) (TimeSpan.FromMilliseconds 250.) "read from the variable"
-              finally
-                  Environment.SetEnvironmentVariable("RFS_LOAD_TIMEOUT_MS", previous)
+              Expect.equal
+                  (Workspace.DefaultLoadTimeout())
+                  (Workspace.ParseLoadTimeout(Environment.GetEnvironmentVariable "RFS_LOAD_TIMEOUT_MS"))
+                  "DefaultLoadTimeout delegates to RFS_LOAD_TIMEOUT_MS"
           }
 
           testTask "open texts are applied again when a project is reloaded" {

@@ -501,8 +501,10 @@ let tests =
           }
 
           testTask "a failed restart is shown, naming the project, until a reload succeeds" {
-              use! r = start true
-              do! load r
+              let dir = copyFixtureDir "Deps"
+              let proj = Path.Combine(dir, "Deps.fsproj")
+              use! r = startIn dir true ignore
+              do! loadProject r proj
               do! quiet r
               let before = r.Seen.Length
               let graph = r.Server.Workspace.Projects.Head
@@ -514,7 +516,7 @@ let tests =
 
               do! Task.Delay 500
               Expect.equal (List.last r.Seen) "begin Restart failed: Deps.fsproj" "shown while the project is dead"
-              do! r.Server.Workspace.Reload depsProject |> within
+              do! r.Server.Workspace.Reload proj |> within
               let! seen = settledEvents r
               Expect.equal (List.last seen) "end" "cleared by the reload"
               do! settledStatus r

@@ -269,11 +269,19 @@ module ProjectSpec =
 
     let private restore (fsproj: string) =
         task {
-            let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\"")
+            let psi = ProcessStartInfo("dotnet", $"restore \"{fsproj}\" --disable-build-servers")
             // Restores with the SDK the load builds with
             psi.WorkingDirectory <- sdkDirectory ()
+            psi.UseShellExecute <- false
+            psi.CreateNoWindow <- true
             psi.RedirectStandardOutput <- true
             psi.RedirectStandardError <- true
+            psi.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+            psi.Environment.Remove "MSBuildExtensionsPath" |> ignore
+            psi.Environment.Remove "MSBuildSDKsPath" |> ignore
+            psi.Environment.Remove "DOTNET_HOST_PATH" |> ignore
+            psi.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
+            psi.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
             use p = Process.Start psi
             let stdout = p.StandardOutput.ReadToEndAsync()
             let stderr = p.StandardError.ReadToEndAsync()
@@ -1209,82 +1217,85 @@ module ProjectSpec =
                || t = "do()"
                || t = "()")
 
+    let private msbuildEvalGate = obj ()
+
     let private loadFresh
         (fsproj: string)
         (properties: (string * string) list)
         : ProjectSpec * (string list * (string * string * string) list) option =
-        // Attribute files generated into obj do not take part in declaration checking; what else a build generates there does
-        let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
-        let loader = WorkspaceLoader.Create(toolsPath (), properties)
+        lock msbuildEvalGate (fun () ->
+            // Attribute files generated into obj do not take part in declaration checking; what else a build generates there does
+            let generatedDir = objDir fsproj + string Path.DirectorySeparatorChar
+            let loader = WorkspaceLoader.Create(toolsPath (), properties)
 
-        let notes = System.Collections.Concurrent.ConcurrentQueue<string>()
-        loader.Notifications.Add(fun n -> notes.Enqueue(sprintf "%A" n))
+            let notes = System.Collections.Concurrent.ConcurrentQueue<string>()
+            loader.Notifications.Add(fun n -> notes.Enqueue(sprintf "%A" n))
 
-        match loader.LoadProjects([ fsproj ]) |> Seq.tryHead with
-        | None ->
-            let details = String.Join("; ", notes)
-            failwith $"Ionide.ProjInfo returned no project for {fsproj}: {details}"
-        | Some p ->
-            let isGenerated (f: string) =
-                f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase) && holdsOnlyAssemblyAttributes f
+            match loader.LoadProjects([ fsproj ]) |> Seq.tryHead with
+            | None ->
+                let details = String.Join("; ", notes)
+                failwith $"Ionide.ProjInfo returned no project for {fsproj}: {details}"
+            | Some p ->
+                let isGenerated (f: string) =
+                    f.StartsWith(generatedDir, StringComparison.OrdinalIgnoreCase) && holdsOnlyAssemblyAttributes f
 
-            let resolvedFramework (projectFile: string) (frameworks: string) =
-                match frameworks.Split(';', StringSplitOptions.RemoveEmptyEntries) with
-                | [||] -> ""
-                | [| only |] -> only
-                | candidates ->
-                    let dir = Path.GetDirectoryName projectFile + string Path.DirectorySeparatorChar
+                let resolvedFramework (projectFile: string) (frameworks: string) =
+                    match frameworks.Split(';', StringSplitOptions.RemoveEmptyEntries) with
+                    | [||] -> ""
+                    | [| only |] -> only
+                    | candidates ->
+                        let dir = Path.GetDirectoryName projectFile + string Path.DirectorySeparatorChar
 
-                    let inPath =
-                        p.OtherOptions
-                        |> List.tryPick (fun o ->
-                            if o.StartsWith "-r:" && o.Substring(3).StartsWith(dir, StringComparison.OrdinalIgnoreCase) then
-                                let segments = o.Substring(3).Split(Path.DirectorySeparatorChar)
-                                candidates |> Array.tryFind (fun c -> Array.contains c segments)
-                            else
-                                None)
+                        let inPath =
+                            p.OtherOptions
+                            |> List.tryPick (fun o ->
+                                if o.StartsWith "-r:" && o.Substring(3).StartsWith(dir, StringComparison.OrdinalIgnoreCase) then
+                                    let segments = o.Substring(3).Split(Path.DirectorySeparatorChar)
+                                    candidates |> Array.tryFind (fun c -> Array.contains c segments)
+                                else
+                                    None)
 
-                    defaultArg inPath "?"
+                        defaultArg inPath "?"
 
-            let sourceFiles = p.SourceFiles |> List.filter (isGenerated >> not)
-            let generatedFiles = p.SourceFiles |> List.filter isGenerated
+                let sourceFiles = p.SourceFiles |> List.filter (isGenerated >> not)
+                let generatedFiles = p.SourceFiles |> List.filter isGenerated
 
-            let items, evaluatedOpt =
-                try
-                    let evaluatedImports, evaluatedItems, probes =
-                        evaluateProjectDetails fsproj properties sourceFiles generatedFiles
+                let items, evaluatedOpt =
+                    try
+                        let evaluatedImports, evaluatedItems, probes =
+                            evaluateProjectDetails fsproj properties sourceFiles generatedFiles
 
-                    evaluatedItems, Some(evaluatedImports, probes)
-                with ex ->
-                    eprintfn
-                        "[ranvierautocomplete] %s: item/import evaluation failed, falling back to Compile items: %s"
-                        fsproj
-                        ex.Message
+                        evaluatedItems, Some(evaluatedImports, probes)
+                    with ex ->
+                        eprintfn
+                            "[ranvierautocomplete] %s: item/import evaluation failed, falling back to Compile items: %s"
+                            fsproj
+                            ex.Message
 
-                    let projectDir = Path.GetDirectoryName(Path.GetFullPath fsproj)
+                        let projectDir = Path.GetDirectoryName(Path.GetFullPath fsproj)
 
-                    let fallbackItems =
-                        [ for f in sourceFiles ->
-                              let full = Path.GetFullPath f
+                        let fallbackItems =
+                            [ for f in sourceFiles ->
+                                  let full = Path.GetFullPath f
 
-                              { Kind = ProjectItemKind.Compile
-                                FilePath = full
-                                VirtualPath = computeVirtualPath projectDir full "" []
-                                Metadata = [] } ]
+                                  { Kind = ProjectItemKind.Compile
+                                    FilePath = full
+                                    VirtualPath = computeVirtualPath projectDir full "" []
+                                    Metadata = [] } ]
 
-                    fallbackItems, None
+                        fallbackItems, None
 
-            let spec =
-                { ProjectFile = fsproj
-                  SourceFiles = sourceFiles
-                  OtherOptions = p.OtherOptions
-                  ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName)
-                  ReferencedFrameworks = p.ReferencedProjects |> List.map (fun r -> resolvedFramework r.ProjectFileName r.TargetFramework)
-                  TargetFramework = p.TargetFramework
-                  GeneratedFiles = generatedFiles
-                  Items = items }
+                let spec =
+                    { ProjectFile = fsproj
+                      SourceFiles = sourceFiles
+                      OtherOptions = p.OtherOptions
+                      ReferencedProjects = p.ReferencedProjects |> List.map (fun r -> r.ProjectFileName)
+                      ReferencedFrameworks = p.ReferencedProjects |> List.map (fun r -> resolvedFramework r.ProjectFileName r.TargetFramework)
+                      TargetFramework = p.TargetFramework
+                      GeneratedFiles = generatedFiles
+                      Items = items }
 
-            spec, evaluatedOpt
+                spec, evaluatedOpt)
 
     /// The path `spec` references `referenced`'s assembly by, as it appears in its `-r:`: the file of the name the
     /// project outputs (its reference assembly has the same name).
@@ -1320,23 +1331,34 @@ module ProjectSpec =
             failwith
                 $"{spec.ProjectFile}: {missing.Length} referenced assemblies are not on disk (build the referenced projects, build/fetch-corpus.ps1 does it for the corpus):\n{listed}"
 
+    let private projectLocks =
+        System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.SemaphoreSlim>(
+            if OperatingSystem.IsLinux() then StringComparer.Ordinal else StringComparer.OrdinalIgnoreCase
+        )
+
     /// Drops the cached spec, so the next `load` evaluates the project again.
     let invalidate (fsproj: string) : unit =
+        let fsproj = Path.GetFullPath fsproj
+        let gate = projectLocks.GetOrAdd(fsproj, fun _ -> new System.Threading.SemaphoreSlim(1, 1))
+        gate.Wait()
+
         try
-            let fsproj = Path.GetFullPath fsproj
-            let dir = objDir fsproj
+            try
+                let dir = objDir fsproj
 
-            if Directory.Exists dir then
-                // This version's only: `<stem>.json` and `<stem>-<framework>.json`
-                for cache in Directory.GetFiles(dir, cacheStem + "*.json") do
-                    let name = Path.GetFileName cache
+                if Directory.Exists dir then
+                    // This version's only: `<stem>.json` and `<stem>-<framework>.json`
+                    for cache in Directory.GetFiles(dir, cacheStem + "*.json") do
+                        let name = Path.GetFileName cache
 
-                    if name = cacheStem + ".json" || name.StartsWith(cacheStem + "-") then
-                        File.Delete cache
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException ->
-            ()
+                        if name = cacheStem + ".json" || name.StartsWith(cacheStem + "-") then
+                            File.Delete cache
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException ->
+                ()
+        finally
+            gate.Release() |> ignore
 
     let private loadWith (fsproj: string) (cache: string) (properties: (string * string) list) : Task<ProjectSpec> =
         task {
@@ -1346,40 +1368,46 @@ module ProjectSpec =
             if not (File.Exists fsproj) then
                 raise (FileNotFoundException($"project file not found: {fsproj}", fsproj))
 
-            let cached =
-                if isFresh fsproj cache then
-                    try
-                        // A build can write what it generates after the spec was cached
-                        Some(ofJson (File.ReadAllText cache))
-                        |> Option.filter (fun spec -> spec.GeneratedFiles |> List.forall holdsOnlyAssemblyAttributes)
-                    with _ ->
+            let gate = projectLocks.GetOrAdd(fsproj, fun _ -> new System.Threading.SemaphoreSlim(1, 1))
+            do! gate.WaitAsync()
+
+            try
+                let cached =
+                    if isFresh fsproj cache then
+                        try
+                            // A build can write what it generates after the spec was cached
+                            Some(ofJson (File.ReadAllText cache))
+                            |> Option.filter (fun spec -> spec.GeneratedFiles |> List.forall holdsOnlyAssemblyAttributes)
+                        with _ ->
+                            None
+                    else
                         None
-                else
-                    None
 
-            match cached with
-            | Some spec -> return requireReferences spec
-            | None ->
-                if not (File.Exists(assetsPath fsproj)) then
-                    do! restore fsproj
+                match cached with
+                | Some spec -> return requireReferences spec
+                | None ->
+                    if not (File.Exists(assetsPath fsproj)) then
+                        do! restore fsproj
 
-                let spec, evaluatedOpt = loadFresh fsproj properties
-                // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
-                let tmp = cache + "." + Guid.NewGuid().ToString("N") + ".tmp"
+                    let spec, evaluatedOpt = loadFresh fsproj properties
+                    // The cache is an optimisation: a read-only or contended obj directory must not fail the load.
+                    let tmp = cache + "." + Guid.NewGuid().ToString("N") + ".tmp"
 
-                try
-                    Directory.CreateDirectory(objDir fsproj) |> ignore
-                    File.WriteAllText(tmp, cacheJson spec evaluatedOpt)
-                    File.Move(tmp, cache, true)
-                with
-                | :? IOException
-                | :? UnauthorizedAccessException ->
                     try
-                        File.Delete tmp
-                    with _ ->
-                        ()
+                        Directory.CreateDirectory(objDir fsproj) |> ignore
+                        File.WriteAllText(tmp, cacheJson spec evaluatedOpt)
+                        File.Move(tmp, cache, true)
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException ->
+                        try
+                            File.Delete tmp
+                        with _ ->
+                            ()
 
-                return requireReferences spec
+                    return requireReferences spec
+            finally
+                gate.Release() |> ignore
         }
 
     let load (fsproj: string) : Task<ProjectSpec> =

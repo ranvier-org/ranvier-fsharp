@@ -1005,15 +1005,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                     Interlocked.Decrement &loading |> ignore
                     postLoading () }
 
-    /// How long a load waits for a project's cold check: `RFS_LOAD_TIMEOUT_MS`, else ten minutes
-    static member DefaultLoadTimeout() : TimeSpan =
-        match Environment.GetEnvironmentVariable "RFS_LOAD_TIMEOUT_MS" with
+    static member internal ParseLoadTimeout(raw: string) : TimeSpan =
+        match raw with
         | null
         | "" -> TimeSpan.FromMinutes 10.
         | text ->
             match Double.TryParse text with
             | true, ms when ms > 0. -> TimeSpan.FromMilliseconds ms
             | _ -> TimeSpan.FromMinutes 10.
+
+    /// How long a load waits for a project's cold check: `RFS_LOAD_TIMEOUT_MS`, else ten minutes
+    static member DefaultLoadTimeout() : TimeSpan =
+        Workspace.ParseLoadTimeout(Environment.GetEnvironmentVariable "RFS_LOAD_TIMEOUT_MS")
 
     /// Loads the projects and the projects they reference, and returns once each has settled its cold diagnostics
     /// (or failed to). The requested projects come first in the result, in order.
