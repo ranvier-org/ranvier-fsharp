@@ -4,20 +4,23 @@
     <NoWarn>$(NoWarn);NU1507</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
     <FickleFcsDir Condition="'$(FickleFcsDir)' == ''">$([MSBuild]::EnsureTrailingSlash($([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0'))))</FickleFcsDir>
-    <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
+    <!-- Central Package Management pins FSharp.Core once in Directory.Packages.props rather than via SDK implicit version. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
 
-    <!-- Package and SourceLink metadata (opt-in packaging on Rfs.Server only). -->
-    <Version Condition="'$(Version)' == ''">0.1.0-preview.1</Version>
+    <!-- Package and SourceLink metadata (individual library/tool projects opt in with IsPackable=true). -->
+    <Version Condition="'$(Version)' == ''">0.1.0-preview.2</Version>
     <Authors>shayanhabibi</Authors>
     <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ranvier-org/ranvier-fsharp</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ranvier-org/ranvier-fsharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <DebugType>embedded</DebugType>
     <IncludeSymbols>false</IncludeSymbols>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview release of Ranvier.FSharp libraries and Ranvier.AutoComplete LSP server.</PackageReleaseNotes>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
@@ -27,19 +30,16 @@
   <!--
     `RanvierTrace=true` selects the `Ranvier.Traced` NuGet package and compiles in the Trace.named labels of the checker's
     nodes and the answer to `rfs/why` (RANVIER_TRACE): Debug is traced, anything else selects `Ranvier`, and an explicit
-    value wins. Configuration is still unset here when it is not passed, which builds as Debug.
+    `-p:RanvierTrace=true` also switches traced-capable packages (`Ranvier.FSharp.Checker`, `Ranvier.FSharp.Server`) to `.Traced`.
   -->
   <PropertyGroup>
+    <_RanvierTraceExplicit Condition="'$(RanvierTrace)' == 'true'">true</_RanvierTraceExplicit>
     <RanvierTrace Condition="'$(RanvierTrace)' == '' and ('$(Configuration)' == 'Debug' or '$(Configuration)' == '')">true</RanvierTrace>
   </PropertyGroup>
   <PropertyGroup Condition="'$(RanvierTrace)' == 'true'">
     <DefineConstants>$(DefineConstants);RANVIER_TRACE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Overrides the FSharp.Core that packages like Ionide.ProjInfo and Expecto depend on, with no assets, so only the fork one is loaded. -->
-    <PackageReference Include="FSharp.Core" ExcludeAssets="all" />
-    <Reference Include="FSharp.Core">
-      <HintPath>$(FickleFcsDir)FSharp.Core.dll</HintPath>
-    </Reference>
+    <PackageReference Include="FSharp.Core" />
   </ItemGroup>
 </Project>

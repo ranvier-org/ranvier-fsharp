@@ -16,6 +16,8 @@ $env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
 $fcsDir = [System.IO.Path]::Combine($ForkDir, 'artifacts', 'bin', 'FSharp.Compiler.Service', 'Release', 'net10.0')
 $fcsDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.dll')
 $fcsXml = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.xml')
+$depMgrDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.DependencyManager.Nuget.dll')
+$depMgrXml = [System.IO.Path]::Combine($fcsDir, 'FSharp.DependencyManager.Nuget.xml')
 $fsharpCoreDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Core.dll')
 $fsharpCoreXml = [System.IO.Path]::Combine($fcsDir, 'FSharp.Core.xml')
 
@@ -42,7 +44,7 @@ finally {
     Pop-Location
 }
 
-foreach ($expected in $fcsDll, $fcsXml, $fsharpCoreDll, $fsharpCoreXml) {
+foreach ($expected in $fcsDll, $fcsXml, $depMgrDll, $depMgrXml, $fsharpCoreDll, $fsharpCoreXml) {
     if (-not (Test-Path $expected)) { throw "Expected $expected after the build, but it does not exist" }
     Write-Host "OK: $expected ($((Get-Item $expected).LastWriteTime))"
 }

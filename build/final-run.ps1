@@ -55,7 +55,7 @@ $runLog = Join-Path $final 'run.log'
 $bin = Join-Path $R 'src\Rfs.Checkpoint\bin\Release\net10.0'
 $harness = Join-Path $bin 'rfs-harness.exe'
 $checkpoint = Join-Path $bin 'rfs-checkpoint.exe'
-$serverExe = Join-Path $R 'src\Rfs.Server\bin\Release\net10.0\ranvierautocomplete.exe'
+$serverExe = Join-Path $R 'src\Ranvier.AutoComplete\bin\Release\net10.0\ranvierautocomplete.exe'
 $serversFinal = Join-Path $final 'servers.final.json'
 $ranRank = @{ small = 0; mid = 1; large = 2; huge = 3 }
 $started = Get-Date
@@ -184,7 +184,7 @@ $buildMark = Join-Path $final 'environment.txt'
 if ((Test-Path $buildMark) -and -not $Rebuild) {
     Write-Host "already built for this run ($buildMark exists); -Rebuild builds again"
 } else {
-    foreach ($project in 'src\Rfs.Checkpoint\Rfs.Checkpoint.fsproj', 'src\Rfs.Harness\Rfs.Harness.fsproj', 'src\Rfs.Server\Rfs.Server.fsproj') {
+    foreach ($project in 'src\Rfs.Checkpoint\Rfs.Checkpoint.fsproj', 'src\Rfs.Harness\Rfs.Harness.fsproj', 'src\Ranvier.AutoComplete\Ranvier.AutoComplete.fsproj') {
         & dotnet build (Join-Path $R $project) -c Release --nologo -v q
         if ($LASTEXITCODE -ne 0) { Stop-Here "build of $project failed" 4 }
     }

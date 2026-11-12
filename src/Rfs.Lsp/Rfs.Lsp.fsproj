@@ -1,4 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Ranvier.FSharp.Lsp</PackageId>
+    <Description>Lightweight stdio JSON-RPC framing, UTF-16 incremental document buffer, LSP client, and diagnostic primitives for F# language tooling.</Description>
+    <PackageTags>fsharp;lsp;jsonrpc;language-server;ranvier</PackageTags>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="JsonRpc.fs" />
     <Compile Include="Document.fs" />

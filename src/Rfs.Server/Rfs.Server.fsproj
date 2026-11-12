@@ -1,19 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <AssemblyName>ranvierautocomplete</AssemblyName>
     <IsPackable>true</IsPackable>
-    <PackAsTool>true</PackAsTool>
-    <ToolCommandName>ranvierautocomplete</ToolCommandName>
-    <PackageId>Ranvier.AutoComplete</PackageId>
-    <Description>Demand-driven incremental F# language server powered by Ranvier, compatible with Ionide and LSP editors.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RanvierTracedPackage>true</RanvierTracedPackage>
+    <PackageId>Ranvier.FSharp.Server</PackageId>
+    <PackageId Condition="'$(_RanvierTraceExplicit)' == 'true'">Ranvier.FSharp.Server.Traced</PackageId>
+    <Description>Embeddable F# Language Server Protocol (LSP) server and Ionide endpoint implementation powered by Ranvier.FSharp.Checker.</Description>
+    <Description Condition="'$(_RanvierTraceExplicit)' == 'true'">The traced build of Ranvier.FSharp.Server: the same assembly, namespaces, and version, with `rfs/why` causal graph inspection enabled. Depends on Ranvier.FSharp.Checker.Traced.</Description>
     <PackageTags>fsharp;lsp;language-server;ionide;ranvier;fsautocomplete</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview release of Ranvier.AutoComplete (ranvierautocomplete).</PackageReleaseNotes>
   </PropertyGroup>
-  <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="\" Link="README.md" Visible="false" />
-  </ItemGroup>
   <ItemGroup>
     <Compile Include="Client.fs" />
     <Compile Include="Config.fs" />
@@ -50,15 +45,15 @@
     <Compile Include="Features/Formatting.fs" />
     <Compile Include="Features/Why.fs" />
     <Compile Include="Server.fs" />
-    <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="ranvierautocomplete" />
     <InternalsVisibleTo Include="Rfs.Server.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Ionide.LanguageServerProtocol" />
-    <!-- Its StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
-    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />
+    <!-- StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">
@@ -66,6 +61,10 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Rfs.Checker\Rfs.Checker.fsproj" />
+    <ProjectReference Include="..\Rfs.Checker\Rfs.Checker.fsproj" PrivateAssets="none" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Ranvier.FSharp.Server.targets" Pack="true" PackagePath="build/$(PackageId).targets" Visible="false" />
+    <None Include="Ranvier.FSharp.Server.targets" Pack="true" PackagePath="buildTransitive/$(PackageId).targets" Visible="false" />
   </ItemGroup>
 </Project>

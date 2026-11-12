@@ -1,0 +1,47 @@
+<Project>
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Link="README.md" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RanvierTrace)' == 'true' and '$(RanvierTracedPackage)' == 'true'">
+    <AssemblyMetadata Include="RanvierTrace" Value="true" />
+  </ItemGroup>
+
+  <!--
+    A traced build packs only under a `.Traced` package id, which traced-capable projects select on an explicit
+    `-p:RanvierTrace=true`. Untraced-only packages (`Ranvier.FSharp.Lsp`, `Ranvier.FSharp.Projects`, `Ranvier.AutoComplete`)
+    must be packed with `-c Release` (`RanvierTrace != 'true'`).
+  -->
+  <Target Name="RefuseTracedPack" BeforeTargets="GenerateNuspec"
+          Condition="'$(RanvierTrace)' == 'true' and !$(PackageId.EndsWith('.Traced'))">
+    <Error Text="$(PackageId) is built with RanvierTrace=true. Pack with -c Release, or pass -p:RanvierTrace=true on a traced-capable library to pack its .Traced variant." />
+  </Target>
+
+  <!--
+    Between packable sibling projects in this repository, pin the .nuspec dependency version to `[x]` so matching
+    versions of Ranvier.FSharp.{Lsp,Projects,Checker,Server} always resolve together.
+  -->
+  <Target Name="RanvierFSharpExactSibling" Returns="@(_RanvierFSharpExactSiblingSelf)">
+    <ItemGroup>
+      <_RanvierFSharpExactSiblingSelf Include="$(MSBuildProjectFullPath)"
+                                      Condition="'$(IsPackable)' == 'true' and '$(PackAsTool)' != 'true'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="PinSiblingProjectVersions" AfterTargets="_GetProjectReferenceVersions"
+          Condition="'$(IsPackable)' == 'true' and '$(PackAsTool)' != 'true'">
+    <MSBuild Projects="@(_ProjectReferencesWithVersions)" Targets="RanvierFSharpExactSibling"
+             SkipNonexistentTargets="true" SkipNonexistentProjects="true" Properties="BuildProjectReferences=false">
+      <Output TaskParameter="TargetOutputs" ItemName="_RanvierFSharpExactSibling" />
+    </MSBuild>
+    <ItemGroup>
+      <_RanvierFSharpLooseReference Include="@(_ProjectReferencesWithVersions)" Exclude="@(_RanvierFSharpExactSibling)" />
+      <_RanvierFSharpPinnedReference Include="@(_ProjectReferencesWithVersions)" Exclude="@(_RanvierFSharpLooseReference)" />
+      <_RanvierFSharpPinnedReference>
+        <ProjectVersion>[%(_RanvierFSharpPinnedReference.ProjectVersion)]</ProjectVersion>
+      </_RanvierFSharpPinnedReference>
+      <_ProjectReferencesWithVersions Remove="@(_RanvierFSharpPinnedReference)" />
+      <_ProjectReferencesWithVersions Include="@(_RanvierFSharpPinnedReference)" />
+    </ItemGroup>
+  </Target>
+</Project>

@@ -49,5 +49,6 @@
     <ProjectReference Include="..\..\src\Rfs.Lsp\Rfs.Lsp.fsproj" />
     <ProjectReference Include="..\..\src\Rfs.Harness\Rfs.Harness.fsproj" />
     <ProjectReference Include="..\..\src\Rfs.Server\Rfs.Server.fsproj" />
+    <ProjectReference Include="..\..\src\Ranvier.AutoComplete\Ranvier.AutoComplete.fsproj" />
   </ItemGroup>
 </Project>

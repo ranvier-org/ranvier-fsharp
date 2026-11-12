@@ -48,7 +48,7 @@ Measured on identical multi-project corpora (`results/server-final/`):
 
 ### Option A — Install as a `.NET` Global Tool (Recommended for Neovim, Helix, Zed, Emacs, CLI)
 
-From NuGet (once published):
+From NuGet.org:
 ```bash
 dotnet tool install -g Ranvier.AutoComplete --prerelease
 ```
@@ -70,6 +70,31 @@ Ionide for VS Code overrides FSAC via `FSharp.fsac.netCoreDllPath`, which expect
 ```powershell
 pwsh -File build/pack.ps1
 ```
+
+### Option C — Consume as `.NET` Libraries from NuGet
+
+All layers of `ranvier-fsharp` are published as composable `net10.0` NuGet packages (in both zero-overhead untraced and `.Traced` variants):
+
+| Package | Assembly / Namespace | Description |
+| --- | --- | --- |
+| `Ranvier.AutoComplete` | `ranvierautocomplete` (`.NET` Tool) | Drop-in `stdio` F# LSP server CLI executable for Ionide and LSP editors |
+| `Ranvier.FSharp.Lsp` | `Rfs.Lsp` | Framing (`JsonRpc`), UTF-16 incremental buffer (`Document`), and `LspClient` |
+| `Ranvier.FSharp.Projects` | `Rfs.Projects` | MSBuild `ProjectSpec` evaluation (`MSBuildLocator`), `.sln`/`.slnx` workspace discovery, `Glob`, and bundled `fickle-fsharp` `FSharp.Compiler.Service` |
+| `Ranvier.FSharp.Checker` | `Rfs.Checker` | Demand-driven declaration-incremental F# type-checking graph (`GraphHost`, `ProjectGraph`) built on `Ranvier` |
+| `Ranvier.FSharp.Checker.Traced` | `Rfs.Checker` | Traced build of `Ranvier.FSharp.Checker` with causal node labels (`ProjectGraph.Why`), built on `Ranvier.Traced` |
+| `Ranvier.FSharp.Server` | `Rfs.Server` | Embeddable in-process F# LSP server (`Server.run` / `Server.runWith` / `RanvierServer`) |
+| `Ranvier.FSharp.Server.Traced` | `Rfs.Server` | Traced build of `Ranvier.FSharp.Server` with `rfs/why` causal inspection enabled |
+
+```bash
+# Embed the reactive F# type-checking graph directly:
+dotnet add package Ranvier.FSharp.Checker --prerelease
+
+# Or embed the full in-process LSP server (untraced or traced):
+dotnet add package Ranvier.FSharp.Server --prerelease
+# dotnet add package Ranvier.FSharp.Server.Traced --prerelease
+```
+
+> `Ranvier.FSharp.Projects` bundles the declaration-incremental `fickle-fsharp` `FSharp.Compiler.Service.dll` directly in `lib/net10.0/`, and `Ranvier.FSharp.Server` (`.Traced`) includes transitive MSBuild `.targets` so `MSBuildLocator` works out of the box without manual `StringTools` exclusions.
 
 ---
 
@@ -310,22 +335,21 @@ dotnet run --project tests/Rfs.Checker.Tests -c Release --no-build
 dotnet run --project tests/Rfs.Server.Tests -c Release --no-build
 ```
 
-### 3. Pack `.NET` Tool & Portable Bundle
+### 3. Pack & Verify All NuGet Packages + Portable Bundle
 
 ```powershell
 pwsh -File build/pack.ps1
+pwsh -File build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
 ```
 
-This outputs:
-- `artifacts/nupkg/Ranvier.AutoComplete.<version>.nupkg` — installable via `dotnet tool install -g Ranvier.AutoComplete --add-source ./artifacts/nupkg --prerelease`
-- `artifacts/publish/ranvierautocomplete.dll` — ready to set as `"FSharp.fsac.netCoreDllPath"` in VS Code
+This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp,Projects,Checker,Checker.Traced,Server,Server.Traced}` + `Ranvier.AutoComplete`) and `artifacts/publish/ranvierautocomplete.dll` (ready to set as `"FSharp.fsac.netCoreDllPath"` in VS Code), then verifies them in isolated out-of-repo F# and C# consumer builds.
 
 ---
 
 ## Debugging & Causal Graph Inspection (`rfs/why`)
 
-- **Release builds** (`-c Release`, default for `pack.ps1`) link the untraced `Ranvier` package for zero tracing overhead.
-- **Debug / Traced builds** (`-c Debug` or `-p:RanvierTrace=true`) link `Ranvier.Traced` and enable the custom **`rfs/why`** JSON-RPC request (`{"uri": "file:///...", "version": 3}`), returning the exact causal chain from changed input signals to the last diagnostic publish.
+- **Untraced packages / Release builds** (`Ranvier.FSharp.Checker`, `Ranvier.FSharp.Server`, `Ranvier.AutoComplete`) link the untraced `Ranvier` package for zero tracing overhead.
+- **Traced packages / Debug builds** (`Ranvier.FSharp.Checker.Traced`, `Ranvier.FSharp.Server.Traced`, or `-c Debug` / `-p:RanvierTrace=true`) link `Ranvier.Traced` and enable the custom **`rfs/why`** JSON-RPC request (`{"textDocument": {"uri": "file:///..."}, "position": {"line": 4, "character": 5}}`), returning the exact causal chain from changed input signals to the declaration's last check.
 
 ---
 
@@ -335,20 +359,17 @@ This outputs:
    ```bash
    git -C ../fickle-fsharp push origin fickle_decl
    ```
-2. Push `main` and tag a release (`v0.1.0-preview.1`):
+2. Push `main` and tag a release (`v0.1.0-preview.2`):
    ```bash
    git push -u origin main
-   git tag v0.1.0-preview.1
-   git push origin v0.1.0-preview.1
+   git tag v0.1.0-preview.2
+   git push origin v0.1.0-preview.2
    ```
-   The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, smoke-tests the `.NET` tool, pushes `Ranvier.AutoComplete` to NuGet.org, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` to a GitHub Release.
+   The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, runs isolated consumer smoke tests on all 7 packages (`build/verify-packages.ps1`), pushes them to NuGet.org in dependency tier order, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` files to a GitHub Release.
 
-For manual NuGet publication:
-```bash
-pwsh -File build/pack.ps1 -Version 0.1.0-preview.1
-dotnet nuget push ./artifacts/nupkg/Ranvier.AutoComplete.0.1.0-preview.1.nupkg \
-  --api-key <NUGET_API_KEY> \
-  --source https://api.nuget.org/v3/index.json
+To verify published packages live from `https://api.nuget.org/v3/index.json` in a clean NuGet cache:
+```powershell
+pwsh -File build/verify-packages.ps1 -OnlineOnly -Version 0.1.0-preview.2
 ```
 
 ## License

@@ -95,33 +95,25 @@ jobs:
             $ver = '${{ github.ref_name }}'.TrimStart('v')
           }
           ./build/fork.ps1 -ForkDir ../fickle-fsharp
-          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
-          $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
-            $out = "./artifacts/publish-$rid"
-            if ($ver) {
-              dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" "-p:Version=$ver"
-            } else {
-              dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir"
-            }
-            if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
-            Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+            Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
           }
 
-      - name: Smoke-test packed .NET tool
+      - name: Verify all 7 NuGet packages & isolated consumer smoke tests
         shell: pwsh
         working-directory: ranvier-fsharp
         run: |
-          $pkgs = @(Get-ChildItem ./artifacts/nupkg/*.nupkg)
-          if ($pkgs.Count -eq 0) { throw "No .nupkg found in ./artifacts/nupkg" }
-          foreach ($p in $pkgs) { Write-Host "Validated package: $($p.Name)" }
-          $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-publish-smoke"
-          if (Test-Path $toolDir) { Remove-Item -Recurse -Force $toolDir }
-          dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
-          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
-          & (Join-Path $toolDir 'ranvierautocomplete') --version
-          if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
+          $ver = '${{ inputs.version }}'
+          if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
+            $ver = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          if ($ver) {
+            ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -Version $ver
+          } else {
+            ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
+          }
 
       - name: Authenticate to NuGet with Trusted Publishing (OIDC)
         id: login
@@ -135,15 +127,35 @@ jobs:
         working-directory: ranvier-fsharp
         run: |
           Write-Host "NuGet Trusted Publishing OIDC login succeeded for shayan.habibi! Skipping push because dry_run=true."
-          Get-ChildItem ./artifacts/nupkg/*.nupkg | ForEach-Object { Write-Host "Would push: $($_.Name)" }
+          Get-ChildItem ./artifacts/nupkg/*.nupkg | Sort-Object Name | ForEach-Object { Write-Host "Would push: $($_.Name)" }
 
-      - name: Publish packages to NuGet.org
+      - name: Publish packages to NuGet.org in dependency order
         if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         shell: pwsh
         working-directory: ranvier-fsharp
-        run: dotnet nuget push ./artifacts/nupkg/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "$env:NUGET_API_KEY" --skip-duplicate
+        run: |
+          $orderedIds = @(
+            'Ranvier.FSharp.Lsp',
+            'Ranvier.FSharp.Projects',
+            'Ranvier.FSharp.Checker',
+            'Ranvier.FSharp.Checker.Traced',
+            'Ranvier.FSharp.Server',
+            'Ranvier.FSharp.Server.Traced',
+            'Ranvier.AutoComplete'
+          )
+          $allNupkgs = @(Get-ChildItem ./artifacts/nupkg/*.nupkg)
+          if ($allNupkgs.Count -ne $orderedIds.Count) {
+            throw "Expected $($orderedIds.Count) .nupkg files in ./artifacts/nupkg, found $($allNupkgs.Count)"
+          }
+          foreach ($id in $orderedIds) {
+            $pkg = $allNupkgs | Where-Object { $_.Name -match "^$([regex]::Escape($id))\.\d" } | Select-Object -First 1
+            if (-not $pkg) { throw "Missing expected package for $id in ./artifacts/nupkg" }
+            Write-Host "Pushing $($pkg.Name)..."
+            dotnet nuget push $pkg.FullName --source https://api.nuget.org/v3/index.json --api-key "$env:NUGET_API_KEY" --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { throw "dotnet nuget push failed for $($pkg.Name) with exit code $LASTEXITCODE" }
+          }
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'

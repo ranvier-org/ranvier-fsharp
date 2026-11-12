@@ -1,0 +1,15 @@
+<Project>
+  <!--
+    Ionide.LanguageServerProtocol depends on StreamJsonRpc, which transitively brings an older
+    Microsoft.NET.StringTools into RuntimeCopyLocalItems. Removing it from copy-local output ensures
+    MSBuildLocator loads the installed .NET SDK's own StringTools without assembly version conflict.
+  -->
+  <Target Name="_RanvierFSharpServerExcludeStringToolsRuntime"
+          AfterTargets="ResolvePackageAssets"
+          BeforeTargets="ResolveLockFileCopyLocalFiles">
+    <ItemGroup>
+      <RuntimeCopyLocalItems Remove="@(RuntimeCopyLocalItems)"
+                             Condition="'%(RuntimeCopyLocalItems.NuGetPackageId)' == 'Microsoft.NET.StringTools'" />
+    </ItemGroup>
+  </Target>
+</Project>

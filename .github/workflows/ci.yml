@@ -63,6 +63,8 @@ jobs:
           path: |
             fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Compiler.Service.dll
             fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Compiler.Service.xml
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.DependencyManager.Nuget.dll
+            fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.DependencyManager.Nuget.xml
             fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Core.dll
             fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0/FSharp.Core.xml
           if-no-files-found: error
@@ -214,29 +216,18 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Pack .NET tool and distribution bundles
+      - name: Pack all NuGet packages and distribution bundles
         shell: pwsh
         run: |
-          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
-          $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
-            $out = "./artifacts/publish-$rid"
-            dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir"
-            if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
-            Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+            Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
           }
 
-      - name: Smoke-test packed .NET tool
+      - name: Verify all 7 NuGet packages & isolated consumer smoke tests
         shell: pwsh
-        run: |
-          $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-tool-smoke"
-          if (Test-Path $toolDir) { Remove-Item -Recurse -Force $toolDir }
-          dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
-          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
-          $ver = & (Join-Path $toolDir 'ranvierautocomplete') --version
-          if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
-          Write-Host "Verified tool: $ver"
+        run: ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v7

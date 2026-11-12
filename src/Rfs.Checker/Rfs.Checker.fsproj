@@ -1,4 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RanvierTracedPackage>true</RanvierTracedPackage>
+    <PackageId>Ranvier.FSharp.Checker</PackageId>
+    <PackageId Condition="'$(_RanvierTraceExplicit)' == 'true'">Ranvier.FSharp.Checker.Traced</PackageId>
+    <Description>Demand-driven, declaration-incremental F# type-checking graph powered by Ranvier, with zero compiler-object retention at rest and live in-memory cross-project propagation.</Description>
+    <Description Condition="'$(_RanvierTraceExplicit)' == 'true'">The traced build of Ranvier.FSharp.Checker: the same assembly, namespaces, and version, with Ranvier node labels and causal trace queries compiled in. Depends on Ranvier.Traced.</Description>
+    <PackageTags>fsharp;compiler;typechecker;incremental;reactive;ranvier;fcs</PackageTags>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="GraphHost.fs" />
     <Compile Include="Request.fs" />
@@ -24,6 +34,6 @@
   <ItemGroup>
     <PackageReference Include="Ranvier" Condition="'$(RanvierTrace)' != 'true'" />
     <PackageReference Include="Ranvier.Traced" Condition="'$(RanvierTrace)' == 'true'" />
-    <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" />
+    <ProjectReference Include="..\Rfs.Projects\Rfs.Projects.fsproj" PrivateAssets="none" />
   </ItemGroup>
 </Project>

@@ -1,12 +1,19 @@
 <#
 .SYNOPSIS
-  Builds, publishes, and packs Ranvier.AutoComplete (`ranvierautocomplete`) for distribution and editor setup.
+  Builds, publishes, and packs all Ranvier.FSharp libraries and the Ranvier.AutoComplete CLI tool.
 
 .DESCRIPTION
-  Produces:
-    - artifacts/nupkg/Ranvier.AutoComplete.<version>.nupkg   (.NET global/local tool package)
-    - artifacts/publish/                                     (framework-dependent DLL bundle for Ionide FSharp.fsac.netCoreDllPath)
-    - artifacts/publish-<Runtime>/                           (optional RID-specific bundle when -Runtime is passed)
+  Produces in `<OutputDir>/nupkg`:
+    - Ranvier.FSharp.Lsp.<version>.nupkg
+    - Ranvier.FSharp.Projects.<version>.nupkg
+    - Ranvier.FSharp.Checker.<version>.nupkg
+    - Ranvier.FSharp.Checker.Traced.<version>.nupkg
+    - Ranvier.FSharp.Server.<version>.nupkg
+    - Ranvier.FSharp.Server.Traced.<version>.nupkg
+    - Ranvier.AutoComplete.<version>.nupkg              (.NET global/local tool package)
+  And framework-dependent distribution bundles:
+    - <OutputDir>/publish/                              (portable bundle for Ionide FSharp.fsac.netCoreDllPath)
+    - <OutputDir>/publish-<rid>/                        (optional RID-specific bundles when -Runtime / -Runtimes is passed)
 #>
 [CmdletBinding()]
 param(
@@ -14,6 +21,7 @@ param(
     [string]$OutputDir = (Join-Path $PSScriptRoot '../artifacts'),
     [string]$ForkDir = (Join-Path $PSScriptRoot '../../fickle-fsharp'),
     [string]$Runtime = '',
+    [string[]]$Runtimes = @(),
     [string]$Version = '',
     [switch]$BuildFork
 )
@@ -25,48 +33,78 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 $ForkDir = [System.IO.Path]::GetFullPath($ForkDir)
 $fcsDir = [System.IO.Path]::Combine($ForkDir, 'artifacts', 'bin', 'FSharp.Compiler.Service', 'Release', 'net10.0')
 $fcsDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.dll')
+$depMgrDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.DependencyManager.Nuget.dll')
 
-if ($BuildFork -or -not (Test-Path $fcsDll)) {
+if ($BuildFork -or -not (Test-Path $fcsDll) -or -not (Test-Path $depMgrDll)) {
     Write-Host "=== Building FCS fork at $ForkDir" -ForegroundColor Cyan
     & (Join-Path $PSScriptRoot 'fork.ps1') -ForkDir $ForkDir
 }
 
 $serverProj = [System.IO.Path]::Combine($repoRoot, 'src', 'Rfs.Server', 'Rfs.Server.fsproj')
+$toolProj = [System.IO.Path]::Combine($repoRoot, 'src', 'Ranvier.AutoComplete', 'Ranvier.AutoComplete.fsproj')
+$untracedPackProjects = @(
+    [System.IO.Path]::Combine($repoRoot, 'src', 'Rfs.Lsp', 'Rfs.Lsp.fsproj'),
+    [System.IO.Path]::Combine($repoRoot, 'src', 'Rfs.Projects', 'Rfs.Projects.fsproj'),
+    [System.IO.Path]::Combine($repoRoot, 'src', 'Rfs.Checker', 'Rfs.Checker.fsproj'),
+    $serverProj,
+    $toolProj
+)
+$tracedPackProjects = @(
+    [System.IO.Path]::Combine($repoRoot, 'src', 'Rfs.Checker', 'Rfs.Checker.fsproj'),
+    $serverProj
+)
+
 $nupkgDir = [System.IO.Path]::Combine($OutputDir, 'nupkg')
 $publishDir = [System.IO.Path]::Combine($OutputDir, 'publish')
 
 $fcsProp = "-p:FickleFcsDir=$([System.IO.Path]::TrimEndingDirectorySeparator($fcsDir))$([System.IO.Path]::DirectorySeparatorChar)"
+$verArgs = if ($Version) { @("-p:Version=$Version") } else { @() }
+
+$allRids = @()
+if ($Runtime) { $allRids += $Runtime }
+if ($Runtimes -and $Runtimes.Count -gt 0) { $allRids += $Runtimes }
+$allRids = @($allRids | Where-Object { $_ } | Select-Object -Unique)
 
 Push-Location $repoRoot
 try {
+    if (Test-Path $nupkgDir) { Remove-Item -Recurse -Force $nupkgDir }
+    New-Item -ItemType Directory -Force -Path $nupkgDir | Out-Null
+
+    Write-Host "=== Building untraced graph ($Configuration)" -ForegroundColor Cyan
+    dotnet build $toolProj -c $Configuration --no-incremental $fcsProp @verArgs
+    if ($LASTEXITCODE -ne 0) { throw "dotnet build (untraced) failed with exit code $LASTEXITCODE" }
+
     Write-Host "=== Publishing framework-dependent bundle -> $publishDir" -ForegroundColor Cyan
     if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
-    if ($Version) {
-        dotnet publish $serverProj -c $Configuration -o $publishDir $fcsProp "-p:Version=$Version"
-    } else {
-        dotnet publish $serverProj -c $Configuration -o $publishDir $fcsProp
-    }
+    dotnet publish $toolProj -c $Configuration --no-build -o $publishDir $fcsProp @verArgs
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
-    Write-Host "=== Packing .NET tool NuGet package -> $nupkgDir" -ForegroundColor Cyan
-    if (Test-Path $nupkgDir) { Remove-Item -Recurse -Force $nupkgDir }
-    if ($Version) {
-        dotnet pack $serverProj -c $Configuration -o $nupkgDir $fcsProp "-p:Version=$Version"
-    } else {
-        dotnet pack $serverProj -c $Configuration -o $nupkgDir $fcsProp
-    }
-    if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed with exit code $LASTEXITCODE" }
-
-    if ($Runtime) {
-        $ridDir = [System.IO.Path]::Combine($OutputDir, "publish-$Runtime")
-        Write-Host "=== Publishing $Runtime bundle -> $ridDir" -ForegroundColor Cyan
+    foreach ($rid in $allRids) {
+        $ridDir = [System.IO.Path]::Combine($OutputDir, "publish-$rid")
+        Write-Host "=== Publishing $rid bundle -> $ridDir" -ForegroundColor Cyan
         if (Test-Path $ridDir) { Remove-Item -Recurse -Force $ridDir }
-        if ($Version) {
-            dotnet publish $serverProj -c $Configuration -r $Runtime --self-contained false -o $ridDir $fcsProp "-p:Version=$Version"
-        } else {
-            dotnet publish $serverProj -c $Configuration -r $Runtime --self-contained false -o $ridDir $fcsProp
-        }
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($Runtime) failed with exit code $LASTEXITCODE" }
+        dotnet publish $toolProj -c $Configuration -r $rid --self-contained false -o $ridDir $fcsProp @verArgs
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($rid) failed with exit code $LASTEXITCODE" }
+    }
+
+    Write-Host "=== Packing untraced NuGet packages -> $nupkgDir" -ForegroundColor Cyan
+    foreach ($proj in $untracedPackProjects) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($proj)
+        Write-Host "  -> Packing $name ($Configuration)"
+        dotnet pack $proj -c $Configuration --no-build --no-restore -o $nupkgDir $fcsProp @verArgs
+        if ($LASTEXITCODE -ne 0) { throw "dotnet pack ($name) failed with exit code $LASTEXITCODE" }
+    }
+
+    Write-Host "=== Building traced library graph ($Configuration, RanvierTrace=true)" -ForegroundColor Cyan
+    dotnet build $serverProj -c $Configuration -p:RanvierTrace=true --no-incremental $fcsProp @verArgs
+    if ($LASTEXITCODE -ne 0) { throw "dotnet build (traced) failed with exit code $LASTEXITCODE" }
+
+    Write-Host "=== Packing traced NuGet packages (.Traced) -> $nupkgDir" -ForegroundColor Cyan
+    foreach ($proj in $tracedPackProjects) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($proj)
+        Write-Host "  -> Packing $name.Traced ($Configuration, RanvierTrace=true)"
+        dotnet pack $proj -c $Configuration -p:RanvierTrace=true --no-build --no-restore -o $nupkgDir $fcsProp @verArgs
+        if ($LASTEXITCODE -ne 0) { throw "dotnet pack ($name.Traced) failed with exit code $LASTEXITCODE" }
     }
 }
 finally {
@@ -74,8 +112,10 @@ finally {
 }
 
 $dllPath = [System.IO.Path]::Combine($publishDir, 'ranvierautocomplete.dll')
-$nupkg = Get-ChildItem $nupkgDir -Filter '*.nupkg' | Select-Object -First 1
+$nupkgs = @(Get-ChildItem $nupkgDir -Filter '*.nupkg' | Sort-Object Name)
 Write-Host ""
-Write-Host "Done!" -ForegroundColor Green
-Write-Host "  NuGet tool package : $($nupkg.FullName)"
-Write-Host "  Ionide DLL path    : $dllPath"
+Write-Host "Done! Packed $($nupkgs.Count) NuGet packages:" -ForegroundColor Green
+foreach ($pkg in $nupkgs) {
+    Write-Host "  - $($pkg.Name)"
+}
+Write-Host "  Ionide DLL path : $dllPath"

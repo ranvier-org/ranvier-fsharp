@@ -1,4 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>Ranvier.FSharp.Projects</PackageId>
+    <Description>MSBuild project evaluation, .sln/.slnx workspace discovery, Compile/None/Content glob expansion, and FCS diagnostic projection for Ranvier.FSharp, bundling the declaration-incremental fickle-fsharp FSharp.Compiler.Service.</Description>
+    <PackageTags>fsharp;msbuild;compiler-services;fcs;ionide;ranvier</PackageTags>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="Glob.fs" />
     <Compile Include="ProjectSpec.fs" />
@@ -8,11 +15,20 @@
     <Reference Include="FSharp.Compiler.Service">
       <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
     </Reference>
+    <Reference Include="FSharp.DependencyManager.Nuget" Condition="Exists('$(FickleFcsDir)FSharp.DependencyManager.Nuget.dll')">
+      <HintPath>$(FickleFcsDir)FSharp.DependencyManager.Nuget.dll</HintPath>
+    </Reference>
     <PackageReference Include="Ionide.ProjInfo" />
     <!-- The SDK's own loads at run time, through MSBuildLocator -->
-    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
+    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" PrivateAssets="none" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="$(FickleFcsDir)FSharp.Compiler.Service.dll" Pack="true" PackagePath="lib/$(TargetFramework)" Visible="false" />
+    <None Include="$(FickleFcsDir)FSharp.Compiler.Service.xml" Pack="true" PackagePath="lib/$(TargetFramework)" Visible="false" Condition="Exists('$(FickleFcsDir)FSharp.Compiler.Service.xml')" />
+    <None Include="$(FickleFcsDir)FSharp.DependencyManager.Nuget.dll" Pack="true" PackagePath="lib/$(TargetFramework)" Visible="false" Condition="Exists('$(FickleFcsDir)FSharp.DependencyManager.Nuget.dll')" />
+    <None Include="$(FickleFcsDir)FSharp.DependencyManager.Nuget.xml" Pack="true" PackagePath="lib/$(TargetFramework)" Visible="false" Condition="Exists('$(FickleFcsDir)FSharp.DependencyManager.Nuget.xml')" />
   </ItemGroup>
 </Project>

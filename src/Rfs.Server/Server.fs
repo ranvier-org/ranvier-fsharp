@@ -1276,8 +1276,8 @@ module Server =
         |> Map.add "fsharp/loadAnalyzers" (serverRequestHandling (fun (s: RanvierServer) p -> s.FSharpLoadAnalyzers p))
         |> Map.add "rfs/why" (serverRequestHandling (fun (s: RanvierServer) p -> s.RfsWhy p))
 
-    /// Runs the server, telling `created` about the server the connection makes. For tests.
-    let internal runWith (created: RanvierServer -> unit) (input: Stream) (output: Stream) : int =
+    /// Runs the server over `input`/`output`, invoking `created` once the connection constructs `RanvierServer`.
+    let runWith (created: RanvierServer -> unit) (input: Stream) (output: Stream) : int =
         use reading = new ThreadReadStream(input)
 
         let reason =

@@ -5,6 +5,7 @@ open System.Diagnostics
 open System.IO
 open System.Reflection
 open System.Threading
+open Rfs.Server
 
 type internal RunOptions =
     { Verbose: bool
