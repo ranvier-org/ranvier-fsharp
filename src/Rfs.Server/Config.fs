@@ -78,6 +78,7 @@ type FSharpConfig =
       UnusedDeclarationsAnalyzer: bool
       SimplifyNameAnalyzer: bool
       UnnecessaryParenthesesAnalyzer: bool
+      WorkspaceDiagnostics: bool
       LineLens: LineLensConfig
       CodeLenses: CodeLensConfig
       InlayHints: InlayHintsConfig
@@ -104,6 +105,7 @@ type FSharpConfig =
           UnusedDeclarationsAnalyzer = false
           SimplifyNameAnalyzer = false
           UnnecessaryParenthesesAnalyzer = true
+          WorkspaceDiagnostics = false
           LineLens = { Enabled = "never"; Prefix = "" }
           CodeLenses =
             { SignatureEnabled = true
@@ -236,6 +238,9 @@ type FSharpConfig =
           UnnecessaryParenthesesAnalyzer =
             JsonConfigHelpers.tryBool obj "UnnecessaryParenthesesAnalyzer"
             |> Option.defaultValue current.UnnecessaryParenthesesAnalyzer
+          WorkspaceDiagnostics =
+            JsonConfigHelpers.tryBool obj "WorkspaceDiagnostics"
+            |> Option.defaultValue current.WorkspaceDiagnostics
           LineLens = openLineLens
           CodeLenses = openCodeLenses
           InlayHints = openInlayHints

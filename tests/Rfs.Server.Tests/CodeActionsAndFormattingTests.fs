@@ -199,7 +199,9 @@ let private assertNoCompilerRetention (label: string) (root: obj) =
                             || f.Name = "observers"
                             || f.Name = "parentLink"
                             || f.Name = "sink"
-                            || f.Name = "owner")
+                            || f.Name = "owner"
+                            || f.Name = "scope"
+                            || f.Name = "traceLog")
 
                     if not f.FieldType.IsPointer && not skipRanvierEdge then
                         let v =

@@ -165,6 +165,7 @@ let tests =
               match
                   Rfs.Server.Program.parseArgs
                       [| "-v"
+                         "--workspace-diagnostics"
                          "--adaptive-lsp-server-enabled"
                          "--use-fcs-transparent-compiler"
                          "--project-graph-enabled"
@@ -178,8 +179,21 @@ let tests =
               with
               | Rfs.Server.Program.CliAction.RunServer(opts, unrecognized) ->
                   Expect.isTrue opts.Verbose "-v enables verbose mode rather than exiting"
+                  Expect.isTrue opts.WorkspaceDiagnostics "--workspace-diagnostics enables opt-in whole-solution diagnostics"
                   Expect.equal opts.LogFile (Some "/tmp/rfs.log") "--logfile captures path"
                   Expect.isEmpty unrecognized "FSAC compatibility flags are recognized"
+              | other -> failtest $"expected RunServer, got %A{other}"
+
+              match Rfs.Server.Program.parseArgs [| "--workspace-diagnostics=false" |] with
+              | Rfs.Server.Program.CliAction.RunServer(opts, unrecognized) ->
+                  Expect.isFalse opts.WorkspaceDiagnostics "--workspace-diagnostics=false disables workspace diagnostics"
+                  Expect.isEmpty unrecognized "flag is recognized"
+              | other -> failtest $"expected RunServer, got %A{other}"
+
+              match Rfs.Server.Program.parseArgs [| "--workspace-diagnostics"; "false" |] with
+              | Rfs.Server.Program.CliAction.RunServer(opts, unrecognized) ->
+                  Expect.isFalse opts.WorkspaceDiagnostics "--workspace-diagnostics false disables workspace diagnostics"
+                  Expect.isEmpty unrecognized "flag is recognized"
               | other -> failtest $"expected RunServer, got %A{other}"
 
           testTask "--version and --help exit 0 without blocking on stdin" {

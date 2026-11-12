@@ -11,12 +11,14 @@ type internal RunOptions =
     { Verbose: bool
       AttachDebugger: bool
       WaitForDebugger: bool
+      WorkspaceDiagnostics: bool
       LogFile: string option }
 
     static member Default =
         { Verbose = false
           AttachDebugger = false
           WaitForDebugger = false
+          WorkspaceDiagnostics = false
           LogFile = None }
 
 type internal CliAction =
@@ -46,6 +48,7 @@ let internal helpText () : string =
           "  -h, --help                     Show help and usage information and exit"
           "  -v, --verbose, --debug         Enable verbose diagnostic logging on stderr"
           "  -l, --logfile, --log-file <f>  Mirror diagnostic logs to the specified file"
+          "  --workspace-diagnostics        Publish closed-file diagnostics across loaded projects"
           "  --attach-debugger              Launch the system debugger on startup"
           "  --wait-for-debugger            Wait for an external debugger to attach on startup"
           ""
@@ -85,6 +88,13 @@ let internal parseArgs (argv: string array) : CliAction =
             if i + 1 < argv.Length && isOptionalBoolLiteral argv[i + 1] then
                 i <- i + 1
 
+        let consumeOptionalBoolValue (defaultVal: bool) =
+            if i + 1 < argv.Length && isOptionalBoolLiteral argv[i + 1] then
+                i <- i + 1
+                not (String.Equals(argv[i], "false", StringComparison.OrdinalIgnoreCase))
+            else
+                defaultVal
+
         let consumeValue () : string option =
             if i + 1 < argv.Length && not (isFlag argv[i + 1]) then
                 i <- i + 1
@@ -112,6 +122,8 @@ let internal parseArgs (argv: string array) : CliAction =
                 | "--wait-for-debugger"
                 | "--attachdebugger" ->
                     opts <- { opts with WaitForDebugger = not (String.Equals(value, "false", StringComparison.OrdinalIgnoreCase)) }
+                | "--workspace-diagnostics" ->
+                    opts <- { opts with WorkspaceDiagnostics = not (String.Equals(value, "false", StringComparison.OrdinalIgnoreCase)) }
                 | "--state-directory"
                 | "--log-level"
                 | "--filter"
@@ -136,6 +148,8 @@ let internal parseArgs (argv: string array) : CliAction =
                 | "--attachdebugger" ->
                     consumeOptionalBool ()
                     opts <- { opts with WaitForDebugger = true }
+                | "--workspace-diagnostics" ->
+                    opts <- { opts with WorkspaceDiagnostics = consumeOptionalBoolValue true }
                 | "-l"
                 | "--logfile"
                 | "--log-file" ->
@@ -251,4 +265,9 @@ let main argv =
         if opts.Verbose then
             eprintfn "[ranvierautocomplete] starting %s (PID %d)" (informationalVersion ()) Environment.ProcessId
 
-        Server.run input output
+        Server.runWith
+            (fun server ->
+                if opts.WorkspaceDiagnostics then
+                    server.EnableWorkspaceDiagnostics())
+            input
+            output

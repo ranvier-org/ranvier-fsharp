@@ -211,14 +211,17 @@ let configUnitTests =
                         "unusedDeclarationsAnalyzer": true,
                         "simplifyNameAnalyzer": true,
                         "unnecessaryParenthesesAnalyzer": false,
+                        "workspaceDiagnostics": true,
                         "lineLens": { "enabled": "replaceCodeLens", "prefix": " // " },
                         "codeLenses": { "signature": { "enabled": false }, "references": { "enabled": true } },
                         "inlayHints": { "typeAnnotations": false, "parameterNames": true, "disableLongTooltip": false },
                         "pipelineHints": { "enabled": true, "prefix": "//=>" }
                       }"""
 
+              Expect.isFalse FSharpConfig.Default.WorkspaceDiagnostics "WorkspaceDiagnostics defaults to false"
               let updated = FSharpConfig.UpdateFromJson FSharpConfig.Default json
               Expect.isTrue updated.AutomaticWorkspaceInit "AutomaticWorkspaceInit"
+              Expect.isTrue updated.WorkspaceDiagnostics "WorkspaceDiagnostics"
               Expect.equal updated.WorkspaceModePeekDeepLevel 5 "WorkspaceModePeekDeepLevel"
               Expect.equal updated.ExcludeProjectDirectories [ "bin"; "obj"; ".git" ] "ExcludeProjectDirectories"
               Expect.isTrue updated.KeywordsAutocomplete "KeywordsAutocomplete"
@@ -283,6 +286,7 @@ let configUnitTests =
                         "FSharp": {
                           "IndentationSize": "not-an-int",
                           "KeywordsAutocomplete": "not-a-bool",
+                          "WorkspaceDiagnostics": "not-a-bool",
                           "ExcludeProjectDirectories": 42,
                           "InlayHints": "not-an-object",
                           "CodeLenses": { "signature": 99 }

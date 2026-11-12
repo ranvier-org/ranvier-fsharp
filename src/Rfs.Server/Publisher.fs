@@ -31,6 +31,8 @@ type private Row =
       /// The graphs that own the file, in load order; the first one's result is published
       Owners: ProjectGraph list
       Open: bool
+      /// Whether this closed row should publish its file's settled diagnostics once for `Epoch`
+      PublishClosed: bool
       /// A new epoch asks for one list sent even if it equals the last one: an open, an edit, a load
       Epoch: int64 }
 
@@ -139,11 +141,15 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let mutable disposed = 0
     // Graph thread
     let lastKeys = Dictionary<string, struct (Rfs.Lsp.Range * int * string * string) list>(StringComparer.OrdinalIgnoreCase)
+    let knownUris = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    let publishedClosed = Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    let pendingForce = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let lastAdopted = Dictionary<ProjectGraph, int64>(HashIdentity.Reference)
     let activeRowCts = HashSet<CancellationTokenSource>(HashIdentity.Reference)
     let mutable rootOwner: Owner = Unchecked.defaultof<_>
     let mutable rows: Signal<Map<string, Row>> = Unchecked.defaultof<_>
     let mutable analyzerFlags: Signal<AnalyzerFlags> = Unchecked.defaultof<_>
+    let mutable workspaceDiags = false
     let mutable epoch = 0L
     let mutable foundStamp = 0L
     let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -233,6 +239,11 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let rowOf (path: string) = rows.Value |> Map.tryFind (rowKey path)
     let setRow (r: Row) = rows.Value <- rows.Value |> Map.add r.Key r
     let dropRow (path: string) = rows.Value <- rows.Value |> Map.remove (rowKey path)
+
+    let uriOf (path: string) =
+        match knownUris.TryGetValue path with
+        | true, u -> u
+        | _ -> Paths.toUri path
 
     /// Queues the list when it is `force`d or differs from the last one queued for the file. `own` is a file's own list
     /// at its LSP version. Graph thread.
@@ -671,6 +682,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         (analyzed: Signal<struct (AnalyzerKey * Rfs.Lsp.Diagnostic list)>)
         : unit =
         let mutable sent = Int64.MinValue
+        let mutable closedSent = Int64.MinValue
 
         createEffect (fun () ->
             let r = item ()
@@ -702,6 +714,41 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                             let analyzedBody = box { TextDocument = { Uri = r.Uri; Version = r.LspVersion } }
                             GraphTurn.afterPump host (fun () ->
                                 outbox.Enqueue(Notify(fun () -> client.Notify("fsharp/documentAnalyzed", analyzedBody) |> Async.StartAsTask :> Task)))
+                elif r.PublishClosed && r.Epoch <> closedSent then
+                    if found.Current then
+                        closedSent <- r.Epoch
+                        let full = Path.GetFullPath r.Path
+                        let force = pendingForce.Remove full
+                        let diags = union r.Path found
+                        let hadPublished = publishedClosed.ContainsKey full || lastKeys.ContainsKey r.Path
+
+                        if (force || not diags.IsEmpty || hadPublished) && r.Uri <> "" then
+                            send r.Path r.Uri None diags force false
+
+                        if diags.IsEmpty then
+                            lastKeys.Remove r.Path |> ignore
+                            publishedClosed.Remove full |> ignore
+                        elif r.Uri <> "" then
+                            publishedClosed[full] <- r.Uri
+
+                        if not (reportsToOpen r.Path found) then
+                            GraphTurn.afterPump host (fun () ->
+                                match rowOf r.Path with
+                                | Some now when obj.ReferenceEquals(now, r) -> dropRow r.Path
+                                | _ -> ())
+                    elif not found.Waiting then
+                        closedSent <- r.Epoch
+                        let full = Path.GetFullPath r.Path
+
+                        if pendingForce.Remove full && r.Uri <> "" then
+                            send r.Path r.Uri None [] true false
+                            lastKeys.Remove r.Path |> ignore
+                            publishedClosed.Remove full |> ignore
+
+                        GraphTurn.afterPump host (fun () ->
+                            match rowOf r.Path with
+                            | Some now when obj.ReferenceEquals(now, r) -> dropRow r.Path
+                            | _ -> ())
                 elif found.Current && not (reportsToOpen r.Path found) then
                     // A closed file reports nothing to an open one: the row goes, after this pump, and with it what it
                     // reported, as for a file never opened
@@ -716,8 +763,10 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         host.Post(fun () ->
             createRoot (fun o ->
                 rootOwner <- o
+                let cfg = readConfig ()
                 rows <- createSignal Map.empty
-                analyzerFlags <- createSignal (flagsOf (readConfig ()))
+                analyzerFlags <- createSignal (flagsOf cfg)
+                workspaceDiags <- cfg.WorkspaceDiagnostics
 
                 projection <-
                     createProjectionWith
@@ -750,9 +799,10 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
               LspVersion = doc.LspVersion
               Owners = owners
               Open = true
+              PublishClosed = false
               Epoch = nextEpoch () }
 
-    let closedRow (path: string) (uri: string) (owners: ProjectGraph list) =
+    let closedRow (path: string) (uri: string) (publishClosed: bool) (owners: ProjectGraph list) =
         setRow
             { Key = rowKey path
               Path = path
@@ -760,9 +810,66 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
               LspVersion = 0
               Owners = owners
               Open = false
+              PublishClosed = publishClosed
               Epoch = nextEpoch () }
 
+    let armClosed (force: bool) (uriOverride: string voption) (path: string) =
+        let full = Path.GetFullPath path
+
+        if (documents.TryFind full).IsNone then
+            match workspace.OwnersOf full with
+            | [] -> ()
+            | owners ->
+                if force then
+                    pendingForce.Add full |> ignore
+
+                let uri =
+                    match uriOverride with
+                    | ValueSome u -> u
+                    | ValueNone -> uriOf full
+
+                closedRow full uri true owners
+
+    let armDownstreamClosed (roots: string list) =
+        let targets = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+        for rawRoot in roots do
+            let root = Path.GetFullPath rawRoot
+            targets.Add root |> ignore
+
+            for g in workspace.OwnersOf root do
+                let files = workspace.FilesOf g |> List.toArray
+
+                match files |> Array.tryFindIndex (isSame root) with
+                | Some idx ->
+                    if root.EndsWith(".fs", StringComparison.OrdinalIgnoreCase) then
+                        let pairedSig = Path.ChangeExtension(root, ".fsi")
+
+                        for j = 0 to idx - 1 do
+                            if isSame files[j] pairedSig then
+                                targets.Add files[j] |> ignore
+
+                    for j = idx to files.Length - 1 do
+                        targets.Add files[j] |> ignore
+                | None -> ()
+
+                for dep in workspace.ReferencingProjects g do
+                    for f in workspace.FilesOf dep do
+                        targets.Add f |> ignore
+
+        for p in publishedClosed.Keys do
+            targets.Add p |> ignore
+
+        batch (fun () ->
+            for p in targets do
+                armClosed false ValueNone p)
+
     let openNow (uri: string) (path: string) (version: int) (text: string) =
+        let full = Path.GetFullPath path
+        knownUris[full] <- uri
+        pendingForce.Remove full |> ignore
+        publishedClosed.Remove full |> ignore
+
         let document =
             { Uri = uri
               Path = path
@@ -788,25 +895,54 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         match documents.Close path with
         | None -> ()
         | Some d ->
+            let full = Path.GetFullPath path
             let owners = workspace.Close(path, diskText)
 
             for g in owners do
                 g.Demote path
 
-            send path d.Uri None [] true false
-            lastKeys.Remove path |> ignore
+            match owners, diskText with
+            | [], _
+            | _, None ->
+                pendingForce.Remove full |> ignore
+                publishedClosed.Remove full |> ignore
+                send path d.Uri None [] true false
+                lastKeys.Remove path |> ignore
 
-            match owners with
-            | [] -> dropRow path
-            | _ -> closedRow path d.Uri owners
+                match owners with
+                | [] -> dropRow path
+                | _ -> closedRow path d.Uri false owners
+            | _ ->
+                batch (fun () ->
+                    armClosed true (ValueSome d.Uri) path
+
+                    for p in publishedClosed.Keys |> Seq.toArray do
+                        if not (isSame p full) then
+                            armClosed false ValueNone p)
+
+    let saveNow (path: string) (explicitText: string option) (diskText: string option) =
+        let full = Path.GetFullPath path
+
+        match documents.TryFind full with
+        | Some d ->
+            match explicitText with
+            | Some t when t <> d.Text ->
+                match documents.Update(full, fun doc -> { doc with Text = t }) with
+                | Some updated -> openRow updated (workspace.Open(full, t, updated.LspVersion) |> List.map fst)
+                | None -> ()
+            | _ -> ()
+        | None ->
+            match diskText with
+            | Some t ->
+                for g in workspace.OwnersOf full do
+                    g.SetText(full, t) |> ignore
+            | None -> ()
+
+        armDownstreamClosed [ full ]
 
     let diskChangedNow (paths: string list) =
         diskPasses <- diskPasses + 1
-
-        for path in paths do
-            match (documents.TryFind path).IsNone, workspace.OwnersOf path with
-            | true, (_ :: _ as owners) -> closedRow path "" owners
-            | _ -> ()
+        armDownstreamClosed paths
 
     let sameOwners (a: ProjectGraph list) (b: ProjectGraph list) =
         a.Length = b.Length && List.forall2 (fun x y -> obj.ReferenceEquals(x, y)) a b
@@ -818,6 +954,16 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 owners.Head.Promote doc.Path
                 openRow doc owners
             | _ -> ()
+
+        if workspaceDiags then
+            batch (fun () ->
+                for p in workspace.FilesOf graph do
+                    armClosed false ValueNone p)
+        else
+            batch (fun () ->
+                for p in publishedClosed.Keys |> Seq.toArray do
+                    if workspace.OwnersOf p |> List.exists (fun g -> obj.ReferenceEquals(g, graph)) then
+                        armClosed false ValueNone p)
 
     /// After a load or reload: a document whose project is gone gets the empty list; what a file no project owns any
     /// more reported to other files goes; a closed file's row follows its owners now, or goes with them
@@ -835,6 +981,17 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | owners when not (sameOwners owners r.Owners) ->
                     setRow { r with Owners = owners; Epoch = nextEpoch () }
                 | _ -> ()
+
+        for KeyValue(p, uri) in publishedClosed |> Seq.toArray do
+            if (documents.TryFind p).IsNone && (workspace.OwnersOf p).IsEmpty then
+                pendingForce.Remove p |> ignore
+                send p uri None [] true false
+                lastKeys.Remove p |> ignore
+                publishedClosed.Remove p |> ignore
+
+        for p in knownUris.Keys |> Seq.toArray do
+            if (documents.TryFind p).IsNone && (workspace.OwnersOf p).IsEmpty then
+                knownUris.Remove p |> ignore
 
         for doc in documents.All do
             if (workspace.OwnersOf doc.Path).IsEmpty then
@@ -855,8 +1012,8 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     member _.Change(path: string, version: int, change: string -> string) : unit =
         post (fun () -> changeNow path version change)
 
-    /// The editor closed the document: the file on disk is its text again, it is demoted, and its diagnostics cleared.
-    /// The disk is read here, off the graph thread.
+    /// The editor closed the document: the file on disk is its text again, it is demoted, and its settled on-disk
+    /// diagnostics replace any unsaved buffer diagnostics. The disk is read here, off the graph thread.
     member _.Close(path: string) : unit =
         // Whether or not a project owns it now: a load may register one before the close runs
         let diskText =
@@ -865,21 +1022,56 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
         onClose path
         post (fun () -> closeNow path diskText)
 
-    /// Files that are not open changed on disk and the graphs have their new texts: the open documents hear what that
-    /// changed, in one pass for all of them
+    /// The editor saved the document: downstream closed files in owning and referencing projects settle and publish.
+    member _.Save(path: string, ?text: string) : unit =
+        let diskText =
+            match text with
+            | Some t -> Some t
+            | None ->
+                if (documents.TryFind path).IsNone && File.Exists path then
+                    Workspace.ReadOnClose path
+                else
+                    None
+
+        post (fun () -> saveNow path text diskText)
+
+    /// Files that are not open changed on disk and the graphs have their new texts: the open documents and downstream
+    /// closed files hear what that changed, in one pass for all of them
     member _.DiskChanged(paths: string list) : unit = post (fun () -> diskChangedNow paths)
 
     /// A project has loaded: its open documents were given their texts, so they are promoted and published
     member _.Loaded(graph: ProjectGraph) : unit = post (fun () -> loadedNow graph)
 
-    /// Re-evaluates open-file built-in analyzers when `FSharpConfig` analyzer flags change
+    /// Re-evaluates open-file built-in analyzers and opt-in workspace diagnostics when `FSharpConfig` changes
     member _.NotifyConfigChanged() : unit =
         post (fun () ->
+            let cfg = readConfig ()
+
             if not (isNull (box analyzerFlags)) then
-                let next = flagsOf (readConfig ())
+                let next = flagsOf cfg
 
                 if analyzerFlags.Value <> next then
-                    analyzerFlags.Value <- next)
+                    analyzerFlags.Value <- next
+
+            if not (isNull (box rows)) && cfg.WorkspaceDiagnostics <> workspaceDiags then
+                workspaceDiags <- cfg.WorkspaceDiagnostics
+
+                if workspaceDiags then
+                    batch (fun () ->
+                        for g in workspace.Projects do
+                            for p in workspace.FilesOf g do
+                                armClosed false ValueNone p)
+                else
+                    batch (fun () ->
+                        for r in rows.Value |> Map.values |> Seq.toArray do
+                            if not r.Open && r.PublishClosed && not (pendingForce.Contains(Path.GetFullPath r.Path)) then
+                                setRow { r with PublishClosed = false }
+
+                        for KeyValue(p, uri) in publishedClosed |> Seq.toArray do
+                            if (documents.TryFind p).IsNone then
+                                send p uri None [] true false
+                                lastKeys.Remove p |> ignore
+                                publishedClosed.Remove p |> ignore))
 
     /// Runs `hook` with the LSP version of a file's own list before it is sent, holding the sends queued after it. For
     /// tests.

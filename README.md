@@ -143,9 +143,13 @@ dotnet add package Ranvier.FSharp.Server --prerelease
   "FSharp.inlayHints.parameterNames": true,
   "FSharp.codeLenses.signature.enabled": true,
   "FSharp.codeLenses.references.enabled": true,
-  "FSharp.pipelineHints.enabled": true
+  "FSharp.pipelineHints.enabled": true,
+  // Optional: publish diagnostics for unopened files on project load (default false):
+  "FSharp.workspaceDiagnostics": false
 }
 ```
+
+> **Closed-file & downstream diagnostics:** By default (`"FSharp.workspaceDiagnostics": false`), live typing updates diagnostics for open editors only, closing a tab retains any real on-disk problems in the Problems panel (discarding unsaved buffer-only errors), and saving a file (`Ctrl+S` / `Cmd+S`) or external disk changes settles and publishes downstream breaks across closed files in the same and referencing projects. Set `"FSharp.workspaceDiagnostics": true` (or pass `--workspace-diagnostics` on the CLI) to also publish diagnostics for unopened files immediately on cold project load.
 
 ---
 
@@ -276,6 +280,7 @@ All settings can be passed either in LSP `initializeParams.initializationOptions
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
 | `AutomaticWorkspaceInit` | `bool` | `false` | Automatically discover and load `.slnx` / `.sln` / `.fsproj` at `rootUri` on `initialized` (set `true` for non-Ionide editors) |
+| `WorkspaceDiagnostics` | `bool` | `false` | Publish compiler diagnostics for unopened files across all loaded projects on load/reload (also available via `--workspace-diagnostics` CLI flag); live typing remains open-file-only until save |
 | `WorkspaceModePeekDeepLevel` | `int` | `2` | Directory recursion depth when scanning for solutions/projects |
 | `ExcludeProjectDirectories` | `string[]` | `[".git", "node_modules", ".ionide"]` | Directory names skipped during workspace discovery |
 | `KeywordsAutocomplete` | `bool` | `false` | Include F# language keywords in completion lists |
@@ -361,17 +366,17 @@ This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp
    ```bash
    git -C ../fickle-fsharp push origin fickle_decl
    ```
-2. Push `main` and tag a release (`v0.1.0-preview.2`):
+2. Push `main` and tag a release (`v0.1.0-preview.3`):
    ```bash
    git push -u origin main
-   git tag v0.1.0-preview.2
-   git push origin v0.1.0-preview.2
+   git tag v0.1.0-preview.3
+   git push origin v0.1.0-preview.3
    ```
    The [`.github/workflows/publish.yml`](.github/workflows/publish.yml) workflow authenticates via NuGet Trusted Publishing (OIDC, `NuGet/login@v1`), builds `fickle-fsharp` + `ranvier-fsharp`, runs isolated consumer smoke tests on all 7 packages (`build/verify-packages.ps1`), pushes them to NuGet.org in dependency tier order, and attaches portable & RID archives (`win-x64`, `linux-x64`, `osx-arm64`) + `.nupkg` files to a GitHub Release.
 
 To verify published packages live from `https://api.nuget.org/v3/index.json` in a clean NuGet cache:
 ```powershell
-pwsh -File build/verify-packages.ps1 -OnlineOnly -Version 0.1.0-preview.2
+pwsh -File build/verify-packages.ps1 -OnlineOnly -Version 0.1.0-preview.3
 ```
 
 ---

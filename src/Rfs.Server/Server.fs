@@ -320,6 +320,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     member _.Client = client
     member _.Config: FSharpConfig = Volatile.Read &config
+    member _.EnableWorkspaceDiagnostics() : unit =
+        updateConfig (JObject(JProperty("WorkspaceDiagnostics", true)))
     member _.Host = host
     member _.Workspace = workspace
     member internal _.Documents = documents
@@ -578,7 +580,8 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                             <| U2.C1
                                 { TextDocumentSyncOptions.Default with
                                     OpenClose = Some true
-                                    Change = Some TextDocumentSyncKind.Incremental }
+                                    Change = Some TextDocumentSyncKind.Incremental
+                                    Save = Some(U2.C2 { IncludeText = Some false }) }
                         HoverProvider = Some(U2.C1 true)
                         DefinitionProvider = Some(U2.C1 true)
                         DeclarationProvider = Some(U3.C1 true)
@@ -725,7 +728,14 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
             ignoreNotification
 
-        member _.TextDocumentDidSave(_) = ignoreNotification
+        member _.TextDocumentDidSave(p: DidSaveTextDocumentParams) =
+            try
+                let path = Paths.ofUri p.TextDocument.Uri
+                publisher.Save(path, ?text = p.Text)
+            with ex ->
+                eprintfn "[ranvierautocomplete] didSave failed: %O" ex
+
+            ignoreNotification
 
         member _.WorkspaceDidChangeConfiguration(p: DidChangeConfigurationParams) =
             try

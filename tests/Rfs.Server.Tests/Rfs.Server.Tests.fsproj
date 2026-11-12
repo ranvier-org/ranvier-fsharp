@@ -34,6 +34,7 @@
     <Compile Include="RenameAndIonideTests.fs" />
     <Compile Include="Task6bWorkspaceItemsTests.fs" />
     <Compile Include="CodeActionsAndFormattingTests.fs" />
+    <Compile Include="WorkspaceDiagnosticsTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
