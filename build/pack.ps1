@@ -36,25 +36,36 @@ $nupkgDir = [System.IO.Path]::Combine($OutputDir, 'nupkg')
 $publishDir = [System.IO.Path]::Combine($OutputDir, 'publish')
 
 $fcsProp = "-p:FickleFcsDir=$([System.IO.Path]::TrimEndingDirectorySeparator($fcsDir))$([System.IO.Path]::DirectorySeparatorChar)"
-[string[]]$versionProps = if ($Version) { "-p:Version=$Version" } else { @() }
 
 Push-Location $repoRoot
 try {
     Write-Host "=== Publishing framework-dependent bundle -> $publishDir" -ForegroundColor Cyan
     if (Test-Path $publishDir) { Remove-Item -Recurse -Force $publishDir }
-    dotnet publish $serverProj -c $Configuration -o $publishDir $fcsProp @versionProps
+    if ($Version) {
+        dotnet publish $serverProj -c $Configuration -o $publishDir $fcsProp "-p:Version=$Version"
+    } else {
+        dotnet publish $serverProj -c $Configuration -o $publishDir $fcsProp
+    }
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
     Write-Host "=== Packing .NET tool NuGet package -> $nupkgDir" -ForegroundColor Cyan
     if (Test-Path $nupkgDir) { Remove-Item -Recurse -Force $nupkgDir }
-    dotnet pack $serverProj -c $Configuration -o $nupkgDir $fcsProp @versionProps
+    if ($Version) {
+        dotnet pack $serverProj -c $Configuration -o $nupkgDir $fcsProp "-p:Version=$Version"
+    } else {
+        dotnet pack $serverProj -c $Configuration -o $nupkgDir $fcsProp
+    }
     if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed with exit code $LASTEXITCODE" }
 
     if ($Runtime) {
         $ridDir = [System.IO.Path]::Combine($OutputDir, "publish-$Runtime")
         Write-Host "=== Publishing $Runtime bundle -> $ridDir" -ForegroundColor Cyan
         if (Test-Path $ridDir) { Remove-Item -Recurse -Force $ridDir }
-        dotnet publish $serverProj -c $Configuration -r $Runtime --self-contained false -o $ridDir $fcsProp @versionProps
+        if ($Version) {
+            dotnet publish $serverProj -c $Configuration -r $Runtime --self-contained false -o $ridDir $fcsProp "-p:Version=$Version"
+        } else {
+            dotnet publish $serverProj -c $Configuration -r $Runtime --self-contained false -o $ridDir $fcsProp
+        }
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($Runtime) failed with exit code $LASTEXITCODE" }
     }
 }

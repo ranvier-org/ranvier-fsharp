@@ -366,26 +366,47 @@ let tests =
                   let xml = FileInfo(Path.ChangeExtension(dll, ".xml"))
                   let doc = FSharp.Compiler.Symbols.FSharpXmlDoc.FromXmlFile(dll, "M:Denied.f")
                   File.WriteAllText(xml.FullName, "<doc><members><member name=\"M:Denied.f\"><summary>Does f</summary></member></members></doc>")
-                  let security = xml.GetAccessControl()
+                  if OperatingSystem.IsWindows() then
+                      let security = xml.GetAccessControl()
 
-                  let rule =
-                      System.Security.AccessControl.FileSystemAccessRule(
-                          System.Security.Principal.WindowsIdentity.GetCurrent().User,
-                          System.Security.AccessControl.FileSystemRights.Read,
-                          System.Security.AccessControl.AccessControlType.Deny
-                      )
+                      let rule =
+                          System.Security.AccessControl.FileSystemAccessRule(
+                              System.Security.Principal.WindowsIdentity.GetCurrent().User,
+                              System.Security.AccessControl.FileSystemRights.Read,
+                              System.Security.AccessControl.AccessControlType.Deny
+                          )
 
-                  security.AddAccessRule rule
-                  xml.SetAccessControl security
-
-                  try
-                      Expect.throwsT<UnauthorizedAccessException> (fun () -> File.ReadAllText xml.FullName |> ignore) "the read is denied"
-                      Expect.isNone (Hover.docText doc) "no documentation, and no exception"
-                  finally
-                      security.RemoveAccessRule rule |> ignore
+                      security.AddAccessRule rule
                       xml.SetAccessControl security
 
-                  Expect.equal (Hover.docText doc) (Some "Does f") "not remembered as empty"
+                      try
+                          Expect.throwsT<UnauthorizedAccessException> (fun () -> File.ReadAllText xml.FullName |> ignore) "the read is denied"
+                          Expect.isNone (Hover.docText doc) "no documentation, and no exception"
+                      finally
+                          security.RemoveAccessRule rule |> ignore
+                          xml.SetAccessControl security
+
+                      Expect.equal (Hover.docText doc) (Some "Does f") "not remembered as empty"
+                  else
+                      File.SetUnixFileMode(xml.FullName, UnixFileMode.None)
+
+                      let denied =
+                          try
+                              File.ReadAllText xml.FullName |> ignore
+                              false
+                          with :? UnauthorizedAccessException ->
+                              true
+
+                      try
+                          if denied then
+                              Expect.isNone (Hover.docText doc) "no documentation, and no exception"
+                      finally
+                          File.SetUnixFileMode(xml.FullName, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+
+                      if not denied then
+                          Tests.skiptest "current user bypasses Unix mode 000"
+                      else
+                          Expect.equal (Hover.docText doc) (Some "Does f") "not remembered as empty"
               finally
                   dir.Delete true
           }

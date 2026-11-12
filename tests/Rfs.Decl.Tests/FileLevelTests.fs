@@ -686,12 +686,16 @@ let fileLevelTests =
           testTask "the fingerprint writes access paths as sprintf does" {
               let corpus = Path.GetFullPath(Path.Combine(tinyDir, "..", "..", "..", "..", "ranvier-fsharp-corpus"))
 
+              let corpusProjects =
+                  [ Path.Combine(corpus, "small", "src", "FSharp.Data.Adaptive", "FSharp.Data.Adaptive.fsproj")
+                    Path.Combine(corpus, "mid", "src", "FsAutoComplete.Core", "FsAutoComplete.Core.fsproj")
+                    Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
+                  |> List.filter File.Exists
+
               let projects =
-                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix" ] do
+                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix"; "SigShadowNs" ] do
                         yield fixture f
-                    yield Path.Combine(corpus, "small", "src", "FSharp.Data.Adaptive", "FSharp.Data.Adaptive.fsproj")
-                    yield Path.Combine(corpus, "mid", "src", "FsAutoComplete.Core", "FsAutoComplete.Core.fsproj")
-                    yield Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
+                    yield! corpusProjects ]
 
               let texts = Collections.Generic.HashSet<string * string>()
 
@@ -702,9 +706,20 @@ let fileLevelTests =
                       for pair in DeclarationChecker.AccessPathTexts f.Signature do
                           texts.Add pair |> ignore
 
+              // Ensure both Namespace and >60-char sprintf fallback paths are exercised even without the optional external corpus checkout.
+              let! longNs =
+                  load
+                      tinyProject
+                      [ "C.fs",
+                        "namespace Tiny.DeepNamespaceSegmentOne.DeepNamespaceSegmentTwo.DeepNamespaceSegmentThree\n\nmodule InnerModuleSegmentFour =\n    let v = 1\n" ]
+
+              for f in chain longNs (parseAll longNs) do
+                  for pair in DeclarationChecker.AccessPathTexts f.Signature do
+                      texts.Add pair |> ignore
+
               let mismatches = [ for written, printed in texts do if written <> printed then yield $"%s{written} <> %s{printed}" ]
               Expect.isEmpty mismatches "every access path is written as sprintf \"%A\" gives it"
-              Expect.isGreaterThan texts.Count 100 "the corpus has many access paths"
+              Expect.isGreaterThan texts.Count (if corpusProjects.IsEmpty then 10 else 100) "many access paths checked"
               Expect.exists texts (fun (written, _) -> written.Contains "Namespace") "some path is in a namespace"
               Expect.exists texts (fun (written, _) -> written.Length > 60) "some path is long enough to go to sprintf"
           }
@@ -780,11 +795,13 @@ let fileLevelTests =
           // M7 of the Task 4 review: a one-declaration file is recognised without splitting it
           testTask "counting declarations gives Split's count" {
               let corpus = Path.GetFullPath(Path.Combine(tinyDir, "..", "..", "..", "..", "ranvier-fsharp-corpus"))
+              let fantomas = Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj")
 
               let projects =
                   [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix"; "Rec"; "SigUnmatched" ] do
                         yield fixture f
-                    yield Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
+                    if File.Exists fantomas then
+                        yield fantomas ]
 
               let mutable single = 0
 

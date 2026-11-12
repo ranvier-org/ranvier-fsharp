@@ -95,14 +95,16 @@ jobs:
             $ver = '${{ github.ref_name }}'.TrimStart('v')
           }
           ./build/fork.ps1 -ForkDir ../fickle-fsharp
-          [string[]]$verArgs = if ($ver) { '-Version', $ver } else { @() }
-          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp @verArgs
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
           $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
-          [string[]]$verProps = if ($ver) { "-p:Version=$ver" } else { @() }
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
             $out = "./artifacts/publish-$rid"
-            dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" @verProps
+            if ($ver) {
+              dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" "-p:Version=$ver"
+            } else {
+              dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir"
+            }
             if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
             Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
           }

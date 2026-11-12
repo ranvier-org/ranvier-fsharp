@@ -76,12 +76,21 @@ module internal Protocol =
 
     /// One spelling per file: servers emit `file:///c%3A/...` while callers pass `C:\...`, and paths are compared ordinally.
     let normalizePath (path: string) =
-        let full = Path.GetFullPath path
-
-        if full.Length >= 2 && full[1] = ':' then
-            string (Char.ToUpperInvariant full[0]) + full.Substring 1
+        if
+            not (OperatingSystem.IsWindows())
+            && path.Length >= 3
+            && Char.IsAsciiLetter path[0]
+            && path[1] = ':'
+            && (path[2] = '\\' || path[2] = '/')
+        then
+            string (Char.ToUpperInvariant path[0]) + path.Substring(1).Replace('/', '\\')
         else
-            full
+            let full = Path.GetFullPath path
+
+            if full.Length >= 2 && full[1] = ':' then
+                string (Char.ToUpperInvariant full[0]) + full.Substring 1
+            else
+                full
 
     let pathOfUri (uri: string) =
         match Uri.TryCreate(uri, UriKind.Absolute) with
