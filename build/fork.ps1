@@ -15,14 +15,17 @@ $env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
 
 $fcsDir = [System.IO.Path]::Combine($ForkDir, 'artifacts', 'bin', 'FSharp.Compiler.Service', 'Release', 'net10.0')
 $fcsDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.dll')
+$fsharpCoreDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Core.dll')
 
 Push-Location $ForkDir
 try {
-    foreach ($project in 'buildtools/fslex', 'buildtools/fsyacc', 'src/Compiler') {
+    # `src/FSharp.Build` must be restored and built before `src/Compiler` (`UseBootstrappedFSharpBuildTasks=true` invokes it
+    # via <MSBuild> without running Restore). `-p:FSHARPCORE_USE_PACKAGE=false` ensures the fork's `FSharp.Core.dll` is built
+    # and placed alongside `FSharp.Compiler.Service.dll` in `artifacts/bin/FSharp.Compiler.Service/Release/net10.0/`.
+    foreach ($project in 'buildtools/fslex', 'buildtools/fsyacc', 'src/FSharp.Build', 'src/Compiler') {
         Write-Host "dotnet build -c Release $project"
-        # The fork's global.json pins an SDK whose current TFM is net11.0; FickleFcsDir expects net10.0.
-        # --no-incremental: the DLL is always rewritten, so its timestamp says when it was last built.
-        dotnet build -c Release --no-incremental -p:FSharpNetCoreProductTargetFramework=net10.0 $project
+        $extraProps = if ($project -eq 'src/Compiler') { @('-p:FSHARPCORE_USE_PACKAGE=false') } else { @() }
+        dotnet build -c Release --no-incremental -p:FSharpNetCoreProductTargetFramework=net10.0 @extraProps $project
         if ($LASTEXITCODE -ne 0) { throw "Build of $project failed with exit code $LASTEXITCODE" }
     }
 }
@@ -31,4 +34,6 @@ finally {
 }
 
 if (-not (Test-Path $fcsDll)) { throw "Expected $fcsDll after the build, but it does not exist" }
+if (-not (Test-Path $fsharpCoreDll)) { throw "Expected $fsharpCoreDll after the build, but it does not exist" }
 Write-Host "OK: $fcsDll ($((Get-Item $fcsDll).LastWriteTime))"
+Write-Host "OK: $fsharpCoreDll ($((Get-Item $fsharpCoreDll).LastWriteTime))"

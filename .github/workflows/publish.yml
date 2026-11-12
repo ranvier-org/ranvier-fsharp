@@ -50,20 +50,20 @@ jobs:
       id-token: write
     steps:
       - name: Checkout ranvier-fsharp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           path: ranvier-fsharp
           persist-credentials: false
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: ranvier-fsharp/global.json
 
       - name: Download artifacts from CI workflow_run
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: nuget-packages
           path: ranvier-fsharp/artifacts/nupkg
@@ -72,7 +72,7 @@ jobs:
 
       - name: Checkout fickle-fsharp (for tag or manual dispatch build)
         if: github.event_name != 'workflow_run'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: shayanhabibi/fickle-fsharp
           ref: fickle_decl
@@ -81,7 +81,7 @@ jobs:
 
       - name: Setup .NET 11 SDK for FCS fork build
         if: github.event_name != 'workflow_run'
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 11.0.x
 

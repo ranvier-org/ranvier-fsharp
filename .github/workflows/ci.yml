@@ -25,13 +25,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout ranvier-fsharp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ranvier-fsharp
           persist-credentials: false
 
       - name: Checkout fickle-fsharp (FCS fork)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: shayanhabibi/fickle-fsharp
           ref: fickle_decl
@@ -39,13 +39,13 @@ jobs:
           persist-credentials: false
 
       - name: Setup .NET 10 & 11 SDKs
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: ranvier-fsharp/global.json
           dotnet-version: 11.0.x
 
       - name: Cache NuGet packages (fork)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-fork-${{ runner.os }}-${{ hashFiles('fickle-fsharp/eng/Versions.props', 'fickle-fsharp/src/Compiler/FSharp.Compiler.Service.fsproj') }}
@@ -57,7 +57,7 @@ jobs:
         run: ./build/fork.ps1 -ForkDir ../fickle-fsharp
 
       - name: Upload built FCS fork assemblies
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fickle-fcs-net10
           path: |
@@ -78,23 +78,23 @@ jobs:
         suite: [fast, decl-checker, server]
     steps:
       - name: Checkout ranvier-fsharp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Download FCS fork assemblies
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fickle-fcs-net10
           path: .fcs/net10.0
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'Directory.Packages.props', '**/*.fsproj') }}
@@ -142,18 +142,18 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout ranvier-fsharp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Download FCS fork assemblies
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fickle-fcs-net10
           path: .fcs/net10.0
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -175,18 +175,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout ranvier-fsharp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Download FCS fork assemblies
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fickle-fcs-net10
           path: ../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -215,14 +215,14 @@ jobs:
           Write-Host "Verified tool: $ver"
 
       - name: Upload NuGet packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
           path: artifacts/nupkg/*.nupkg
           if-no-files-found: error
 
       - name: Upload standalone release bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-bundles
           path: artifacts/*.zip
