@@ -652,7 +652,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 return
                     Ok
                         { Capabilities = capabilities
-                          ServerInfo = Some { Name = "ranvierautocomplete"; Version = None } }
+                          ServerInfo = Some { Name = "ranvierautocomplete"; Version = Some(RanvierServer.Version) } }
             }
 
         member this.Initialized(_) =
@@ -1137,6 +1137,17 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.CancelRequest(_) = ignoreNotification
         member _.Progress(_) = ignoreNotification
         member _.SetTrace(_) = ignoreNotification
+
+    static member val Version: string =
+        let asm = typeof<RanvierServer>.Assembly
+
+        match Attribute.GetCustomAttribute(asm, typeof<Reflection.AssemblyInformationalVersionAttribute>) with
+        | :? Reflection.AssemblyInformationalVersionAttribute as attr when not (String.IsNullOrWhiteSpace attr.InformationalVersion) ->
+            attr.InformationalVersion.Split('+')[0]
+        | _ ->
+            match asm.GetName().Version with
+            | null -> "0.1.0"
+            | v -> v.ToString()
 
     interface IDisposable with
         member _.Dispose() = dispose ()

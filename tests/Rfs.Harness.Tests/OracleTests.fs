@@ -27,7 +27,8 @@ let private diagnostic line : Diagnostic =
 
 [<Tests>]
 let tests =
-    testList
+    testSequenced
+    <| testList
         "Oracle"
         [ test "compare reports missing and extra" {
               Expect.isEmpty (Diagnostics.compare [ diagnostic 1 ] [ { diagnostic 1 with Source = "b" } ]) "same, source ignored"

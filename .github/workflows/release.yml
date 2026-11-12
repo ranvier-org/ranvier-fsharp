@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g. 0.1.0-preview.1)'
+        required: false
+        default: ''
+      publish_nuget:
+        description: 'Push .nupkg to NuGet.org (requires NUGET_API_KEY secret)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+
+jobs:
+  release:
+    name: Build, Pack & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          path: ranvier-fsharp
+
+      - name: Checkout fickle-fsharp (FCS fork)
+        uses: actions/checkout@v4
+        with:
+          repository: shayanhabibi/fickle-fsharp
+          ref: fickle_decl
+          path: fickle-fsharp
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ranvier-fsharp/global.json
+
+      - name: Setup .NET SDK for fickle-fsharp build
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: fickle-fsharp/global.json
+
+      - name: Determine version
+        id: meta
+        shell: pwsh
+        run: |
+          $v = '${{ inputs.version }}'
+          if (-not $v -and '${{ github.ref_type }}' -eq 'tag') {
+            $v = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build FCS fork (net10.0)
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: ./build/fork.ps1 -ForkDir ../fickle-fsharp
+
+      - name: Pack .NET tool and portable bundle
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $verArgs = if ('${{ steps.meta.outputs.version }}') { @('-Version', '${{ steps.meta.outputs.version }}') } else { @() }
+          ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp @verArgs
+          Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
+
+      - name: Publish RID bundles (win-x64, linux-x64, osx-arm64)
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $fcsDir = [System.IO.Path]::GetFullPath('../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0') + '/'
+          $verProps = if ('${{ steps.meta.outputs.version }}') { @("-p:Version=${{ steps.meta.outputs.version }}") } else { @() }
+          foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+            $out = "./artifacts/publish-$rid"
+            dotnet publish src/Rfs.Server/Rfs.Server.fsproj -c Release -r $rid --self-contained false -o $out "-p:FickleFcsDir=$fcsDir" @verProps
+            if ($LASTEXITCODE -ne 0) { throw "Publish failed for $rid" }
+            Compress-Archive -Path "$out/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+          }
+
+      - name: Smoke-test packed .NET tool
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-release-smoke"
+          dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
+          & (Join-Path $toolDir 'ranvierautocomplete') --version
+          if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            ranvier-fsharp/artifacts/nupkg/*.nupkg
+            ranvier-fsharp/artifacts/*.zip
+          if-no-files-found: error
+
+      - name: Push to NuGet.org
+        if: (github.ref_type == 'tag' || inputs.publish_nuget == true) && env.NUGET_API_KEY != ''
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet nuget push ./artifacts/nupkg/*.nupkg --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          gh release create '${{ github.ref_name }}' `
+            ./artifacts/nupkg/*.nupkg `
+            ./artifacts/*.zip `
+            --generate-notes `
+            --title '${{ github.ref_name }}'

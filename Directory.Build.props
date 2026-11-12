@@ -3,9 +3,26 @@
     <TargetFramework>net10.0</TargetFramework>
     <NoWarn>$(NoWarn);NU1507</NoWarn>
     <WarningsAsErrors>$(WarningsAsErrors);FS0025</WarningsAsErrors>
-    <FickleFcsDir>C:\Users\shaya\RiderProjects\fickle-fsharp\artifacts\bin\FSharp.Compiler.Service\Release\net10.0\</FickleFcsDir>
+    <FickleFcsDir Condition="'$(FickleFcsDir)' == ''">$([MSBuild]::EnsureTrailingSlash($([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../fickle-fsharp/artifacts/bin/FSharp.Compiler.Service/Release/net10.0'))))</FickleFcsDir>
     <!-- Every project in the repo runs on the fork's FSharp.Core, so exactly one is loaded at runtime. -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+
+    <!-- Package and SourceLink metadata (opt-in packaging on Rfs.Server only). -->
+    <Version Condition="'$(Version)' == ''">0.1.0-preview.1</Version>
+    <Authors>shayanhabibi</Authors>
+    <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ranvier-org/ranvier-fsharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+    <IncludeSymbols>false</IncludeSymbols>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true' and $(MSBuildProjectDirectory.StartsWith('$(MSBuildThisFileDirectory)src'))">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
   <!--
     `RanvierTrace=true` selects the `Ranvier.Traced` NuGet package and compiles in the Trace.named labels of the checker's

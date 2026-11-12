@@ -1,6 +1,13 @@
 bin/
 obj/
+artifacts/
+nupkg/
+TestResults/
 .vs/
 .idea/
-*.user
 .superpowers/
+*.user
+*.nupkg
+*.snupkg
+*.binlog
+.DS_Store

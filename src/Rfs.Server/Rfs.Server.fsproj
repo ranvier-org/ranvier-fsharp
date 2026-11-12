@@ -2,7 +2,18 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>ranvierautocomplete</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>ranvierautocomplete</ToolCommandName>
+    <PackageId>Ranvier.AutoComplete</PackageId>
+    <Description>Demand-driven incremental F# language server powered by Ranvier, compatible with Ionide and LSP editors.</Description>
+    <PackageTags>fsharp;lsp;language-server;ionide;ranvier;fsautocomplete</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview release of Ranvier.AutoComplete (ranvierautocomplete).</PackageReleaseNotes>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Link="README.md" Visible="false" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="Client.fs" />
     <Compile Include="Config.fs" />

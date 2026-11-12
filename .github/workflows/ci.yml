@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+
+jobs:
+  build-and-test:
+    name: Build, Test & Pack (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout ranvier-fsharp
+        uses: actions/checkout@v4
+        with:
+          path: ranvier-fsharp
+
+      - name: Checkout fickle-fsharp (FCS fork)
+        uses: actions/checkout@v4
+        with:
+          repository: shayanhabibi/fickle-fsharp
+          ref: fickle_decl
+          path: fickle-fsharp
+
+      - name: Setup .NET 10 SDK (runtime & MSBuildLocator host)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ranvier-fsharp/global.json
+
+      - name: Setup .NET SDK for fickle-fsharp build
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: fickle-fsharp/global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('ranvier-fsharp/global.json', 'ranvier-fsharp/Directory.Packages.props', 'ranvier-fsharp/**/*.fsproj', 'fickle-fsharp/eng/Versions.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build FCS fork (net10.0)
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: ./build/fork.ps1 -ForkDir ../fickle-fsharp
+
+      - name: Build solution (Release)
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet build RanvierFSharp.slnx -c Release
+
+      - name: Run Rfs.Lsp.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj -c Release --no-build
+
+      - name: Run Rfs.Harness.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj -c Release --no-build
+
+      - name: Run Rfs.Checkpoint.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Checkpoint.Tests/Rfs.Checkpoint.Tests.fsproj -c Release --no-build
+
+      - name: Run Rfs.Decl.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj -c Release --no-build
+
+      - name: Run Rfs.Checker.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build
+
+      - name: Run Rfs.Server.Tests
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: dotnet run --project tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj -c Release --no-build
+
+      - name: Pack and publish distribution artifacts
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp
+
+      - name: Smoke-test packed .NET tool
+        shell: pwsh
+        working-directory: ranvier-fsharp
+        run: |
+          $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "rfs-tool-smoke"
+          if (Test-Path $toolDir) { Remove-Item -Recurse -Force $toolDir }
+          dotnet tool install Ranvier.AutoComplete --add-source ./artifacts/nupkg --tool-path $toolDir --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "dotnet tool install failed" }
+          $exe = Join-Path $toolDir ($IsWindows ? 'ranvierautocomplete.exe' : 'ranvierautocomplete')
+          $ver = & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "ranvierautocomplete --version failed" }
+          Write-Host "Verified tool: $ver"
+
+      - name: Upload NuGet tool package & portable bundle
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ranvierautocomplete-packages
+          path: |
+            ranvier-fsharp/artifacts/nupkg/*.nupkg
+            ranvier-fsharp/artifacts/publish/**
+          if-no-files-found: error

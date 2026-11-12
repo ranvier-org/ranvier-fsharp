@@ -1,14 +1,20 @@
 # Builds the FCS fork at its currently checked-out branch; mirrors fcs/build.sh without running fcs-test.
 param(
-    [string]$ForkDir = 'C:\Users\shaya\RiderProjects\fickle-fsharp'
+    [string]$ForkDir = (Join-Path $PSScriptRoot '../../fickle-fsharp')
 )
 $ErrorActionPreference = 'Stop'
 
+$ForkDir = [System.IO.Path]::GetFullPath($ForkDir)
+if (-not (Test-Path $ForkDir)) {
+    throw "FCS fork directory not found at '$ForkDir'. Clone https://github.com/shayanhabibi/fickle-fsharp (branch fickle_decl) alongside ranvier-fsharp or pass -ForkDir <path>."
+}
+
 # The fork's props only take the plain-dotnet (non-Arcade) path with this set.
 $env:BUILDING_USING_DOTNET = 'true'
+$env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
 
-$fcsDir = Join-Path $ForkDir 'artifacts\bin\FSharp.Compiler.Service\Release\net10.0'
-$fcsDll = Join-Path $fcsDir 'FSharp.Compiler.Service.dll'
+$fcsDir = [System.IO.Path]::Combine($ForkDir, 'artifacts', 'bin', 'FSharp.Compiler.Service', 'Release', 'net10.0')
+$fcsDll = [System.IO.Path]::Combine($fcsDir, 'FSharp.Compiler.Service.dll')
 
 Push-Location $ForkDir
 try {

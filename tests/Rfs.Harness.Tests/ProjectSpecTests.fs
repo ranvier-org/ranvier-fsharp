@@ -39,7 +39,8 @@ let private copyTiny () =
 
 [<Tests>]
 let tests =
-    testList
+    testSequenced
+    <| testList
         "ProjectSpec"
         [ testTask "loads Tiny" {
               let! spec = ProjectSpec.load tinyProject
