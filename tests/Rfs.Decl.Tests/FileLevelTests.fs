@@ -692,36 +692,81 @@ let fileLevelTests =
                     Path.Combine(corpus, "large", "src", "Fantomas.Core", "Fantomas.Core.fsproj") ]
                   |> List.filter File.Exists
 
-              let projects =
-                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix"; "SigShadowNs" ] do
-                        yield fixture f
-                    yield! corpusProjects ]
+              let inRepoProjects =
+                  [ for f in [ "Tiny"; "Deps"; "Chains"; "Graph"; "SameName"; "Dups"; "Suffix"; "SigShadowNs" ] -> fixture f ]
 
               let texts = Collections.Generic.HashSet<string * string>()
 
-              for project in projects do
+              for project in inRepoProjects do
                   let! p = load project []
 
                   for f in chain p (parseAll p) do
                       for pair in DeclarationChecker.AccessPathTexts f.Signature do
                           texts.Add pair |> ignore
 
-              // Ensure both Namespace and >60-char sprintf fallback paths are exercised even without the optional external corpus checkout.
-              let! longNs =
-                  load
-                      tinyProject
-                      [ "C.fs",
-                        "namespace Tiny.DeepNamespaceSegmentOne.DeepNamespaceSegmentTwo.DeepNamespaceSegmentThree\n\nmodule InnerModuleSegmentFour =\n    let v = 1\n" ]
+              // Exercise Namespace (true/false), ModuleOrType, FSharpModuleWithSuffix, non-plain identifiers, and >60-char paths
+              // via private/internal accessibility even when the optional external corpus checkout is absent.
+              let syntheticOverrides =
+                  [ String.concat
+                        "\n"
+                        [ "namespace Tiny.SubNs"
+                          "type NsRec = private { F: int }"
+                          "module M1 ="
+                          "    let private v1 = 1"
+                          "    module M2 ="
+                          "        let private v2 = 1"
+                          "        module DeepInnerSegmentThree ="
+                          "            let private v3 = 1"
+                          "[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]"
+                          "module WithSuf ="
+                          "    let private vs = 1"
+                          "module ``With Space`` ="
+                          "    let private vw = 1"
+                          "module M4 ="
+                          "    type R4 = private { X: int }"
+                          "module M5 ="
+                          "    type U5 = private | A5" ]
+                    String.concat
+                        "\n"
+                        [ "module Tiny.ImplicitNs.Root"
+                          "let internal asmInternal = 1"
+                          "let private rootPrivate = 1"
+                          "module SubA ="
+                          "    let private a = 1"
+                          "module SubB ="
+                          "    let private b = 1"
+                          "    module SubBInner ="
+                          "        let private bi = 1"
+                          "[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]"
+                          "module SubSuf ="
+                          "    let private bs = 1" ] ]
 
-              for f in chain longNs (parseAll longNs) do
-                  for pair in DeclarationChecker.AccessPathTexts f.Signature do
-                      texts.Add pair |> ignore
+              for source in syntheticOverrides do
+                  let! synth = load tinyProject [ "C.fs", source ]
 
-              let mismatches = [ for written, printed in texts do if written <> printed then yield $"%s{written} <> %s{printed}" ]
-              Expect.isEmpty mismatches "every access path is written as sprintf \"%A\" gives it"
-              Expect.isGreaterThan texts.Count (if corpusProjects.IsEmpty then 10 else 100) "many access paths checked"
+                  for f in chain synth (parseAll synth) do
+                      for pair in DeclarationChecker.AccessPathTexts f.Signature do
+                          texts.Add pair |> ignore
+
+              let checkAll () =
+                  let mismatches = [ for written, printed in texts do if written <> printed then yield $"%s{written} <> %s{printed}" ]
+                  Expect.isEmpty mismatches "every access path is written as sprintf \"%A\" gives it"
+
+              checkAll ()
+              Expect.isGreaterThan texts.Count 10 "many in-repo and synthetic access paths checked"
               Expect.exists texts (fun (written, _) -> written.Contains "Namespace") "some path is in a namespace"
               Expect.exists texts (fun (written, _) -> written.Length > 60) "some path is long enough to go to sprintf"
+
+              for project in corpusProjects do
+                  let! p = load project []
+
+                  for f in chain p (parseAll p) do
+                      for pair in DeclarationChecker.AccessPathTexts f.Signature do
+                          texts.Add pair |> ignore
+
+              if not corpusProjects.IsEmpty then
+                  checkAll ()
+                  Expect.isGreaterThan texts.Count 100 "many corpus access paths checked"
           }
 
           // Graph mode's ArtificialImplFile: a file set up from a signature file sees it in the implementation

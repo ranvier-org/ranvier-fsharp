@@ -75,7 +75,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [fast, decl-checker, server]
+        suite:
+          - fast
+          - decl
+          - checker
+          - checker-fuzz-1
+          - checker-fuzz-2
+          - checker-fuzz-3
+          - checker-fuzz-4
+          - checker-fuzz-5
+          - checker-fuzz-6
+          - server
     steps:
       - name: Checkout ranvier-fsharp
         uses: actions/checkout@v7
@@ -118,15 +128,29 @@ jobs:
           dotnet run --project tests/Rfs.Checkpoint.Tests/Rfs.Checkpoint.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Decl & Checker suites
-        if: matrix.suite == 'decl-checker'
+      - name: Run Decl suite
+        if: matrix.suite == 'decl'
         shell: pwsh
         run: |
           $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
           dotnet run --project tests/Rfs.Decl.Tests/Rfs.Decl.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Checker suite (deterministic)
+        if: matrix.suite == 'checker'
+        shell: pwsh
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs" -- --no-fuzz
+
+      - name: Run Checker fuzz shard
+        if: startsWith(matrix.suite, 'checker-fuzz-')
+        shell: pwsh
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          $shard = $env:SUITE.Substring('checker-fuzz-'.Length)
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Checker.Tests/Rfs.Checker.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs" -- --fuzz-shard "$shard/6"
 
       - name: Run Server suite
         if: matrix.suite == 'server'
