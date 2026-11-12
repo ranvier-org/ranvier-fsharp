@@ -317,9 +317,11 @@ let private enabledConfig =
         AbstractClassStubGenerationMethodBody = "failwith \"Not Implemented\""
         IndentationSize = 4 }
 
+let private task7Sequenced = testSequencedGroup "Task7Suite"
+
 [<Tests>]
 let publisherAndCapabilitiesWireTests =
-    testSequenced
+    task7Sequenced
     <| testList
         "Task7.PublisherTagsAndAnalyzers"
         [ testTask "Initialize advertises CodeActionProvider, DocumentFormattingProvider, and DocumentRangeFormattingProvider" {
@@ -382,12 +384,19 @@ let run (unusedArg: int) =
                   File.WriteAllText(projFile, projXml)
                   File.WriteAllText(srcFile, srcText)
 
-                  let restorePsi = ProcessStartInfo("dotnet", $"restore \"{projFile}\"")
+                  File.Copy(Path.Combine(PublishFixTests.repoRoot, "global.json"), Path.Combine(dir.FullName, "global.json"), true)
+                  let restorePsi = ProcessStartInfo("dotnet", $"restore \"{projFile}\" --disable-build-servers")
                   restorePsi.WorkingDirectory <- dir.FullName
                   restorePsi.UseShellExecute <- false
                   restorePsi.CreateNoWindow <- true
                   restorePsi.RedirectStandardOutput <- true
                   restorePsi.RedirectStandardError <- true
+                  restorePsi.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+                  restorePsi.Environment.Remove "MSBuildExtensionsPath" |> ignore
+                  restorePsi.Environment.Remove "MSBuildSDKsPath" |> ignore
+                  restorePsi.Environment.Remove "DOTNET_HOST_PATH" |> ignore
+                  restorePsi.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
+                  restorePsi.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
                   let restoreProc = Process.Start restorePsi
                   use _restoreDisp = disposing restoreProc
                   do! restoreProc.WaitForExitAsync() |> withinUnit
@@ -539,7 +548,7 @@ let run (unusedArg: int) =
 
 [<Tests>]
 let codeActionFamiliesTests =
-    testSequenced
+    task7Sequenced
     <| testList
         "Task7.CodeActions12Families"
         [ testTask "Family 1: Remove unused open (single QuickFix + source.organizeImports remove-all) in promoted mode" {
@@ -1619,4 +1628,909 @@ sed -i 's/let  x=1/let x = 1/g' "$targetFile"
               Expect.isGreaterThan (rfmtResp.AsArray().Count) 0 "textDocument/rangeFormatting returned non-empty TextEdit[]"
 
               do! lsp.Shutdown() |> withinUnit
+          } ]
+
+let private hasBareLf (s: string) : bool =
+    let mutable found = false
+
+    for i in 0 .. s.Length - 1 do
+        if s[i] = '\n' && (i = 0 || s[i - 1] <> '\r') then
+            found <- true
+
+    found
+
+[<Tests>]
+let reviewRegressionsTests =
+    task7Sequenced
+    <| testList
+        "Task7.ReviewRegressions"
+        [ testTask "Finding 1: Promoted open file shifted declarations retain FS1182, FS0760, FS0020, and same-file FS0039 Open quick-fixes" {
+              let initialSrc =
+                  """module Task7.ShiftedPromoted
+
+module SameFileHelpers =
+    type SameFileColor =
+        | Crimson
+        | Cobalt
+
+    let sameFileWidget (n: int) = n + 10
+
+let firstUnused () =
+    let unusedShifted = 42
+    1
+
+let secondDisp () =
+    System.IO.MemoryStream()
+
+let thirdMut () =
+    let mutable count = 0
+    count = 5
+    count
+"""
+                      .Replace("\r\n", "\n")
+
+              do!
+                  withSingleProject true [ "--warnon:1182" ] [ "Shifted.fs", initialSrc ] (fun _ graph path scope versionNow ->
+                      task {
+                          let file = path "Shifted.fs"
+                          let! modeBefore = graph.Mode file |> within
+                          Expect.equal modeBefore FileMode.Declarations "File promoted to declaration mode"
+                          let shiftedBefore = graph.ShiftedRows
+                          let adHocBefore = graph.AdHocChecks
+
+                          let editedSrc =
+                              initialSrc.Replace(
+                                  "module Task7.ShiftedPromoted\n\n",
+                                  "module Task7.ShiftedPromoted\n\nlet addedAbove = 1\n\n"
+                              )
+
+                          graph.SetText(file, editedSrc) |> ignore
+                          let! _ = graph.SettledDiagnostics file |> within
+                          Expect.isGreaterThan graph.ShiftedRows shiftedBefore "Lower declarations shifted without re-checking"
+
+                          // 1a. FS1182 on shifted declaration (CheckResultsAt returns ViewResults with empty Diagnostics)
+                          let lu, cu = findPos editedSrc "unusedShifted" 0 3
+
+                          let! res1182 =
+                              CodeActions.provideWithCapabilities
+                                  FSharpConfig.Default
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lu cu) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          Expect.isGreaterThan graph.AdHocChecks adHocBefore "CheckResultsAt exercised DeclarationChecker.ViewResults path"
+                          let acts1182 = extractActions res1182
+                          let prefixAct = findAction "Prefix with _" acts1182
+                          Expect.isSome prefixAct.Diagnostics "FS1182 quick-fix on shifted decl carries Diagnostics"
+                          Expect.stringContains (applySingleFileAction file editedSrc prefixAct) "let _unusedShifted = 42" "FS1182 fires on shifted decl"
+
+                          // 1b. FS0760 on shifted declaration
+                          let ld, cd = findPos editedSrc "System.IO.MemoryStream()" 0 5
+
+                          let! res760 =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange ld cd) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let newAct = findAction "Add 'new' keyword" (extractActions res760)
+                          Expect.stringContains (applySingleFileAction file editedSrc newAct) "new System.IO.MemoryStream()" "FS0760 fires on shifted decl"
+
+                          // 1c. FS0020 on shifted declaration
+                          let lm, cm = findPos editedSrc "count = 5" 0 2
+
+                          let! res20 =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lm cm) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let mutAct = findAction "Use '<-' to mutate value" (extractActions res20)
+                          Expect.stringContains (applySingleFileAction file editedSrc mutAct) "count <- 5" "FS0020 fires on shifted decl"
+
+                          // 1d. Same-file FS0039 ResolveNamespaces on kept & shifted declarations where CheckResultsAt returns ViewResults (empty ownSigForFile)
+                          let withSameFileRefs =
+                              editedSrc
+                              + "\nlet fourthSameFile () =\n    sameFileWidget 3\n\nlet fifthSameFileCase () =\n    Crimson\n"
+
+                          graph.SetText(file, withSameFileRefs) |> ignore
+                          let! _ = graph.SettledDiagnostics file |> within
+
+                          // First: mutate addedAbove on the SAME line (moved.Length = 0 -> fourthSameFile & fifthSameFileCase stay kept with stale EnvBefore, forcing CheckResultsAt onto ViewResults!)
+                          let adHocBefore2 = graph.AdHocChecks
+                          let staleEnvSameFileSrc = withSameFileRefs.Replace("let addedAbove = 1", "let addedAbove = 999")
+                          graph.SetText(file, staleEnvSameFileSrc) |> ignore
+                          let! _ = graph.SettledDiagnostics file |> within
+
+                          let ls0, cs0 = findPos staleEnvSameFileSrc "sameFileWidget 3" 0 4
+
+                          let! resView =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange ls0 cs0) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          Expect.isGreaterThan graph.AdHocChecks adHocBefore2 "Same-file FS0039 query exercised ViewResults"
+                          let _ = findAction "open SameFileHelpers" (extractActions resView)
+                          let _ = findAction "SameFileHelpers.sameFileWidget" (extractActions resView)
+
+                          // Second: insert blank lines AFTER firstUnused (outside prologue!) so fourthSameFile & fifthSameFileCase themselves shift without re-checking!
+                          let shiftedBefore2 = graph.ShiftedRows
+
+                          let shiftedSameFileSrc =
+                              staleEnvSameFileSrc.Replace(
+                                  "let firstUnused () =\n    let unusedShifted = 42\n    1\n",
+                                  "let firstUnused () =\n    let unusedShifted = 42\n    1\n\n\n\n"
+                              )
+
+                          graph.SetText(file, shiftedSameFileSrc) |> ignore
+                          let! _ = graph.SettledDiagnostics file |> within
+                          Expect.isGreaterThan graph.ShiftedRows shiftedBefore2 "Same-file FS0039 declarations shifted without re-checking"
+
+                          let ls, cs = findPos shiftedSameFileSrc "sameFileWidget 3" 0 4
+
+                          let! res39 =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange ls cs) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let acts39 = extractActions res39
+                          let openSame = findAction "open SameFileHelpers" acts39
+                          let fqSame = findAction "SameFileHelpers.sameFileWidget" acts39
+                          let afterOpenSame = applySingleFileAction file shiftedSameFileSrc openSame
+                          Expect.stringContains afterOpenSame "open SameFileHelpers\n" "Inserts 'open SameFileHelpers' for same-file module"
+                          Expect.stringContains (applySingleFileAction file shiftedSameFileSrc fqSame) "SameFileHelpers.sameFileWidget 3" "Qualifies same-file module value"
+
+                          let lc, cc = findPos shiftedSameFileSrc "    Crimson" 0 6
+
+                          let! resCase =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lc cc) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let actsCase = extractActions resCase
+                          let _ = findAction "open SameFileHelpers" actsCase
+                          let fqCase = findAction "SameFileHelpers.SameFileColor.Crimson" actsCase
+                          Expect.stringContains (applySingleFileAction file shiftedSameFileSrc fqCase) "SameFileHelpers.SameFileColor.Crimson" "Qualifies same-file union case"
+                      })
+          }
+
+          testTask "Finding 2: Open B.fs updates FSAC0001 when upstream A.fs changes without editing B.fs, and cancels CTS cleanly" {
+              let dir = Directory.CreateTempSubdirectory "rfs-task7-upstream-"
+
+              try
+                  let projFile = Path.Combine(dir.FullName, "UpstreamProj.fsproj")
+                  let aFile = Path.Combine(dir.FullName, "A.fs")
+                  let bFile = Path.Combine(dir.FullName, "B.fs")
+
+                  let projXml =
+                      """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+                  let aSrc1 = "namespace Upstream\n\nmodule ModA =\n    let valA = 1\n"
+                  let aSrc2 = "namespace Upstream\n\nmodule ModA =\n    let otherVal = 1\n\n[<AutoOpen>]\nmodule Fallback =\n    let valA = 2\n"
+                  let bSrc = "module Upstream.B\n\nopen Upstream.ModA\n\nlet compute () = valA + 1\n"
+
+                  File.WriteAllText(projFile, projXml)
+                  File.WriteAllText(aFile, aSrc1)
+                  File.WriteAllText(bFile, bSrc)
+
+                  File.Copy(Path.Combine(PublishFixTests.repoRoot, "global.json"), Path.Combine(dir.FullName, "global.json"), true)
+                  let restorePsi = ProcessStartInfo("dotnet", $"restore \"{projFile}\" --disable-build-servers")
+                  restorePsi.WorkingDirectory <- dir.FullName
+                  restorePsi.UseShellExecute <- false
+                  restorePsi.CreateNoWindow <- true
+                  restorePsi.RedirectStandardOutput <- true
+                  restorePsi.RedirectStandardError <- true
+                  restorePsi.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+                  restorePsi.Environment.Remove "MSBuildExtensionsPath" |> ignore
+                  restorePsi.Environment.Remove "MSBuildSDKsPath" |> ignore
+                  restorePsi.Environment.Remove "DOTNET_HOST_PATH" |> ignore
+                  restorePsi.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
+                  restorePsi.Environment["MSBUILDDISABLENODEREUSE"] <- "1"
+                  let restoreProc = Process.Start restorePsi
+                  use _restoreDisp = disposing restoreProc
+                  do! restoreProc.WaitForExitAsync() |> withinUnit
+                  Expect.equal restoreProc.ExitCode 0 "dotnet restore succeeded"
+
+                  let! captured = TestServer.startCapturing ()
+                  let (lsp: LspClient), owner, serverTask = captured
+                  use _ = disposing owner
+                  let! runningRaw = serverTask
+                  let running: RanvierServer = runningRaw
+
+                  let bPublishes = ConcurrentQueue<JsonArray>()
+
+                  use _sub =
+                      disposing (
+                          lsp.Notifications.Subscribe
+                              { new IObserver<Received> with
+                                  member _.OnNext r =
+                                      if
+                                          not (isNull r.Message["method"])
+                                          && r.Message["method"].GetValue<string>() = "textDocument/publishDiagnostics"
+                                      then
+                                          let pObj = r.Message["params"].AsObject()
+
+                                          if sameFile (Paths.ofUri (pObj["uri"].GetValue<string>())) bFile then
+                                              bPublishes.Enqueue(pObj["diagnostics"].AsArray())
+
+                                  member _.OnError _ = ()
+                                  member _.OnCompleted() = () }
+                      )
+
+                  let! _ =
+                      lsp.Initialize(
+                          Paths.toUri dir.FullName,
+                          JsonNode.Parse """{"unusedOpensAnalyzer":true}"""
+                      )
+                      |> within
+
+                  let loadParams =
+                      JsonNode.Parse($"""{{"TextDocuments":[{{"Uri":"{Paths.toUri projFile}"}}]}}""")
+
+                  let! _ = lsp.Request("fsharp/workspaceLoad", loadParams) |> within
+                  do! lsp.DidOpen(aFile, aSrc1)
+                  do! lsp.DidOpen(bFile, bSrc)
+                  do! running.Publisher.Flushed() |> withinUnit
+
+                  let latestB () = bPublishes.ToArray() |> Array.tryLast
+
+                  let waitForB (desc: string) (pred: JsonArray -> bool) =
+                      task {
+                          let deadline = DateTime.UtcNow.AddSeconds 15.
+
+                          while not (latestB () |> Option.exists pred) do
+                              if DateTime.UtcNow > deadline then
+                                  let dump = latestB () |> Option.map _.ToJsonString() |> Option.defaultValue "<none>"
+                                  failtest $"Timed out waiting for B.fs %s{desc}. Latest: %s{dump}"
+
+                              do! Task.Delay 25
+
+                          return (latestB ()).Value
+                      }
+
+                  let hasFsac1 (arr: JsonArray) =
+                      arr |> Seq.exists (fun d -> not (isNull d["code"]) && d["code"].GetValue<string>() = "FSAC0001")
+
+                  let! initialB = waitForB "initial clean publish" (fun arr -> arr.Count = 0)
+                  Expect.isFalse (hasFsac1 initialB) "Initially open Upstream.ModA is used in B.fs"
+
+                  let replaceAllEdit (oldText: string) (newText: string) : Edit =
+                      let oldLines = oldText.Split '\n'
+                      let lastIdx = max 0 (oldLines.Length - 1)
+                      let lastLen = oldLines[lastIdx].TrimEnd('\r').Length
+
+                      { Range =
+                          { Start = { Line = 0; Character = 0 }
+                            End = { Line = lastIdx; Character = lastLen } }
+                        Text = newText }
+
+                  // Edit ONLY A.fs (B.fs is NOT edited; B.fs Epoch stays unchanged!)
+                  do! lsp.DidChange(aFile, 2, replaceAllEdit aSrc1 aSrc2)
+                  let! staleCheckB = waitForB "FSAC0001 after upstream A.fs moved valA to [<AutoOpen>]" hasFsac1
+                  Expect.isTrue (hasFsac1 staleCheckB) "B.fs publishes FSAC0001 when upstream A.fs makes open Upstream.ModA unused"
+
+                  // Edit ONLY A.fs back -> FSAC0001 on B.fs must clear without editing B.fs!
+                  do! lsp.DidChange(aFile, 3, replaceAllEdit aSrc2 aSrc1)
+                  let! restoredB = waitForB "FSAC0001 cleared after upstream A.fs restored valA" (fun arr -> not (hasFsac1 arr))
+                  Expect.isFalse (hasFsac1 restoredB) "B.fs clears stale FSAC0001 when upstream A.fs restores ModA.valA"
+
+                  do!
+                      running.Host.Read(fun () -> assertNoCompilerRetention "Publisher" running.Publisher)
+                      |> withinUnit
+
+                  do! lsp.Notify("textDocument/didClose", JsonNode.Parse($"""{{"textDocument":{{"uri":"{Paths.toUri bFile}"}}}}"""))
+                  do! lsp.Notify("textDocument/didClose", JsonNode.Parse($"""{{"textDocument":{{"uri":"{Paths.toUri aFile}"}}}}"""))
+                  do! lsp.Shutdown() |> withinUnit
+              finally
+                  try
+                      dir.Delete true
+                  with _ ->
+                      ()
+          }
+
+          testTask "Finding 3: Family 5 'Add rec' supports mutual recursion from both FS0576 on 'let' and FS0039 on sibling binding" {
+              let src =
+                  """module Task7.MutRec
+
+let isEven n =
+    if n = 0 then true else isOdd (n - 1)
+and isOdd n =
+    if n = 0 then false else isEven (n - 1)
+"""
+                      .Replace("\r\n", "\n")
+
+              do!
+                  withSingleProject false [] [ "MutRec.fs", src ] (fun _ graph path scope versionNow ->
+                      task {
+                          let file = path "MutRec.fs"
+
+                          // 3a. Cursor on 'let' where FS0576 is reported
+                          let lLet, cLet = findPos src "let isEven" 0 1
+
+                          let! resLet =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lLet cLet) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let actFrom576 = findAction "Make 'isEven' recursive" (extractActions resLet)
+                          let expectedRec = src.Replace("let isEven n =", "let rec isEven n =")
+                          Expect.equal (applySingleFileAction file src actFrom576) expectedRec "FS0576 on 'let' inserts ' rec'"
+
+                          // 3b. Cursor on 'isOdd' inside isEven's body where FS0039 is reported
+                          let lOdd, cOdd = findPos src "isOdd (n - 1)" 0 2
+
+                          let! resOdd =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lOdd cOdd) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let actFrom39 = findAction "Make 'isEven' recursive" (extractActions resOdd)
+                          Expect.equal (applySingleFileAction file src actFrom39) expectedRec "FS0039 on sibling 'isOdd' inserts ' rec' after leading 'let'"
+                      })
+          }
+
+          testTask "Finding 4: Family 1 (Remove unused open) and Family 3 (Remove redundant qualifier) fire on-demand under FSharpConfig.Default" {
+              let src =
+                  "module Task7.OnDemand\n\nopen System\nopen System.IO\n\nlet emptyStr = System.String.Empty\nlet plain = 42\n"
+
+              do!
+                  withSingleProject true [] [ "OnDemand.fs", src ] (fun _ graph path scope versionNow ->
+                      task {
+                          let file = path "OnDemand.fs"
+
+                          // Family 1 on-demand with FSharpConfig.Default (UnusedOpensAnalyzer = false)
+                          let lo, co = findPos src "open System.IO" 0 6
+
+                          let! resOpen =
+                              CodeActions.provideWithCapabilities
+                                  FSharpConfig.Default
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lo co) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let rmOpen = findAction "Remove unused open" (extractActions resOpen)
+
+                          Expect.equal
+                              (applySingleFileAction file src rmOpen)
+                              "module Task7.OnDemand\n\nopen System\n\nlet emptyStr = System.String.Empty\nlet plain = 42\n"
+                              "On-demand Remove unused open works under FSharpConfig.Default"
+
+                          // Family 3 on-demand with FSharpConfig.Default (SimplifyNameAnalyzer = false)
+                          let lq, cq = findPos src "System.String.Empty" 0 3
+
+                          let! resQual =
+                              CodeActions.provideWithCapabilities
+                                  FSharpConfig.Default
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange lq cq) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let rmQual = findAction "Remove redundant qualifier" (extractActions resQual)
+
+                          Expect.equal
+                              (applySingleFileAction file src rmQual)
+                              "module Task7.OnDemand\n\nopen System\nopen System.IO\n\nlet emptyStr = String.Empty\nlet plain = 42\n"
+                              "On-demand Remove redundant qualifier works under FSharpConfig.Default"
+                      })
+          }
+
+          testTask "Finding 5: Formatting.formatDocument and formatRange re-verify TextView.Version after runner finishes (retrying once, returning None if mutated twice)" {
+              let src1 = "module Task7.FmtRace\n\nlet   x=1\n"
+              let src2 = "module Task7.FmtRace\n\nlet   x=2\n\nlet   y=3\n"
+
+              do!
+                  withSingleProject true [] [ "FmtRace.fs", src1 ] (fun _ graph path _ _ ->
+                      task {
+                          let file = path "FmtRace.fs"
+
+                          let fmtOpts: FormattingOptions =
+                              { TabSize = 4u
+                                InsertSpaces = true
+                                TrimTrailingWhitespace = None
+                                InsertFinalNewline = None
+                                TrimFinalNewlines = None }
+
+                          // Case A: Mutates once during attempt 1 -> retries on attempt 2 and formats src2 cleanly
+                          let mutable docCalls = 0
+
+                          let oneRaceRunner: Formatting.FormattingRunner =
+                              fun _ text _ _ _ ->
+                                  task {
+                                      docCalls <- docCalls + 1
+
+                                      if docCalls = 1 then
+                                          graph.SetText(file, src2) |> ignore
+                                          let! _ = graph.LatestParse(file, CancellationToken.None)
+                                          ()
+
+                                      return Some(text.Replace("let   x=1", "let x = 1").Replace("let   x=2", "let x = 2").Replace("let   y=3", "let y = 3"))
+                                  }
+
+                          let! retriedDoc =
+                              Formatting.formatDocument (Some oneRaceRunner) graph file fmtOpts CancellationToken.None |> within
+
+                          Expect.equal docCalls 2 "formatDocument retried once after mid-flight version change"
+                          Expect.isSome retriedDoc "formatDocument succeeded on second attempt"
+                          Expect.equal (applyLspEdits src2 retriedDoc.Value) "module Task7.FmtRace\n\nlet x = 2\n\nlet y = 3\n" "Edits match src2, not stale src1"
+
+                          // Case B: formatRange also retries once on mid-flight edit
+                          graph.SetText(file, src1) |> ignore
+                          let! _ = graph.LatestParse(file, CancellationToken.None)
+                          let mutable rangeCalls = 0
+
+                          let oneRaceRangeRunner: Formatting.FormattingRunner =
+                              fun _ text _ _ _ ->
+                                  task {
+                                      rangeCalls <- rangeCalls + 1
+
+                                      if rangeCalls = 1 then
+                                          graph.SetText(file, src2) |> ignore
+                                          let! _ = graph.LatestParse(file, CancellationToken.None)
+                                          ()
+
+                                      return Some(text.Replace("let   x=1", "let x = 1").Replace("let   x=2", "let x = 2").Replace("let   y=3", "let y = 3"))
+                                  }
+
+                          let! retriedRange =
+                              Formatting.formatRange (Some oneRaceRangeRunner) graph file (mkRange 2 0 2 10) fmtOpts CancellationToken.None |> within
+
+                          Expect.equal rangeCalls 2 "formatRange retried once after mid-flight version change"
+                          Expect.isSome retriedRange "formatRange succeeded on second attempt"
+                          Expect.equal (applyLspEdits src2 retriedRange.Value) "module Task7.FmtRace\n\nlet x = 2\n\nlet   y=3\n" "Range edits match src2"
+
+                          // Case C: Mutates on BOTH attempts -> returns None rather than stale edits
+                          let mutable alwaysCalls = 0
+
+                          let alwaysMutatingRunner: Formatting.FormattingRunner =
+                              fun _ text _ _ _ ->
+                                  task {
+                                      alwaysCalls <- alwaysCalls + 1
+                                      let nextText = $"module Task7.FmtRace\n\nlet   x=%d{alwaysCalls + 10}\n"
+                                      graph.SetText(file, nextText) |> ignore
+                                      let! _ = graph.LatestParse(file, CancellationToken.None)
+                                      return Some(text.Replace("  ", " "))
+                                  }
+
+                          let! dropped =
+                              Formatting.formatDocument (Some alwaysMutatingRunner) graph file fmtOpts CancellationToken.None |> within
+
+                          Expect.equal alwaysCalls 2 "Stopped after 2 attempts"
+                          Expect.isNone dropped "Returns None when document keeps mutating across both formatting attempts"
+                      })
+          }
+
+          testTask "Finding 6: Remove all unused opens coalesces contiguous deleted lines at EOF without trailing newline into a single non-overlapping TextEdit" {
+              let srcNoEofNl = "module Task7.EofOpens\nopen System.IO\nopen System.Text"
+
+              do!
+                  withSingleProject false [] [ "EofOpens.fs", srcNoEofNl ] (fun _ graph path scope versionNow ->
+                      task {
+                          let file = path "EofOpens.fs"
+
+                          let! orgRes =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  file
+                                  (mkParams file (posRange 0 0) [||] (Some [| "source.organizeImports" |]))
+                                  CancellationToken.None
+                              |> within
+
+                          let removeAll = findAction "Remove all unused opens" (extractActions orgRes)
+                          let _, edits = (editsByPath removeAll.Edit.Value)[LspClient.NormalizePath file]
+                          Expect.equal edits.Length 1 "Contiguous unused opens at EOF coalesce into a single non-overlapping TextEdit"
+                          Expect.equal (applyLspEdits srcNoEofNl edits) "module Task7.EofOpens" "Applying coalesced edit yields exact 'module Task7.EofOpens'"
+                      })
+          }
+
+          testTask "Finding 7: Multiline DU and record type headers missing '=' emit 'Add =' at end of header line" {
+              let duSrc = "module Task7.MultiDu\n\ntype Color\n    | Red\n    | Blue\n"
+              let recSrc = "module Task7.MultiRec\n\ntype Boxed\n    { Value: int }\n"
+
+              do!
+                  withSingleProject false [] [ "MultiDu.fs", duSrc; "MultiRec.fs", recSrc ] (fun _ graph path scope versionNow ->
+                      task {
+                          let duFile = path "MultiDu.fs"
+                          let lDu, cDu = findPos duSrc "| Red" 0 0
+
+                          let! resDu =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  duFile
+                                  (mkParams duFile (posRange lDu cDu) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let actDu = findAction "Add '='" (extractActions resDu)
+
+                          Expect.equal
+                              (applySingleFileAction duFile duSrc actDu)
+                              "module Task7.MultiDu\n\ntype Color =\n    | Red\n    | Blue\n"
+                              "Inserts ' =' at end of multiline DU header"
+
+                          let recFile = path "MultiRec.fs"
+                          let lRec, cRec = findPos recSrc "{ Value" 0 0
+
+                          let! resRec =
+                              CodeActions.provideWithCapabilities
+                                  enabledConfig
+                                  true
+                                  versionNow
+                                  scope
+                                  graph
+                                  recFile
+                                  (mkParams recFile (posRange lRec cRec) [||] None)
+                                  CancellationToken.None
+                              |> within
+
+                          let actRec = findAction "Add '='" (extractActions resRec)
+
+                          Expect.equal
+                              (applySingleFileAction recFile recSrc actRec)
+                              "module Task7.MultiRec\n\ntype Boxed =\n    { Value: int }\n"
+                              "Inserts ' =' at end of multiline record header"
+                      })
+          }
+
+          testTask "Finding 8: QuickFix CodeActions attach Diagnostics for FSAC0001, FSAC0002, FSAC0003, FS0366, and FS0365" {
+              let srcIface =
+                  """module Task7.DiagIface
+
+open System
+open System.IO
+
+let private unusedTopVal = 123
+let redQual = System.String.Empty
+
+type IGreeter =
+    abstract Greet: unit -> string
+
+type BadGreeter() =
+    member _.Greet() = ""
+    interface IGreeter
+
+type BareGreeter() =
+    interface IGreeter
+"""
+                      .Replace("\r\n", "\n")
+
+              let srcAbsSub =
+                  """module Task7.DiagAbsSub
+
+[<AbstractClass>]
+type AbstractOp() =
+    abstract Exec: unit -> int
+
+type BadSub() =
+    inherit AbstractOp()
+"""
+                      .Replace("\r\n", "\n")
+
+              let srcAbsObj =
+                  """module Task7.DiagAbsObj
+
+[<AbstractClass>]
+type AbstractOp() =
+    abstract Exec: unit -> int
+
+let badObj () = { new AbstractOp() with member _.ToString() = "" }
+"""
+                      .Replace("\r\n", "\n")
+
+              do!
+                  withSingleProject
+                      true
+                      []
+                      [ "DiagIface.fs", srcIface
+                        "DiagAbsSub.fs", srcAbsSub
+                        "DiagAbsObj.fs", srcAbsObj ]
+                      (fun _ graph path scope versionNow ->
+                          task {
+                              let ifaceFile = path "DiagIface.fs"
+                              let absSubFile = path "DiagAbsSub.fs"
+                              let absObjFile = path "DiagAbsObj.fs"
+
+                              let checkDiagCode (act: CodeAction) (expectedCode: string) =
+                                  Expect.equal act.Kind (Some CodeActionKind.QuickFix) $"Expected '%s{act.Title}' to be QuickFix"
+                                  Expect.isSome act.Diagnostics $"Expected '%s{act.Title}' to carry Diagnostics"
+
+                                  let codes =
+                                      act.Diagnostics.Value
+                                      |> Array.choose (fun d ->
+                                          d.Code
+                                          |> Option.map (function
+                                              | U2.C1 i -> string i
+                                              | U2.C2 s -> s))
+
+                                  Expect.contains codes expectedCode $"Expected '%s{act.Title}' Diagnostics to contain %s{expectedCode}"
+
+                              // FSAC0001
+                              let l1, c1 = findPos srcIface "open System.IO" 0 5
+                              let! r1 = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph ifaceFile (mkParams ifaceFile (posRange l1 c1) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Remove unused open" (extractActions r1)) "FSAC0001"
+
+                              // FSAC0002
+                              let l2, c2 = findPos srcIface "System.String.Empty" 0 3
+                              let! r2 = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph ifaceFile (mkParams ifaceFile (posRange l2 c2) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Remove redundant qualifier" (extractActions r2)) "FSAC0002"
+
+                              // FSAC0003
+                              let l3, c3 = findPos srcIface "unusedTopVal" 0 3
+                              let! r3 = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph ifaceFile (mkParams ifaceFile (posRange l3 c3) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Prefix with _" (extractActions r3)) "FSAC0003"
+
+                              // FS0366 on class interface implementations (both misplaced-member and bare `interface IGreeter`)
+                              let l366, c366 = findPos srcIface "interface IGreeter" 0 12
+                              let! r366 = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph ifaceFile (mkParams ifaceFile (posRange l366 c366) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Implement interface" (extractActions r366)) "FS0366"
+
+                              let lBare, cBare = findPos srcIface "interface IGreeter" 1 12
+                              let! rBare = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph ifaceFile (mkParams ifaceFile (posRange lBare cBare) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Implement interface" (extractActions rBare)) "FS0366"
+
+                              // FS0365 on class inheriting abstract class
+                              let lSub, cSub = findPos srcAbsSub "inherit AbstractOp()" 0 10
+                              let! rSub = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph absSubFile (mkParams absSubFile (posRange lSub cSub) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Implement abstract members" (extractActions rSub)) "FS0365"
+
+                              // FS0365 on object expression implementing abstract class
+                              let l365, c365 = findPos srcAbsObj "new AbstractOp()" 0 5
+                              let! r365 = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph absObjFile (mkParams absObjFile (posRange l365 c365) [||] None) CancellationToken.None |> within
+                              checkDiagCode (findAction "Implement abstract members" (extractActions r365)) "FS0365"
+                          })
+          }
+
+          testTask "Finding 9: Out-of-process Formatting preserves ancestor .editorconfig chain up to root=true and guards tempDir root" {
+              let wsDir = Directory.CreateTempSubdirectory "rfs-edcfg-chain-"
+              let fakeBinDir = Directory.CreateTempSubdirectory "rfs-edcfg-bin-"
+
+              try
+                  Formatting.clearToolCacheForTests ()
+
+                  // Ancestor chain: wsDir/.editorconfig (root = true, indent_size = 2) -> wsDir/src/.editorconfig (max_line_length = 88, no root=true) -> wsDir/src/sub/Code.fs
+                  let srcDir = Directory.CreateDirectory(Path.Combine(wsDir.FullName, "src"))
+                  let subDir = Directory.CreateDirectory(Path.Combine(srcDir.FullName, "sub"))
+                  File.WriteAllText(Path.Combine(wsDir.FullName, ".editorconfig"), "root = true\n\n[*.{fs,fsi}]\nindent_size = 2\n")
+                  File.WriteAllText(Path.Combine(srcDir.FullName, ".editorconfig"), "[*.{fs,fsi}]\nmax_line_length = 88\n")
+                  let codeFs = Path.Combine(subDir.FullName, "Code.fs")
+                  File.WriteAllText(codeFs, "module Code\nlet x = 1\n")
+
+                  // Also test a standalone dir whose single .editorconfig omits `root = true`: topmost copied .editorconfig in tempDir MUST get `root = true`
+                  let noRootWs = Directory.CreateTempSubdirectory "rfs-edcfg-noroot-"
+                  use _cleanNoRoot =
+                      disposing
+                          { new IDisposable with
+                              member _.Dispose() =
+                                  try
+                                      noRootWs.Delete true
+                                  with _ ->
+                                      () }
+
+                  File.WriteAllText(Path.Combine(noRootWs.FullName, ".editorconfig"), "[*.{fs,fsi}]\nindent_size = 6\n")
+                  let noRootFs = Path.Combine(noRootWs.FullName, "Standalone.fs")
+                  File.WriteAllText(noRootFs, "module Standalone\nlet x = 1\n")
+
+                  let probeScript = Path.Combine(fakeBinDir.FullName, "probe_fantomas.ps1")
+
+                  File.WriteAllText(
+                      probeScript,
+                      """param([string]$targetFile)
+$cur = [System.IO.Path]::GetDirectoryName($targetFile)
+$seen = New-Object System.Collections.Generic.List[string]
+$hitRoot = $false
+for ($i = 0; $i -lt 6 -and $null -ne $cur; $i++) {
+    $cfg = [System.IO.Path]::Combine($cur, ".editorconfig")
+    if ([System.IO.File]::Exists($cfg)) {
+        $raw = [System.IO.File]::ReadAllText($cfg).Replace("`r`n", "`n").Trim()
+        $seen.Add($raw)
+        if ($raw -match '(?m)^\s*root\s*=\s*true\b') {
+            $hitRoot = $true
+            break
+        }
+    }
+    $parent = [System.IO.Directory]::GetParent($cur)
+    $cur = if ($null -eq $parent) { $null } else { $parent.FullName }
+}
+$summary = ($seen -join " || ") + " | hitRoot=" + $hitRoot
+$orig = [System.IO.File]::ReadAllText($targetFile)
+[System.IO.File]::WriteAllText($targetFile, $orig + "// " + $summary + "`n")
+exit 0
+"""
+                  )
+
+                  if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                      File.WriteAllText(
+                          Path.Combine(fakeBinDir.FullName, "fantomas.cmd"),
+                          $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"{probeScript}\" %%*\r\n"
+                      )
+                  else
+                      let sh = Path.Combine(fakeBinDir.FullName, "fantomas")
+                      File.WriteAllText(sh, $"#!/usr/bin/env bash\npwsh -NoProfile -File \"{probeScript}\" \"$@\"\n")
+
+                  let fmtOpts: FormattingOptions =
+                      { TabSize = 4u
+                        InsertSpaces = true
+                        TrimTrailingWhitespace = None
+                        InsertFinalNewline = None
+                        TrimFinalNewlines = None }
+
+                  let! chainOut =
+                      Formatting.runWithSearchPath (Some fakeBinDir.FullName) codeFs "module Code\nlet x = 1\n" false fmtOpts CancellationToken.None
+                      |> within
+
+                  Expect.isSome chainOut "Formatting succeeded with nested .editorconfig chain"
+                  Expect.stringContains chainOut.Value "max_line_length = 88" "Child .editorconfig preserved in temp hierarchy"
+                  Expect.stringContains chainOut.Value "indent_size = 2" "Parent .editorconfig preserved above child in temp hierarchy"
+                  Expect.stringContains chainOut.Value "hitRoot=True" "Upward walk stopped at root=true inside tempDir"
+
+                  Formatting.clearToolCacheForTests ()
+
+                  let! noRootOut =
+                      Formatting.runWithSearchPath (Some fakeBinDir.FullName) noRootFs "module Standalone\nlet x = 1\n" false fmtOpts CancellationToken.None
+                      |> within
+
+                  Expect.isSome noRootOut "Formatting succeeded for rootless .editorconfig"
+                  Expect.stringContains noRootOut.Value "indent_size = 6" "Copied .editorconfig content preserved"
+                  Expect.stringContains noRootOut.Value "hitRoot=True" "Topmost copied .editorconfig guarded with root=true"
+              finally
+                  Formatting.clearToolCacheForTests ()
+
+                  try
+                      wsDir.Delete true
+                  with _ ->
+                      ()
+
+                  try
+                      fakeBinDir.Delete true
+                  with _ ->
+                      ()
+          }
+
+          testTask "Finding 10: Synthesized multi-line CodeActions preserve CRLF line endings on CRLF .fs and .fsi buffers" {
+              let fsiCrlf = "module Task7.Crlf\r\n\r\nval existing: int\r\n"
+
+              let fsCrlf =
+                  String.concat
+                      "\r\n"
+                      [ "module Task7.Crlf"
+                        ""
+                        "open System"
+                        ""
+                        "let existing = 1"
+                        "let useSb () = StringBuilder()"
+                        ""
+                        "type IWork ="
+                        "    abstract DoIt: unit -> int"
+                        ""
+                        "type Impl() ="
+                        "    interface IWork"
+                        ""
+                        "type Choice2 = | One | Two"
+                        "let pick (c: Choice2) ="
+                        "    match c with"
+                        "    | One -> 1"
+                        ""
+                        "type Rec2 = { A: int; B: int }"
+                        "let mkRec () = { A = 1 }"
+                        ""
+                        "let newBinding (z: int) : int = z + 1"
+                        "" ]
+
+              do!
+                  withSingleProject true [] [ "Crlf.fsi", fsiCrlf; "Crlf.fs", fsCrlf ] (fun _ graph path scope versionNow ->
+                      task {
+                          let fsiFile = path "Crlf.fsi"
+                          let fsFile = path "Crlf.fs"
+                          let normFsi = LspClient.NormalizePath fsiFile
+
+                          // 1. Open insert on CRLF
+                          let lo, co = findPos fsCrlf "StringBuilder()" 0 3
+                          let! rOpen = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph fsFile (mkParams fsFile (posRange lo co) [||] None) CancellationToken.None |> within
+                          let afterOpen = applySingleFileAction fsFile fsCrlf (findAction "open System.Text" (extractActions rOpen))
+                          Expect.isFalse (hasBareLf afterOpen) "open insert preserves CRLF without bare LF"
+
+                          // 2. Implement interface on CRLF
+                          let li, ci = findPos fsCrlf "interface IWork" 0 11
+                          let! rIface = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph fsFile (mkParams fsFile (posRange li ci) [||] None) CancellationToken.None |> within
+                          let afterIface = applySingleFileAction fsFile fsCrlf (findAction "Implement interface" (extractActions rIface))
+                          Expect.isFalse (hasBareLf afterIface) "Implement interface stub preserves CRLF without bare LF"
+
+                          // 3. Union cases stub on CRLF
+                          let lu, cu = findPos fsCrlf "match c with" 0 6
+                          let! rUc = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph fsFile (mkParams fsFile (posRange lu cu) [||] None) CancellationToken.None |> within
+                          let afterUc = applySingleFileAction fsFile fsCrlf (findAction "Generate union pattern match cases" (extractActions rUc))
+                          Expect.isFalse (hasBareLf afterUc) "Union pattern match stub preserves CRLF without bare LF"
+
+                          // 4. Record stub on CRLF
+                          let lr, cr = findPos fsCrlf "{ A = 1 }" 0 2
+                          let! rRec = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph fsFile (mkParams fsFile (posRange lr cr) [||] None) CancellationToken.None |> within
+                          let afterRec = applySingleFileAction fsFile fsCrlf (findAction "Generate record stub" (extractActions rRec))
+                          Expect.isFalse (hasBareLf afterRec) "Record stub preserves CRLF without bare LF"
+
+                          // 5. Add binding to CRLF .fsi signature file
+                          let ls, cs = findPos fsCrlf "newBinding" 0 3
+                          let! rSig = CodeActions.provideWithCapabilities enabledConfig true versionNow scope graph fsFile (mkParams fsFile (posRange ls cs) [||] None) CancellationToken.None |> within
+                          let addSigAct = findAction "Add binding to signature file" (extractActions rSig)
+                          let _, sigEdits = (editsByPath addSigAct.Edit.Value)[normFsi]
+                          let afterSig = applyLspEdits fsiCrlf sigEdits
+                          Expect.isFalse (hasBareLf afterSig) ".fsi AddSigVal preserves CRLF without bare LF"
+                      })
           } ]

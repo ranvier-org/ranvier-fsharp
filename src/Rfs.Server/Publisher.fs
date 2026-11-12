@@ -41,12 +41,15 @@ type private Found =
       /// From a check settled for the row as it is now; false while an earlier one is kept
       Current: bool
       /// A check for the row as it is now is under way: not settled, and not failed
-      Waiting: bool }
+      Waiting: bool
+      /// Monotonic stamp incremented each time `finding` produces a fresh settled check result for the row
+      Stamp: int64 }
 
     static member None: Found =
         { Groups = Dictionary<string, Rfs.Lsp.Diagnostic list>() :> IReadOnlyDictionary<_, _>
           Current = false
-          Waiting = false }
+          Waiting = false
+          Stamp = 0L }
 
 [<Struct; CustomEquality; NoComparison>]
 type private AnalyzerFlags =
@@ -71,6 +74,17 @@ type private AnalyzerFlags =
         { UnusedOpens = false
           SimplifyNames = false
           UnusedDeclarations = false }
+
+[<Struct>]
+type private AnalyzerKey =
+    { Epoch: int64
+      Stamp: int64
+      Flags: AnalyzerFlags }
+
+    static member None =
+        { Epoch = Int64.MinValue
+          Stamp = Int64.MinValue
+          Flags = AnalyzerFlags.Off }
 
 module internal GraphTurn =
     /// Runs `work` on the graph thread once the current pump has returned, after every effect of its flush: a settle
@@ -126,13 +140,52 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     // Graph thread
     let lastKeys = Dictionary<string, struct (Rfs.Lsp.Range * int * string * string) list>(StringComparer.OrdinalIgnoreCase)
     let lastAdopted = Dictionary<ProjectGraph, int64>(HashIdentity.Reference)
+    let activeRowCts = HashSet<CancellationTokenSource>(HashIdentity.Reference)
+    let mutable rootOwner: Owner = Unchecked.defaultof<_>
     let mutable rows: Signal<Map<string, Row>> = Unchecked.defaultof<_>
     let mutable analyzerFlags: Signal<AnalyzerFlags> = Unchecked.defaultof<_>
     let mutable epoch = 0L
+    let mutable foundStamp = 0L
     let faulted = HashSet<string>(StringComparer.OrdinalIgnoreCase)
     let mutable onClose: string -> unit = ignore
     let mutable diskPasses = 0
     let nothing = Found.None
+
+    let nextFoundStamp () =
+        foundStamp <- foundStamp + 1L
+        foundStamp
+
+    let cancelRowCts (cts: CancellationTokenSource) =
+        if not (isNull cts) then
+            lock activeRowCts (fun () -> activeRowCts.Remove cts |> ignore)
+
+            try
+                cts.Cancel()
+            with _ ->
+                ()
+
+    let cancelAndDisposeCts (cts: CancellationTokenSource) =
+        if not (isNull cts) then
+            lock activeRowCts (fun () -> activeRowCts.Remove cts |> ignore)
+
+            try
+                cts.Cancel()
+            with _ ->
+                ()
+
+            try
+                cts.Dispose()
+            with _ ->
+                ()
+
+    let releaseCompletedCts (cts: CancellationTokenSource) =
+        if not (isNull cts) then
+            lock activeRowCts (fun () -> activeRowCts.Remove cts |> ignore)
+
+            try
+                cts.Dispose()
+            with _ ->
+                ()
 
     let flagsOf (cfg: FSharpConfig) : AnalyzerFlags =
         { UnusedOpens = cfg.UnusedOpensAnalyzer
@@ -292,7 +345,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | true, l -> own[path] <- l
                 | _ -> ()
 
-                last <- { Groups = own; Current = false; Waiting = false }
+                last <- { Groups = own; Current = false; Waiting = false; Stamp = last.Stamp }
 
         fun () ->
             let r = item ()
@@ -320,7 +373,11 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                 | ValueSome(struct (_, diagnostics)) ->
                     failing <- false
                     faultsAt <- struct (g, faults)
-                    last <- { Groups = groupsOf r.Path diagnostics; Current = true; Waiting = false }
+                    last <-
+                        { Groups = groupsOf r.Path diagnostics
+                          Current = true
+                          Waiting = false
+                          Stamp = nextFoundStamp () }
                     last
                 | ValueNone ->
                     let struct (at, before) = faultsAt
@@ -407,148 +464,203 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let analyzing
         (item: unit -> Row)
         (own: Memo<Found>)
-        (analyzed: Signal<struct (int64 * AnalyzerFlags * Rfs.Lsp.Diagnostic list)>)
+        (analyzed: Signal<struct (AnalyzerKey * Rfs.Lsp.Diagnostic list)>)
         : unit =
-        let mutable inFlight: struct (int64 * AnalyzerFlags) voption = ValueNone
+        let mutable inFlight: AnalyzerKey voption = ValueNone
+        let mutable rowCts: CancellationTokenSource = null
+
+        let clearRowFlight () =
+            inFlight <- ValueNone
+            let prev = rowCts
+            rowCts <- null
+            cancelRowCts prev
+
+        onCleanup clearRowFlight
 
         createEffect (fun () ->
             let r = item ()
             let flags = analyzerFlags.Value
             let found = own.Value
             let owners = workspace.OwnersNow r.Path
+            let isFsi = r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
 
             try
-                if not r.Open || not flags.Any || r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
-                    inFlight <- ValueNone
-                    let struct (_, _, prevList) = analyzed.Value
+                if not r.Open || not flags.Any || isFsi then
+                    clearRowFlight ()
+                    let struct (_, prevList) = analyzed.Value
 
                     if not prevList.IsEmpty then
-                        analyzed.Value <- struct (Int64.MinValue, AnalyzerFlags.Off, [])
-                elif found.Current && r.Uri <> "" then
+                        analyzed.Value <- struct (AnalyzerKey.None, [])
+                elif not found.Current || r.Uri = "" || owners.IsEmpty then
+                    clearRowFlight ()
+                else
                     match owners with
-                    | [] -> ()
+                    | [] -> clearRowFlight ()
                     | g :: _ ->
-                        let struct (doneEpoch, doneFlags, _) = analyzed.Value
+                        let targetKey =
+                            { Epoch = r.Epoch
+                              Stamp = found.Stamp
+                              Flags = flags }
 
-                        let alreadyDone = doneEpoch = r.Epoch && doneFlags = flags
+                        match inFlight with
+                        | ValueSome fk when fk <> targetKey -> clearRowFlight ()
+                        | _ -> ()
+
+                        let struct (doneKey, _) = analyzed.Value
+                        let alreadyDone = doneKey = targetKey
 
                         let alreadyInFlight =
                             match inFlight with
-                            | ValueSome(struct (fe, ff)) -> fe = r.Epoch && ff = flags
+                            | ValueSome fk -> fk = targetKey
                             | ValueNone -> false
 
                         if not alreadyDone && not alreadyInFlight then
+                            clearRowFlight ()
                             let path = r.Path
-                            let targetEpoch = r.Epoch
-                            let targetFlags = flags
-                            inFlight <- ValueSome(struct (targetEpoch, targetFlags))
+                            let cts = new CancellationTokenSource()
+                            lock activeRowCts (fun () -> activeRowCts.Add cts |> ignore)
 
-                            Task.Run(fun () ->
-                                (task {
-                                    try
-                                        let! plainDiags =
-                                            g.ReadFile(
-                                                path,
-                                                (fun view ->
-                                                    let lines = view.Text.Split '\n'
-                                                    let lastLine = max 1 lines.Length
+                            if Volatile.Read &disposed <> 0 then
+                                cancelAndDisposeCts cts
+                            else
+                                rowCts <- cts
+                                inFlight <- ValueSome targetKey
+                                let token = cts.Token
 
-                                                    let lastCol =
-                                                        if lines.Length = 0 then
-                                                            0
-                                                        else
-                                                            lines[lines.Length - 1].TrimEnd('\r').Length
+                                Task.Run(fun () ->
+                                    (task {
+                                        try
+                                            try
+                                                token.ThrowIfCancellationRequested()
 
-                                                    lines, lastLine, lastCol),
-                                                (fun view (lines, lastLine, lastCol) ->
-                                                    StackGuard.onLargeStack (fun () ->
-                                                        let check =
-                                                            if view.Whole then
-                                                                view.Result.CheckResultsNotKept
-                                                            else
-                                                                view.CheckResultsAt(lastLine, lastCol)
+                                                let! plainDiags =
+                                                    g.ReadFile(
+                                                        path,
+                                                        (fun view ->
+                                                            let lines = view.Text.Split '\n'
+                                                            let lastLine = max 1 lines.Length
 
-                                                        let getLineStr (line1Based: int) =
-                                                            if line1Based >= 1 && line1Based <= lines.Length then
-                                                                lines[line1Based - 1].TrimEnd '\r'
-                                                            else
-                                                                ""
+                                                            let lastCol =
+                                                                if lines.Length = 0 then
+                                                                    0
+                                                                else
+                                                                    lines[lines.Length - 1].TrimEnd('\r').Length
 
-                                                        let out = ResizeArray<Rfs.Lsp.Diagnostic>()
+                                                            lines, lastLine, lastCol),
+                                                        (fun view (lines, lastLine, lastCol) ->
+                                                            StackGuard.onLargeStack (fun () ->
+                                                                token.ThrowIfCancellationRequested()
 
-                                                        let mkDiag (code: string) (msg: string) (rng: FSharp.Compiler.Text.range) : Rfs.Lsp.Diagnostic =
-                                                            { File = path
-                                                              Range =
-                                                                { Start =
-                                                                    { Line = max 0 (rng.StartLine - 1)
-                                                                      Character = max 0 rng.StartColumn }
-                                                                  End =
-                                                                    { Line = max 0 (rng.EndLine - 1)
-                                                                      Character = max 0 rng.EndColumn } }
-                                                              Severity = 4
-                                                              Code = code
-                                                              Message = msg
-                                                              Source = "F# Analyzers" }
+                                                                let check =
+                                                                    if view.Whole then
+                                                                        view.Result.CheckResultsNotKept
+                                                                    else
+                                                                        view.CheckResultsAt(lastLine, lastCol)
 
-                                                        if targetFlags.UnusedOpens then
-                                                            let unusedOpens =
-                                                                UnusedOpens.getUnusedOpens (check, getLineStr)
-                                                                |> Async.RunSynchronously
+                                                                let getLineStr (line1Based: int) =
+                                                                    if line1Based >= 1 && line1Based <= lines.Length then
+                                                                        lines[line1Based - 1].TrimEnd '\r'
+                                                                    else
+                                                                        ""
 
-                                                            for rng in unusedOpens do
-                                                                out.Add(mkDiag "FSAC0001" "Unused open statement" rng)
+                                                                let out = ResizeArray<Rfs.Lsp.Diagnostic>()
 
-                                                        if targetFlags.SimplifyNames then
-                                                            let simplifiable =
-                                                                SimplifyNames.getSimplifiableNames (check, getLineStr)
-                                                                |> Async.RunSynchronously
+                                                                let mkDiag (code: string) (msg: string) (rng: FSharp.Compiler.Text.range) : Rfs.Lsp.Diagnostic =
+                                                                    { File = path
+                                                                      Range =
+                                                                        { Start =
+                                                                            { Line = max 0 (rng.StartLine - 1)
+                                                                              Character = max 0 rng.StartColumn }
+                                                                          End =
+                                                                            { Line = max 0 (rng.EndLine - 1)
+                                                                              Character = max 0 rng.EndColumn } }
+                                                                      Severity = 4
+                                                                      Code = code
+                                                                      Message = msg
+                                                                      Source = "F# Analyzers" }
 
-                                                            for sr in simplifiable do
-                                                                out.Add(mkDiag "FSAC0002" "This qualifier is redundant" sr.Range)
+                                                                if targetKey.Flags.UnusedOpens then
+                                                                    token.ThrowIfCancellationRequested()
 
-                                                        if targetFlags.UnusedDeclarations then
-                                                            let isScript =
-                                                                path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
-                                                                || path.EndsWith(".fsscript", StringComparison.OrdinalIgnoreCase)
+                                                                    let unusedOpens =
+                                                                        Async.RunSynchronously(
+                                                                            UnusedOpens.getUnusedOpens (check, getLineStr),
+                                                                            cancellationToken = token
+                                                                        )
 
-                                                            let unusedDecls =
-                                                                UnusedDeclarations.getUnusedDeclarations (check, isScript)
-                                                                |> Async.RunSynchronously
+                                                                    for rng in unusedOpens do
+                                                                        out.Add(mkDiag "FSAC0001" "Unused open statement" rng)
 
-                                                            for rng in unusedDecls do
-                                                                out.Add(mkDiag "FSAC0003" "This value is unused" rng)
+                                                                if targetKey.Flags.SimplifyNames then
+                                                                    token.ThrowIfCancellationRequested()
 
-                                                        out |> Seq.toList)),
-                                                CancellationToken.None
-                                            )
+                                                                    let simplifiable =
+                                                                        Async.RunSynchronously(
+                                                                            SimplifyNames.getSimplifiableNames (check, getLineStr),
+                                                                            cancellationToken = token
+                                                                        )
 
-                                        if Volatile.Read &disposed = 0 then
-                                            post (fun () ->
+                                                                    for sr in simplifiable do
+                                                                        out.Add(mkDiag "FSAC0002" "This qualifier is redundant" sr.Range)
+
+                                                                if targetKey.Flags.UnusedDeclarations then
+                                                                    token.ThrowIfCancellationRequested()
+
+                                                                    let isScript =
+                                                                        path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+                                                                        || path.EndsWith(".fsscript", StringComparison.OrdinalIgnoreCase)
+
+                                                                    let unusedDecls =
+                                                                        Async.RunSynchronously(
+                                                                            UnusedDeclarations.getUnusedDeclarations (check, isScript),
+                                                                            cancellationToken = token
+                                                                        )
+
+                                                                    for rng in unusedDecls do
+                                                                        out.Add(mkDiag "FSAC0003" "This value is unused" rng)
+
+                                                                out |> Seq.toList)),
+                                                        token
+                                                    )
+
+                                                if Volatile.Read &disposed = 0 && not token.IsCancellationRequested then
+                                                    post (fun () ->
+                                                        if Volatile.Read &disposed = 0 then
+                                                            let isSameCts = obj.ReferenceEquals(rowCts, cts)
+
+                                                            if isSameCts then
+                                                                rowCts <- null
+                                                                inFlight <- ValueNone
+
+                                                            if isSameCts && not token.IsCancellationRequested then
+                                                                let nowFound = untrack (fun () -> own.Value)
+
+                                                                match rowOf path with
+                                                                | Some now when
+                                                                    now.Open
+                                                                    && now.Epoch = targetKey.Epoch
+                                                                    && analyzerFlags.Value = targetKey.Flags
+                                                                    && nowFound.Current
+                                                                    && nowFound.Stamp = targetKey.Stamp
+                                                                    ->
+                                                                    analyzed.Value <- struct (targetKey, plainDiags)
+                                                                | _ -> ())
+                                            with ex ->
+                                                match ex with
+                                                | :? OperationCanceledException
+                                                | :? ObjectDisposedException -> ()
+                                                | _ -> log $"analyzing read %s{path} failed: %O{ex}"
+
                                                 if Volatile.Read &disposed = 0 then
-                                                    match inFlight with
-                                                    | ValueSome(struct (fe, ff)) when fe = targetEpoch && ff = targetFlags ->
-                                                        inFlight <- ValueNone
-                                                    | _ -> ()
-
-                                                    match rowOf path with
-                                                    | Some now when now.Open && now.Epoch = targetEpoch && analyzerFlags.Value = targetFlags ->
-                                                        analyzed.Value <- struct (targetEpoch, targetFlags, plainDiags)
-                                                    | _ -> ())
-                                    with ex ->
-                                        match ex with
-                                        | :? OperationCanceledException
-                                        | :? ObjectDisposedException -> ()
-                                        | _ -> log $"analyzing read %s{path} failed: %O{ex}"
-
-                                        if Volatile.Read &disposed = 0 then
-                                            post (fun () ->
-                                                match inFlight with
-                                                | ValueSome(struct (fe, ff)) when fe = targetEpoch && ff = targetFlags ->
-                                                    inFlight <- ValueNone
-                                                | _ -> ())
-                                })
-                                :> Task)
-                            |> ignore
+                                                    post (fun () ->
+                                                        if obj.ReferenceEquals(rowCts, cts) then
+                                                            rowCts <- null
+                                                            inFlight <- ValueNone)
+                                        finally
+                                            releaseCompletedCts cts
+                                    })
+                                    :> Task)
+                                |> ignore
             with ex ->
                 log $"analyzing %s{r.Path} failed: %O{ex}")
 
@@ -556,7 +668,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     let publishing
         (item: unit -> Row)
         (own: Memo<Found>)
-        (analyzed: Signal<struct (int64 * AnalyzerFlags * Rfs.Lsp.Diagnostic list)>)
+        (analyzed: Signal<struct (AnalyzerKey * Rfs.Lsp.Diagnostic list)>)
         : unit =
         let mutable sent = Int64.MinValue
 
@@ -573,8 +685,13 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                             if not flags.Any || r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
                                 []
                             else
-                                let struct (ae, af, adiags) = analyzed.Value
-                                if ae = r.Epoch && af = flags then adiags else []
+                                let expectedKey =
+                                    { Epoch = r.Epoch
+                                      Stamp = found.Stamp
+                                      Flags = flags }
+
+                                let struct (ak, adiags) = analyzed.Value
+                                if ak = expectedKey then adiags else []
 
                         let fresh = r.Epoch <> sent
                         sent <- r.Epoch
@@ -597,7 +714,8 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
 
     do
         host.Post(fun () ->
-            createRoot (fun _ ->
+            createRoot (fun o ->
+                rootOwner <- o
                 rows <- createSignal Map.empty
                 analyzerFlags <- createSignal (flagsOf (readConfig ()))
 
@@ -607,7 +725,7 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                         (fun item ->
                             let read = finding item
                             let own = createMemo (fun _ -> read ())
-                            let analyzed = createSignal (struct (Int64.MinValue, AnalyzerFlags.Off, ([] : Rfs.Lsp.Diagnostic list)))
+                            let analyzed = createSignal (struct (AnalyzerKey.None, ([] : Rfs.Lsp.Diagnostic list)))
                             publishingParsed item
                             analyzing item own analyzed
                             publishing item own analyzed
@@ -819,8 +937,27 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
     member internal _.Enqueue(item: Outgoing) : unit = outbox.Enqueue item
 
     member _.Dispose() =
-        Volatile.Write(&disposed, 1)
-        outbox.Dispose()
+        if Interlocked.Exchange(&disposed, 1) = 0 then
+            let pending =
+                lock activeRowCts (fun () ->
+                    let arr = activeRowCts |> Seq.toArray
+                    activeRowCts.Clear()
+                    arr)
+
+            for cts in pending do
+                try
+                    cts.Cancel()
+                with _ ->
+                    ()
+
+            try
+                host.Post(fun () ->
+                    if not (isNull (box rootOwner)) then
+                        rootOwner.Dispose())
+            with :? ObjectDisposedException ->
+                ()
+
+            outbox.Dispose()
 
     interface IDisposable with
         member this.Dispose() = this.Dispose()

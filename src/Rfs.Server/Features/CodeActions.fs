@@ -57,10 +57,16 @@ let inline private lspRangesOverlap (a: LspRange) (b: LspRange) =
     posLeq a.Start b.End && posLeq b.Start a.End
 
 let private fcsOverlapsLsp (lspRange: LspRange) (r: range) =
-    if r.IsSynthetic then
+    if r.StartLine <= 0 then
         false
     else
         lspRangesOverlap lspRange (fcsRangeToLsp r)
+
+let private fcsRangesOverlap (a: range) (b: range) =
+    if a.StartLine <= 0 || b.StartLine <= 0 then
+        false
+    else
+        Position.posGeq b.End a.Start && Position.posGeq a.End b.Start
 
 let private getLineStr (lines: string[]) (line1Based: int) : string =
     if line1Based >= 1 && line1Based <= lines.Length then
@@ -107,6 +113,34 @@ let private sliceLspRange (lines: string[]) (r: LspRange) : string =
     else
         ""
 
+let private detectEol (text: string) : string =
+    if text.Contains("\r\n", StringComparison.Ordinal) then
+        "\r\n"
+    else
+        "\n"
+
+let private normalizeEol (eol: string) (s: string) : string =
+    let lf = s.Replace("\r\n", "\n")
+    if eol = "\n" then lf else lf.Replace("\n", eol)
+
+let private mergeContiguousLineIntervals (intervals: (int * int) list) : (int * int) list =
+    match intervals |> List.sortBy fst with
+    | [] -> []
+    | first :: rest ->
+        let acc = ResizeArray<int * int>()
+        let mutable curStart, curEnd = first
+
+        for nextStart, nextEnd in rest do
+            if nextStart <= curEnd + 1 then
+                curEnd <- max curEnd nextEnd
+            else
+                acc.Add(curStart, curEnd)
+                curStart <- nextStart
+                curEnd <- nextEnd
+
+        acc.Add(curStart, curEnd)
+        acc |> Seq.toList
+
 let private deleteWholeLinesEdit (lines: string[]) (startLine0: int) (endLine0: int) : TextEdit =
     let sl = max 0 startLine0
     let el = min (lines.Length - 1) (max sl endLine0)
@@ -140,13 +174,19 @@ let private fcsDiagToLsp (d: FSharpDiagnostic) : Diagnostic =
         | FSharpDiagnosticSeverity.Info -> DiagnosticSeverity.Information
         | FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
 
+    let tags =
+        match d.ErrorNumber with
+        | 1182 -> Some [| DiagnosticTag.Unnecessary |]
+        | 44 -> Some [| DiagnosticTag.Deprecated |]
+        | _ -> None
+
     { Range = fcsRangeToLsp d.Range
       Severity = Some sev
       Code = Some(U2.C2 $"FS%04d{d.ErrorNumber}")
       CodeDescription = None
       Source = Some "F# Compiler"
       Message = d.Message
-      Tags = None
+      Tags = tags
       RelatedInformation = None
       Data = None }
 
@@ -249,7 +289,13 @@ let private findEnclosingModuleDecls (ast: ParsedInput) (targetPos: pos) : (SynO
             | [] -> None)
         |> Option.defaultValue ([], [])
 
-let private computeOpenInsertEdit (lines: string[]) (ast: ParsedInput) (targetPos: pos) (nsToOpen: string) : TextEdit option =
+let private computeOpenInsertEdit
+    (eol: string)
+    (lines: string[])
+    (ast: ParsedInput)
+    (targetPos: pos)
+    (nsToOpen: string)
+    : TextEdit option =
     let opens, decls = findEnclosingModuleDecls ast targetPos
 
     let alreadyOpened =
@@ -273,7 +319,7 @@ let private computeOpenInsertEdit (lines: string[]) (ast: ParsedInput) (targetPo
                 { Range =
                     { Start = { Line = uint32 insertLine; Character = 0u }
                       End = { Line = uint32 insertLine; Character = 0u } }
-                  NewText = $"%s{indent}open %s{nsToOpen}\n" }
+                  NewText = $"%s{indent}open %s{nsToOpen}%s{eol}" }
         | None ->
             match decls with
             | firstDecl :: _ ->
@@ -284,7 +330,7 @@ let private computeOpenInsertEdit (lines: string[]) (ast: ParsedInput) (targetPo
                     { Range =
                         { Start = { Line = uint32 line0; Character = 0u }
                           End = { Line = uint32 line0; Character = 0u } }
-                      NewText = $"%s{indent}open %s{nsToOpen}\n\n" }
+                      NewText = $"%s{indent}open %s{nsToOpen}%s{eol}%s{eol}" }
             | [] ->
                 let insertLine = if lines.Length > 0 then 1 else 0
 
@@ -292,7 +338,48 @@ let private computeOpenInsertEdit (lines: string[]) (ast: ParsedInput) (targetPo
                     { Range =
                         { Start = { Line = uint32 insertLine; Character = 0u }
                           End = { Line = uint32 insertLine; Character = 0u } }
-                      NewText = $"\nopen %s{nsToOpen}\n" }
+                      NewText = $"%s{eol}open %s{nsToOpen}%s{eol}" }
+
+let private cursorOverlapsOpenDecl (ast: ParsedInput) (lspRange: LspRange) : bool =
+    let rec walkImplDecls (decls: SynModuleDecl list) : bool =
+        decls
+        |> List.exists (function
+            | SynModuleDecl.Open(_, r) -> fcsOverlapsLsp lspRange r
+            | SynModuleDecl.NestedModule(decls = inner; range = r) ->
+                fcsOverlapsLsp lspRange r && walkImplDecls inner
+            | SynModuleDecl.NamespaceFragment(SynModuleOrNamespace(decls = inner; range = r)) ->
+                fcsOverlapsLsp lspRange r && walkImplDecls inner
+            | _ -> false)
+
+    let rec walkSigDecls (decls: SynModuleSigDecl list) : bool =
+        decls
+        |> List.exists (function
+            | SynModuleSigDecl.Open(_, r) -> fcsOverlapsLsp lspRange r
+            | SynModuleSigDecl.NestedModule(moduleDecls = inner; range = r) ->
+                fcsOverlapsLsp lspRange r && walkSigDecls inner
+            | SynModuleSigDecl.NamespaceFragment(SynModuleOrNamespaceSig(decls = inner; range = r)) ->
+                fcsOverlapsLsp lspRange r && walkSigDecls inner
+            | _ -> false)
+
+    match ast with
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        modules |> List.exists (fun (SynModuleOrNamespace(decls = decls)) -> walkImplDecls decls)
+    | ParsedInput.SigFile(ParsedSigFileInput(contents = modules)) ->
+        modules |> List.exists (fun (SynModuleOrNamespaceSig(decls = decls)) -> walkSigDecls decls)
+
+let private rangeLinesContainDot (lines: string[]) (lspRange: LspRange) : bool =
+    if lines.Length = 0 then
+        false
+    else
+        let startIdx = max 0 (min (lines.Length - 1) (int lspRange.Start.Line))
+        let endIdx = max startIdx (min (lines.Length - 1) (int lspRange.End.Line))
+        let mutable found = false
+
+        for idx in startIdx..endIdx do
+            if lines[idx].IndexOf('.') >= 0 then
+                found <- true
+
+        found
 
 let private hasEntityAttr<'Attr> (entity: FSharpEntity) =
     try
@@ -300,9 +387,28 @@ let private hasEntityAttr<'Attr> (entity: FSharpEntity) =
     with _ ->
         false
 
-/// Searches current `PartialAssemblySignature` and referenced assemblies for types, modules, union cases,
-/// and module functions/values matching `unresolvedIdent`, returning `(openableNamespaceOpt, fullyQualifiedIdent)` pairs.
+let private hasSynRqaAttr (attrs: SynAttributes) : bool =
+    attrs
+    |> List.exists (fun attrList ->
+        attrList.Attributes
+        |> List.exists (fun a ->
+            match a.TypeName with
+            | SynLongIdent(id = ids) when not ids.IsEmpty ->
+                let last = (List.last ids).idText
+                last = "RequireQualifiedAccess" || last = "RequireQualifiedAccessAttribute"
+            | _ -> false))
+
+let private isSynPrivate (accOpt: SynAccess option) : bool =
+    match accOpt with
+    | Some(SynAccess.Private _) -> true
+    | _ -> false
+
+/// Searches same-file AST declarations (before `targetPos`), current `PartialAssemblySignature`, and referenced
+/// assemblies for types, modules, union cases, and module functions/values matching `unresolvedIdent`,
+/// returning `(openableNamespaceOpt, fullyQualifiedIdent)` pairs.
 let private resolveUnopenedNamespaceCandidates
+    (ast: ParsedInput)
+    (targetPos: pos)
     (check: FSharpCheckFileResults)
     (unresolvedIdent: string)
     : (string option * string) list =
@@ -315,6 +421,194 @@ let private resolveUnopenedNamespaceCandidates
 
         if seen.Add key then
             results.Add(priority, openNs, fqName)
+
+    let computeOpenAndQualStatic (fullParts: string list) (rqaOpt: string list option) =
+        match rqaOpt with
+        | None ->
+            if fullParts.Length > 1 then
+                let openParts = fullParts |> List.take (fullParts.Length - 1)
+                Some(String.concat "." openParts), String.concat "." fullParts
+            else
+                None, String.concat "." fullParts
+        | Some rqaParts ->
+            let openOpt =
+                if rqaParts.Length > 1 then
+                    Some(String.concat "." (rqaParts |> List.take (rqaParts.Length - 1)))
+                else
+                    None
+
+            openOpt, String.concat "." fullParts
+
+    // 1. Supplement from same-file AST modules/types declared before `targetPos` so promoted open files
+    //    (where `DeclarationChecker.ViewResults.PartialAssemblySignature` omits `ownSigForFile`) still
+    //    resolve same-file modules, values, types, and union cases!
+    match ast with
+    | ParsedInput.SigFile _ -> ()
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        let rec findEnclosingPath (prefix: string list) (decls: SynModuleDecl list) : string list =
+            decls
+            |> List.tryPick (function
+                | SynModuleDecl.NestedModule(moduleInfo = ci; decls = inner; range = mr) when Range.rangeContainsPos mr targetPos ->
+                    Some(findEnclosingPath (prefix @ (ci.LongIdent |> List.map _.idText)) inner)
+                | SynModuleDecl.NamespaceFragment(SynModuleOrNamespace(longId = flid; decls = inner; range = fr)) when
+                    Range.rangeContainsPos fr targetPos
+                    ->
+                    Some(findEnclosingPath (flid |> List.map _.idText) inner)
+                | _ -> None)
+            |> Option.defaultValue prefix
+
+        let enclosingPath =
+            modules
+            |> List.tryPick (fun (SynModuleOrNamespace(longId = lid; decls = decls; range = r)) ->
+                if Range.rangeContainsPos r targetPos then
+                    Some(findEnclosingPath (lid |> List.map _.idText) decls)
+                else
+                    None)
+            |> Option.defaultValue []
+
+        let rec stripCommonPrefix (enc: string list) (parts: string list) : string list =
+            match enc, parts with
+            | eh :: et, ph :: pt when String.Equals(eh, ph, StringComparison.Ordinal) && not pt.IsEmpty ->
+                stripCommonPrefix et pt
+            | _ -> parts
+
+        let relativizeRqa (enc: string list) (rqaOpt: string list option) : string list option =
+            rqaOpt |> Option.map (stripCommonPrefix enc)
+
+        let rec extractPatBoundNames (pat: SynPat) : string list =
+            match pat with
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) ->
+                let apExtras =
+                    if id.idText.StartsWith("|", StringComparison.Ordinal) && id.idText.EndsWith("|", StringComparison.Ordinal) then
+                        id.idText.Split('|')
+                        |> Array.filter (fun s -> not (String.IsNullOrWhiteSpace s) && s <> "_")
+                        |> List.ofArray
+                    else
+                        []
+
+                id.idText :: apExtras
+            | SynPat.Named(SynIdent(id, _), _, _, _) -> [ id.idText ]
+            | SynPat.Typed(inner, _, _)
+            | SynPat.Paren(inner, _)
+            | SynPat.Attrib(inner, _, _) -> extractPatBoundNames inner
+            | SynPat.Tuple(_, ps, _, _) -> ps |> List.collect extractPatBoundNames
+            | SynPat.As(lhs, rhs, _) -> extractPatBoundNames lhs @ extractPatBoundNames rhs
+            | _ -> []
+
+        let emitAstItem (fullParts: string list) (rqaBoundary: string list option) =
+            let relParts = stripCommonPrefix enclosingPath fullParts
+
+            if relParts.Length > 1 then
+                let relRqa = relativizeRqa enclosingPath rqaBoundary
+                let openOpt, fq = computeOpenAndQualStatic relParts relRqa
+                addCandidate 0 openOpt fq
+
+        let rec walkUnopenedModuleDecls
+            (modPath: string list)
+            (rqaBoundary: string list option)
+            (decls: SynModuleDecl list)
+            =
+            for decl in decls do
+                if Position.posLt decl.Range.Start targetPos then
+                    match decl with
+                    | SynModuleDecl.Let(bindings = bs) ->
+                        for SynBinding(accessibility = bAcc; headPat = hp) in bs do
+                            if not (isSynPrivate bAcc) then
+                                for boundName in extractPatBoundNames hp do
+                                    if String.Equals(boundName, cleanTarget, StringComparison.Ordinal) then
+                                        emitAstItem (modPath @ [ unresolvedIdent ]) rqaBoundary
+                    | SynModuleDecl.Types(typeDefns = tds) ->
+                        for SynTypeDefn(typeInfo = SynComponentInfo(attributes = tAttrs; accessibility = tAcc) as tci; typeRepr = trepr) in tds do
+                            if not (isSynPrivate tAcc) && not tci.LongIdent.IsEmpty then
+                                let typeName = (List.last tci.LongIdent).idText
+                                let typePath = modPath @ [ typeName ]
+
+                                if String.Equals(typeName, cleanTarget, StringComparison.Ordinal) then
+                                    emitAstItem typePath rqaBoundary
+
+                                if not (hasSynRqaAttr tAttrs) then
+                                    match trepr with
+                                    | SynTypeDefnRepr.Simple(SynTypeDefnSimpleRepr.Union(accessibility = uAcc; unionCases = ucs), _) when
+                                        not (isSynPrivate uAcc)
+                                        ->
+                                        for SynUnionCase(ident = SynIdent(ucId, _); accessibility = cAcc) in ucs do
+                                            if not (isSynPrivate cAcc) && String.Equals(ucId.idText, cleanTarget, StringComparison.Ordinal) then
+                                                let relTypePath = stripCommonPrefix enclosingPath typePath
+                                                let relModPath = stripCommonPrefix enclosingPath modPath
+
+                                                let openOpt =
+                                                    match relativizeRqa enclosingPath rqaBoundary with
+                                                    | None ->
+                                                        if not relModPath.IsEmpty then Some(String.concat "." relModPath) else None
+                                                    | Some rqaParts when rqaParts.Length > 1 ->
+                                                        Some(String.concat "." (rqaParts |> List.take (rqaParts.Length - 1)))
+                                                    | _ -> None
+
+                                                let fq = String.concat "." (relTypePath @ [ ucId.idText ])
+                                                addCandidate 0 openOpt fq
+                                    | _ -> ()
+                    | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(attributes = mAttrs; accessibility = mAcc) as mci; decls = inner) ->
+                        if not (isSynPrivate mAcc) && not mci.LongIdent.IsEmpty then
+                            let subPath = modPath @ (mci.LongIdent |> List.map _.idText)
+                            let modDisplay = (List.last mci.LongIdent).idText
+
+                            if String.Equals(modDisplay, cleanTarget, StringComparison.Ordinal) then
+                                emitAstItem subPath rqaBoundary
+
+                            let nextRqa =
+                                match rqaBoundary with
+                                | Some existing -> Some existing
+                                | None when hasSynRqaAttr mAttrs -> Some subPath
+                                | None -> None
+
+                            walkUnopenedModuleDecls subPath nextRqa inner
+                    | _ -> ()
+
+        let rec walkContainingDecls (curPath: string list) (decls: SynModuleDecl list) =
+            for decl in decls do
+                if Position.posLt decl.Range.Start targetPos then
+                    match decl with
+                    | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(attributes = mAttrs; accessibility = mAcc) as mci; decls = inner; range = mr) ->
+                        let subPath = curPath @ (mci.LongIdent |> List.map _.idText)
+
+                        if Range.rangeContainsPos mr targetPos then
+                            walkContainingDecls subPath inner
+                        elif not (isSynPrivate mAcc) && not mci.LongIdent.IsEmpty then
+                            let modDisplay = (List.last mci.LongIdent).idText
+
+                            if String.Equals(modDisplay, cleanTarget, StringComparison.Ordinal) then
+                                emitAstItem subPath None
+
+                            let nextRqa = if hasSynRqaAttr mAttrs then Some subPath else None
+                            walkUnopenedModuleDecls subPath nextRqa inner
+                    | SynModuleDecl.NamespaceFragment(SynModuleOrNamespace(longId = flid; kind = fkind; decls = inner; attribs = fAttrs; accessibility = fAcc; range = fr)) ->
+                        let fragPath = flid |> List.map _.idText
+
+                        if Range.rangeContainsPos fr targetPos then
+                            walkContainingDecls fragPath inner
+                        elif not (isSynPrivate fAcc) then
+                            if fkind.IsModule then
+                                let nextRqa = if hasSynRqaAttr fAttrs then Some fragPath else None
+                                walkUnopenedModuleDecls fragPath nextRqa inner
+                            else
+                                walkContainingDecls fragPath inner
+                    | _ -> ()
+
+        for SynModuleOrNamespace(longId = lid; kind = mkind; decls = decls; attribs = mAttrs; accessibility = mAcc; range = mr) in modules do
+            if Position.posLt mr.Start targetPos then
+                let topPath = lid |> List.map _.idText
+
+                if Range.rangeContainsPos mr targetPos then
+                    walkContainingDecls topPath decls
+                elif not (isSynPrivate mAcc) then
+                    if mkind.IsModule then
+                        if not lid.IsEmpty && String.Equals((List.last lid).idText, cleanTarget, StringComparison.Ordinal) then
+                            emitAstItem topPath None
+
+                        let nextRqa = if hasSynRqaAttr mAttrs then Some topPath else None
+                        walkUnopenedModuleDecls topPath nextRqa decls
+                    else
+                        walkContainingDecls topPath decls
 
     let rec walkEntity
         (isLocalAssembly: bool)
@@ -600,12 +894,27 @@ let private resolveSpellcheckSuggestions
             |> Seq.map (fun (_, _, cand) -> cand)
             |> Seq.toList
 
-/// Finds a non-recursive `let` binding enclosing `diagPos` whose bound function/value name equals `identText`,
-/// returning `(fnName, rangeAfterLetKeyword)`.
+let rec private tryBindingHeadIdent (pat: SynPat) : Ident option =
+    match pat with
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ fnIdent ])) -> Some fnIdent
+    | SynPat.Named(SynIdent(fnIdent, _), _, _, _) -> Some fnIdent
+    | SynPat.Typed(inner, _, _)
+    | SynPat.Paren(inner, _)
+    | SynPat.Attrib(inner, _, _) -> tryBindingHeadIdent inner
+    | _ -> None
+
+let private tryLeadingLetRange (trivia: SynBindingTrivia) : range option =
+    match trivia.LeadingKeyword with
+    | SynLeadingKeyword.Let r -> Some r
+    | SynLeadingKeyword.LetBang r -> Some r
+    | _ -> None
+
+/// Finds a non-recursive `let` (or `let ... and ...`) binding enclosing `diagPos` whose bound function/value name
+/// (or any mutually recursive sibling binding name) equals `identText`, returning `(firstFnName, posAfterLeadingLet)`.
 let private tryFindSelfRecursiveBinding (ast: ParsedInput) (diagPos: pos) (identText: string) : (string * pos) option =
     let cleanIdent = unquoteBackticks identText
 
-    let tryBindingHeadName (pat: SynPat) : Ident option =
+    let trySingleBindingHeadName (pat: SynPat) : Ident option =
         match pat with
         | SynPat.LongIdent(longDotId = SynLongIdent(id = [ fnIdent ]); argPats = argPats) ->
             let hasArgs =
@@ -617,11 +926,31 @@ let private tryFindSelfRecursiveBinding (ast: ParsedInput) (diagPos: pos) (ident
         | SynPat.Named(SynIdent(fnIdent, _), _, _, _) -> Some fnIdent
         | _ -> None
 
-    let tryAfterLetPos (trivia: SynBindingTrivia) : pos option =
-        match trivia.LeadingKeyword with
-        | SynLeadingKeyword.Let r -> Some r.End
-        | SynLeadingKeyword.LetBang r -> Some r.End
-        | _ -> None
+    let tryMatchBindingsGroup (isRec: bool) (bindings: SynBinding list) : (string * pos) option =
+        if isRec then
+            None
+        else
+            match bindings with
+            | [] -> None
+            | [ SynBinding(headPat = firstPat; trivia = firstTrivia) ] ->
+                match trySingleBindingHeadName firstPat, tryLeadingLetRange firstTrivia with
+                | Some fnId, Some letRng when String.Equals(fnId.idText, cleanIdent, StringComparison.Ordinal) ->
+                    Some(fnId.idText, letRng.End)
+                | _ -> None
+            | SynBinding(headPat = firstPat; trivia = firstTrivia) :: _ ->
+                let matchesAnySibling =
+                    bindings
+                    |> List.exists (fun (SynBinding(headPat = hp)) ->
+                        match tryBindingHeadIdent hp with
+                        | Some id -> String.Equals(id.idText, cleanIdent, StringComparison.Ordinal)
+                        | None -> false)
+
+                if matchesAnySibling then
+                    match tryBindingHeadIdent firstPat, tryLeadingLetRange firstTrivia with
+                    | Some firstId, Some letRng -> Some(firstId.idText, letRng.End)
+                    | _ -> None
+                else
+                    None
 
     let rec walkExpr (expr: SynExpr) : (string * pos) option =
         if not (Range.rangeContainsPos expr.Range diagPos) then
@@ -631,17 +960,9 @@ let private tryFindSelfRecursiveBinding (ast: ParsedInput) (diagPos: pos) (ident
             | SynExpr.LetOrUse({ IsRecursive = isRec; Bindings = bindings; Body = body }) ->
                 let inBinding =
                     bindings
-                    |> List.tryPick (fun (SynBinding(headPat = headPat; expr = bExpr; trivia = trivia)) ->
+                    |> List.tryPick (fun (SynBinding(expr = bExpr)) ->
                         if Range.rangeContainsPos bExpr.Range diagPos then
-                            walkExpr bExpr
-                            |> Option.orElseWith (fun () ->
-                                if not isRec then
-                                    match tryBindingHeadName headPat, tryAfterLetPos trivia with
-                                    | Some fnId, Some afterLet when String.Equals(fnId.idText, cleanIdent, StringComparison.Ordinal) ->
-                                        Some(fnId.idText, afterLet)
-                                    | _ -> None
-                                else
-                                    None)
+                            walkExpr bExpr |> Option.orElseWith (fun () -> tryMatchBindingsGroup isRec bindings)
                         else
                             None)
 
@@ -674,17 +995,9 @@ let private tryFindSelfRecursiveBinding (ast: ParsedInput) (diagPos: pos) (ident
                 match decl with
                 | SynModuleDecl.Let(isRecursive = isRec; bindings = bindings) ->
                     bindings
-                    |> List.tryPick (fun (SynBinding(headPat = headPat; expr = bExpr; trivia = trivia)) ->
+                    |> List.tryPick (fun (SynBinding(expr = bExpr)) ->
                         if Range.rangeContainsPos bExpr.Range diagPos then
-                            walkExpr bExpr
-                            |> Option.orElseWith (fun () ->
-                                if not isRec then
-                                    match tryBindingHeadName headPat, tryAfterLetPos trivia with
-                                    | Some fnId, Some afterLet when String.Equals(fnId.idText, cleanIdent, StringComparison.Ordinal) ->
-                                        Some(fnId.idText, afterLet)
-                                    | _ -> None
-                                else
-                                    None)
+                            walkExpr bExpr |> Option.orElseWith (fun () -> tryMatchBindingsGroup isRec bindings)
                         else
                             None)
                 | SynModuleDecl.NestedModule(decls = inner) -> walkDecls inner
@@ -698,6 +1011,78 @@ let private tryFindSelfRecursiveBinding (ast: ParsedInput) (diagPos: pos) (ident
         modules
         |> List.tryPick (fun (SynModuleOrNamespace(decls = decls; range = r)) ->
             if Range.rangeContainsPos r diagPos then walkDecls decls else None)
+
+/// Dedicated finder for `FS0576` (`let ... and ...` without `rec`), where `diagRange` spans the leading `let`/`let!` keyword.
+let private tryFindNonRecLetKeywordBinding (ast: ParsedInput) (diagRange: range) : (string * pos) option =
+    let fcsRangesOverlap (a: range) (b: range) =
+        not a.IsSynthetic
+        && not b.IsSynthetic
+        && Position.posGeq b.End a.Start
+        && Position.posGeq a.End b.Start
+
+    let tryCheckFirstBinding (isRec: bool) (bindings: SynBinding list) : (string * pos) option =
+        if isRec then
+            None
+        else
+            match bindings with
+            | SynBinding(headPat = firstPat; trivia = firstTrivia) :: _ ->
+                match tryLeadingLetRange firstTrivia, tryBindingHeadIdent firstPat with
+                | Some letRng, Some firstId when fcsRangesOverlap letRng diagRange ->
+                    Some(firstId.idText, letRng.End)
+                | _ -> None
+            | [] -> None
+
+    let rec walkExpr (expr: SynExpr) : (string * pos) option =
+        if not (fcsRangesOverlap expr.Range diagRange) then
+            None
+        else
+            match expr with
+            | SynExpr.LetOrUse({ IsRecursive = isRec; Bindings = bindings; Body = body }) ->
+                tryCheckFirstBinding isRec bindings
+                |> Option.orElseWith (fun () ->
+                    bindings |> List.tryPick (fun (SynBinding(expr = be)) -> walkExpr be))
+                |> Option.orElseWith (fun () -> walkExpr body)
+            | SynExpr.Sequential(expr1 = e1; expr2 = e2) -> walkExpr e1 |> Option.orElseWith (fun () -> walkExpr e2)
+            | SynExpr.IfThenElse(ifExpr = c; thenExpr = t; elseExpr = eOpt) ->
+                walkExpr c
+                |> Option.orElseWith (fun () -> walkExpr t)
+                |> Option.orElseWith (fun () -> eOpt |> Option.bind walkExpr)
+            | SynExpr.App(funcExpr = f; argExpr = a) -> walkExpr f |> Option.orElseWith (fun () -> walkExpr a)
+            | SynExpr.Paren(expr = inner) -> walkExpr inner
+            | SynExpr.Lambda(body = b) -> walkExpr b
+            | SynExpr.Match(expr = me; clauses = cs) ->
+                walkExpr me
+                |> Option.orElseWith (fun () -> cs |> List.tryPick (fun (SynMatchClause(resultExpr = re)) -> walkExpr re))
+            | SynExpr.TryWith(tryExpr = te; withCases = cs) ->
+                walkExpr te
+                |> Option.orElseWith (fun () -> cs |> List.tryPick (fun (SynMatchClause(resultExpr = re)) -> walkExpr re))
+            | SynExpr.TryFinally(tryExpr = te; finallyExpr = fe) ->
+                walkExpr te |> Option.orElseWith (fun () -> walkExpr fe)
+            | SynExpr.ComputationExpr(expr = ce) -> walkExpr ce
+            | _ -> None
+
+    let rec walkDecls (decls: SynModuleDecl list) : (string * pos) option =
+        decls
+        |> List.tryPick (fun decl ->
+            if not (fcsRangesOverlap decl.Range diagRange) then
+                None
+            else
+                match decl with
+                | SynModuleDecl.Let(isRecursive = isRec; bindings = bindings) ->
+                    tryCheckFirstBinding isRec bindings
+                    |> Option.orElseWith (fun () ->
+                        bindings |> List.tryPick (fun (SynBinding(expr = be)) -> walkExpr be))
+                | SynModuleDecl.NestedModule(decls = inner) -> walkDecls inner
+                | SynModuleDecl.NamespaceFragment(SynModuleOrNamespace(decls = inner)) -> walkDecls inner
+                | SynModuleDecl.Expr(expr = e) -> walkExpr e
+                | _ -> None)
+
+    match ast with
+    | ParsedInput.SigFile _ -> None
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        modules
+        |> List.tryPick (fun (SynModuleOrNamespace(decls = decls; range = r)) ->
+            if fcsRangesOverlap r diagRange then walkDecls decls else None)
 
 /// Checks whether `targetRange` is the direct receiver of a `SynExpr.DotGet` (e.g. `MemoryStream().Length`)
 /// or immediately followed by `.` in source text.
@@ -915,12 +1300,13 @@ let private tryExplicitTypeAnnotationEdit
 
 /// Family 9a: Implement interface stub via `InterfaceStubGenerator`.
 let private tryImplementInterfaceEdits
+    (eol: string)
     (config: FSharpConfig)
     (lines: string[])
     (ast: ParsedInput)
     (check: FSharpCheckFileResults)
     (probePos: pos)
-    : TextEdit[] option =
+    : (range * TextEdit[]) option =
     let tryObjExprFallback () =
         (probePos, ast)
         ||> ParsedInput.tryPick (fun _ node ->
@@ -980,28 +1366,39 @@ let private tryImplementInterfaceEdits
 
                     let startAndWith =
                         (tyEnd, ast)
-                        ||> ParsedInput.tryPick (fun _ node ->
+                        ||> ParsedInput.tryPick (fun visitorPath node ->
                             match node with
                             | SyntaxNode.SynMemberDefn(SynMemberDefn.Interface(interfaceType = ty; withKeyword = withOpt; range = mr)) when
                                 Range.rangeContainsPos ty.Range tyEnd
                                 ->
-                                Some(mr.Start.Column + config.IndentationSize, withOpt, ifaceData.Range.End)
-                            | SyntaxNode.SynExpr(SynExpr.ObjExpr(objType = ty; withKeyword = withOpt; newExprRange = nr)) when
+                                let enclosingRange =
+                                    visitorPath
+                                    |> List.tryPick (function
+                                        | SyntaxNode.SynTypeDefn(SynTypeDefn(range = tr)) when Range.rangeContainsPos tr tyEnd -> Some tr
+                                        | SyntaxNode.SynModule(SynModuleDecl.Types(typeDefns = tds)) ->
+                                            tds
+                                            |> List.tryPick (fun (SynTypeDefn(range = tr)) ->
+                                                if Range.rangeContainsPos tr tyEnd then Some tr else None)
+                                        | _ -> None)
+                                    |> Option.defaultValue mr
+
+                                Some(enclosingRange, mr.Start.Column + config.IndentationSize, withOpt, ifaceData.Range.End)
+                            | SyntaxNode.SynExpr(SynExpr.ObjExpr(objType = ty; withKeyword = withOpt; newExprRange = nr; range = orng)) when
                                 Range.rangeContainsPos ty.Range tyEnd
                                 ->
-                                Some(nr.Start.Column + config.IndentationSize, withOpt, ty.Range.End)
-                            | SyntaxNode.SynExpr(SynExpr.ObjExpr(extraImpls = ifaces)) ->
+                                Some(orng, nr.Start.Column + config.IndentationSize, withOpt, ty.Range.End)
+                            | SyntaxNode.SynExpr(SynExpr.ObjExpr(extraImpls = ifaces; range = orng)) ->
                                 ifaces
                                 |> List.tryPick (fun (SynInterfaceImpl(interfaceTy = ty; withKeyword = withOpt; range = ir)) ->
                                     if Range.rangeContainsPos ty.Range tyEnd then
-                                        Some(ir.Start.Column + config.IndentationSize, withOpt, ty.Range.End)
+                                        Some(orng, ir.Start.Column + config.IndentationSize, withOpt, ty.Range.End)
                                     else
                                         None)
                             | _ -> None)
 
                     match startAndWith with
                     | None -> None
-                    | Some(defaultIndentCol, withOpt, headerEndPos) ->
+                    | Some(nodeRange, defaultIndentCol, withOpt, headerEndPos) ->
                         let existingBindings =
                             match ifaceData with
                             | InterfaceData.Interface(_, None) -> []
@@ -1048,22 +1445,26 @@ let private tryImplementInterfaceEdits
                         if String.IsNullOrWhiteSpace stubNorm then
                             None
                         else
+                            let stubEol = normalizeEol eol stubNorm
                             let prefix = if needWith then " with" else ""
                             let insLsp = fcsPosToLsp insertAt
 
-                            Some
+                            Some(
+                                nodeRange,
                                 [| { Range = { Start = insLsp; End = insLsp }
-                                     NewText = prefix + stubNorm } |]
+                                     NewText = prefix + stubEol } |]
+                            )
                 | _ -> None
 
 /// Family 9b: Implement abstract class members on `{ new BaseClass() ... }` or `type Sub() = inherit BaseClass()`.
 let private tryImplementAbstractClassEdits
+    (eol: string)
     (config: FSharpConfig)
     (lines: string[])
     (ast: ParsedInput)
     (check: FSharpCheckFileResults)
     (probePos: pos)
-    : TextEdit[] option =
+    : (range * TextEdit[]) option =
     let rec extractLastTypeIdent (t: SynType) : Ident option =
         match t with
         | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
@@ -1118,12 +1519,12 @@ let private tryImplementAbstractClassEdits
                         let endLineStr = getLineStr lines fullRange.EndLine
                         // Keep space/newline before closing `}`
                         let trail =
-                            if ins.Line = fullRange.EndLine && fullRange.EndColumn <= endLineStr.Length then "\n" + String(' ', newRange.Start.Column)
+                            if ins.Line = fullRange.EndLine && fullRange.EndColumn <= endLineStr.Length then eol + String(' ', newRange.Start.Column)
                             else ""
 
                         ins, withOpt.IsNone, trail
 
-                Some(ty, existingNames, indentCol, insertPos, needWith, suffix)
+                Some(fullRange, ty, existingNames, indentCol, insertPos, needWith, suffix)
             | SyntaxNode.SynExpr(SynExpr.ComputationExpr(hasSeqBuilder = false; expr = innerExpr; range = fullRange)) when
                 Range.rangeContainsPos fullRange probePos
                 ->
@@ -1147,11 +1548,11 @@ let private tryImplementAbstractClassEdits
 
                     let trail =
                         if headerEnd.Line = fullRange.EndLine && fullRange.EndColumn <= endLineStr.Length then
-                            "\n" + String(' ', newRange.Start.Column)
+                            eol + String(' ', newRange.Start.Column)
                         else
                             ""
 
-                    Some(ty, Set.empty, indentCol, headerEnd, true, trail)
+                    Some(fullRange, ty, Set.empty, indentCol, headerEnd, true, trail)
             | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = SynTypeDefnRepr.ObjectModel(members = oms); members = extraMs; range = tr)) when
                 Range.rangeContainsPos tr probePos
                 ->
@@ -1180,12 +1581,12 @@ let private tryImplementAbstractClassEdits
                               | _ -> () ]
                         |> Set.ofList
 
-                    Some(ity, existingNames, indentCol, inhEnd, false, "")
+                    Some(tr, ity, existingNames, indentCol, inhEnd, false, "")
             | _ -> None)
 
     match targetSite with
     | None -> None
-    | Some(synType, existingNames, indentCol, insertPos, needWith, suffix) ->
+    | Some(siteRange, synType, existingNames, indentCol, insertPos, needWith, suffix) ->
         match extractLastTypeIdent synType with
         | None -> None
         | Some tyIdent ->
@@ -1244,18 +1645,21 @@ let private tryImplementAbstractClassEdits
 
                                     let argsText = if String.IsNullOrEmpty paramGroups then "()" else paramGroups
                                     $"%s{indent}override %s{objId}.%s{m.DisplayName}%s{argsText} = %s{body}")
-                            |> String.concat "\n"
+                            |> String.concat eol
 
-                        let prefix = if needWith then " with\n" else "\n"
+                        let prefix = if needWith then " with" + eol else eol
                         let insLsp = fcsPosToLsp insertPos
 
-                        Some
+                        Some(
+                            siteRange,
                             [| { Range = { Start = insLsp; End = insLsp }
                                  NewText = prefix + formattedMembers + suffix } |]
+                        )
                 | _ -> None
 
 /// Family 10: Generate missing union pattern match cases on `SynExpr.Match`.
 let private tryGenerateUnionCasesEdits
+    (eol: string)
     (config: FSharpConfig)
     (lines: string[])
     (ast: ParsedInput)
@@ -1429,16 +1833,17 @@ let private tryGenerateUnionCasesEdits
                                     $"%s{qualPrefix}%s{uc.Name}(%s{wilds})"
 
                             $"%s{indent}| %s{patText} -> %s{body}")
-                        |> String.concat "\n"
+                        |> String.concat eol
 
                     let insLsp = fcsPosToLsp insertPos
 
                     Some
                         [| { Range = { Start = insLsp; End = insLsp }
-                             NewText = "\n" + formattedClauses } |]
+                             NewText = eol + formattedClauses } |]
 
 /// Family 11: Generate missing record fields on `SynExpr.Record`.
 let private tryGenerateRecordStubEdits
+    (eol: string)
     (config: FSharpConfig)
     (lines: string[])
     (ast: ParsedInput)
@@ -1527,7 +1932,7 @@ let private tryGenerateRecordStubEdits
 
                     let newFieldsText =
                         missingFields
-                        |> List.map (fun fname -> $"\n%s{indent}%s{fname} = %s{body}")
+                        |> List.map (fun fname -> $"%s{eol}%s{indent}%s{fname} = %s{body}")
                         |> String.concat ""
 
                     let insLsp = fcsPosToLsp insertPos
@@ -1542,7 +1947,7 @@ let private tryGenerateRecordStubEdits
                     let newFieldsText =
                         missingFields
                         |> List.mapi (fun i fname ->
-                            if i = 0 then $" %s{fname} = %s{body}" else $"\n%s{indent}%s{fname} = %s{body}")
+                            if i = 0 then $" %s{fname} = %s{body}" else $"%s{eol}%s{indent}%s{fname} = %s{body}")
                         |> String.concat ""
 
                     let afterOpenBrace = Position.mkPos recRange.StartLine (recRange.StartColumn + 1)
@@ -1554,6 +1959,7 @@ let private tryGenerateRecordStubEdits
 
 /// Family 12 helper: Resolves `SigSyncCandidate` against the paired `.fsi` file's `TextView` (`Parse` + `Text`).
 let private resolveSigSyncAction (sigPath: string) (sigView: TextView) (cand: SigSyncCandidate) : RawAction option =
+    let sigEol = detectEol sigView.Text
     let sigLines = sigView.Text.Split '\n'
 
     match sigView.Parse.ParseTree with
@@ -1588,6 +1994,8 @@ let private resolveSigSyncAction (sigPath: string) (sigView: TextView) (cand: Si
 
         match cand with
         | UpdateSigVal(valName, sigLocOpt, valText, diagOpt) ->
+            let normValText = normalizeEol sigEol valText
+
             let mValOpt =
                 sigModules
                 |> List.tryPick (fun (SynModuleOrNamespaceSig(decls = decls)) ->
@@ -1604,9 +2012,11 @@ let private resolveSigSyncAction (sigPath: string) (sigView: TextView) (cand: Si
                       TargetPath = sigPath
                       Edits =
                         [| { Range = fcsRangeToLsp mVal
-                             NewText = valText } |] }
+                             NewText = normValText } |] }
 
         | AddSigVal(modPath, valName, valText) ->
+            let normValText = normalizeEol sigEol valText
+
             let alreadyExists =
                 sigModules
                 |> List.exists (fun (SynModuleOrNamespaceSig(decls = decls)) ->
@@ -1641,7 +2051,7 @@ let private resolveSigSyncAction (sigPath: string) (sigView: TextView) (cand: Si
                               TargetPath = sigPath
                               Edits =
                                 [| { Range = { Start = endLsp; End = endLsp }
-                                     NewText = $"\n\n%s{indent}%s{valText}" } |] }
+                                     NewText = $"%s{sigEol}%s{sigEol}%s{indent}%s{normValText}" } |] }
                     | None ->
                         let insertLine0 =
                             match List.tryLast lid with
@@ -1658,7 +2068,7 @@ let private resolveSigSyncAction (sigPath: string) (sigView: TextView) (cand: Si
                                 [| { Range =
                                        { Start = { Line = uint32 insertLine0; Character = 0u }
                                          End = { Line = uint32 insertLine0; Character = 0u } }
-                                     NewText = $"\n%s{valText}\n" } |] }
+                                     NewText = $"%s{sigEol}%s{normValText}%s{sigEol}" } |] }
 
 let internal provideWithCapabilities
     (config: FSharpConfig)
@@ -1723,11 +2133,38 @@ let internal provideWithCapabilities
                                             cachedCheckLast <- Some c
                                             c
 
+                                let eol = detectEol view.Text
                                 let ast = view.Parse.ParseTree
                                 let cursorPos = Position.mkPos fcsLine fcsCol
                                 let getLine = getLineStr lines
+                                let fileDiags = view.Result.Diagnostics
                                 let actions = ResizeArray<RawAction>()
                                 let sigCands = ResizeArray<SigSyncCandidate>()
+
+                                let findContextDiag (code: string) (fcsRng: range) : Diagnostic option =
+                                    let targetLsp = fcsRangeToLsp fcsRng
+
+                                    p.Context.Diagnostics
+                                    |> Array.tryFind (fun cd ->
+                                        String.Equals(contextDiagCode cd, code, StringComparison.OrdinalIgnoreCase)
+                                        && lspRangesOverlap cd.Range targetLsp)
+
+                                let resolveAnalyzerDiag (code: string) (msg: string) (fcsRng: range) : Diagnostic =
+                                    findContextDiag code fcsRng
+                                    |> Option.defaultWith (fun () ->
+                                        { Range = fcsRangeToLsp fcsRng
+                                          Severity = Some DiagnosticSeverity.Hint
+                                          Code = Some(U2.C2 code)
+                                          CodeDescription = None
+                                          Source = Some "F# Analyzers"
+                                          Message = msg
+                                          Tags = Some [| DiagnosticTag.Unnecessary |]
+                                          RelatedInformation = None
+                                          Data = None })
+
+                                let toCompilerLspDiag (d: FSharpDiagnostic) : Diagnostic =
+                                    let codeStr = $"FS%04d{d.ErrorNumber}"
+                                    findContextDiag codeStr d.Range |> Option.defaultWith (fun () -> fcsDiagToLsp d)
 
                                 let addLocal
                                     (title: string)
@@ -1748,7 +2185,12 @@ let internal provideWithCapabilities
                                 // -------------------------------------------------------------------------
                                 // Family 1: Remove unused `open` (QuickFix + source.organizeImports)
                                 // -------------------------------------------------------------------------
-                                if config.UnusedOpensAnalyzer || hasContextCode "FSAC0001" || wantsOrganizeImports then
+                                if
+                                    wantsOrganizeImports
+                                    || config.UnusedOpensAnalyzer
+                                    || hasContextCode "FSAC0001"
+                                    || cursorOverlapsOpenDecl ast p.Range
+                                then
                                     let unusedOpens =
                                         UnusedOpens.getUnusedOpens (getCheckFull (), getLine)
                                         |> Async.RunSynchronously
@@ -1756,14 +2198,15 @@ let internal provideWithCapabilities
                                     for rng in unusedOpens do
                                         if fcsOverlapsLsp p.Range rng then
                                             let edit = deleteWholeLinesEdit lines (rng.StartLine - 1) (rng.EndLine - 1)
-                                            addLocal "Remove unused open" CodeActionKind.QuickFix None (Some true) [| edit |]
+                                            let diag = resolveAnalyzerDiag "FSAC0001" "Unused open statement" rng
+                                            addLocal "Remove unused open" CodeActionKind.QuickFix (Some diag) (Some true) [| edit |]
 
                                     if not unusedOpens.IsEmpty && (wantsOrganizeImports || unusedOpens.Length > 1) then
                                         let allEdits =
                                             unusedOpens
-                                            |> List.sortBy (fun r -> r.StartLine, r.StartColumn)
-                                            |> List.distinctBy (fun r -> r.StartLine, r.EndLine)
-                                            |> List.map (fun r -> deleteWholeLinesEdit lines (r.StartLine - 1) (r.EndLine - 1))
+                                            |> List.map (fun r -> r.StartLine - 1, r.EndLine - 1)
+                                            |> mergeContiguousLineIntervals
+                                            |> List.map (fun (sl, el) -> deleteWholeLinesEdit lines sl el)
                                             |> Array.ofList
 
                                         addLocal "Remove all unused opens" "source.organizeImports" None None allEdits
@@ -1773,9 +2216,9 @@ let internal provideWithCapabilities
                                 // -------------------------------------------------------------------------
                                 let unusedValRanges = ResizeArray<range * Diagnostic option>()
 
-                                for d in checkAtCursor.Diagnostics do
+                                for d in fileDiags do
                                     if d.ErrorNumber = 1182 && fcsOverlapsLsp p.Range d.Range then
-                                        unusedValRanges.Add(d.Range, Some(fcsDiagToLsp d))
+                                        unusedValRanges.Add(d.Range, Some(toCompilerLspDiag d))
 
                                 if config.UnusedDeclarationsAnalyzer || hasContextCode "FSAC0003" then
                                     let analyzerUnused =
@@ -1787,7 +2230,8 @@ let internal provideWithCapabilities
                                             fcsOverlapsLsp p.Range rng
                                             && not (unusedValRanges |> Seq.exists (fun (r, _) -> Range.equals r rng))
                                         then
-                                            unusedValRanges.Add(rng, None)
+                                            let diag = resolveAnalyzerDiag "FSAC0003" "This value is unused" rng
+                                            unusedValRanges.Add(rng, Some diag)
 
                                 for rng, diagOpt in unusedValRanges do
                                     let rawIdent = sliceFcsRange lines rng
@@ -1811,7 +2255,11 @@ let internal provideWithCapabilities
                                 // -------------------------------------------------------------------------
                                 // Family 3: Simplify redundant qualified name (FSAC0002)
                                 // -------------------------------------------------------------------------
-                                if config.SimplifyNameAnalyzer || hasContextCode "FSAC0002" then
+                                if
+                                    config.SimplifyNameAnalyzer
+                                    || hasContextCode "FSAC0002"
+                                    || rangeLinesContainDot lines p.Range
+                                then
                                     let simplifiable =
                                         SimplifyNames.getSimplifiableNames (getCheckFull (), getLine)
                                         |> Async.RunSynchronously
@@ -1824,17 +2272,18 @@ let internal provideWithCapabilities
 
                                         if fcsOverlapsLsp p.Range sr.Range || fcsOverlapsLsp p.Range fullQualRange then
                                             let lspRng = fcsRangeToLsp sr.Range
-                                            addLocal "Remove redundant qualifier" CodeActionKind.QuickFix None (Some true) [| { Range = lspRng; NewText = "" } |]
+                                            let diag = resolveAnalyzerDiag "FSAC0002" "This qualifier is redundant" sr.Range
+                                            addLocal "Remove redundant qualifier" CodeActionKind.QuickFix (Some diag) (Some true) [| { Range = lspRng; NewText = "" } |]
 
                                 // -------------------------------------------------------------------------
                                 // Overlapping compiler diagnostics at cursor: Families 4, 5, 6, 7, 12a
                                 // -------------------------------------------------------------------------
                                 let overlappingDiags =
-                                    checkAtCursor.Diagnostics
+                                    fileDiags
                                     |> Array.filter (fun d -> fcsOverlapsLsp p.Range d.Range)
 
                                 for d in overlappingDiags do
-                                    let lspDiag = Some(fcsDiagToLsp d)
+                                    let lspDiag = Some(toCompilerLspDiag d)
                                     let lspDiagRange = fcsRangeToLsp d.Range
                                     let diagText = sliceFcsRange lines d.Range
 
@@ -1846,7 +2295,7 @@ let internal provideWithCapabilities
                                         elif diagText = "!=" then
                                             addLocal "Replace '!=' with '<>'" CodeActionKind.QuickFix lspDiag (Some true) [| { Range = lspDiagRange; NewText = "<>" } |]
                                         else
-                                            // Family 5: Self-reference inside non-recursive `let` binding
+                                            // Family 5: Self-reference or sibling reference inside non-recursive `let` binding
                                             match tryFindSelfRecursiveBinding ast d.Range.Start diagText with
                                             | Some(fnName, afterLetPos) ->
                                                 let insLsp = fcsPosToLsp afterLetPos
@@ -1880,7 +2329,9 @@ let internal provideWithCapabilities
                                                 && not (String.IsNullOrWhiteSpace diagText)
                                                 && not (diagText.Contains '.')
                                             then
-                                                let nsCandidates = resolveUnopenedNamespaceCandidates checkAtCursor diagText
+                                                let nsCandidates =
+                                                    resolveUnopenedNamespaceCandidates ast d.Range.Start checkAtCursor diagText
+
                                                 let seenOpenTitles = HashSet<string>(StringComparer.Ordinal)
                                                 let seenQualTitles = HashSet<string>(StringComparer.Ordinal)
 
@@ -1890,7 +2341,7 @@ let internal provideWithCapabilities
                                                         let openTitle = $"open %s{ns}"
 
                                                         if seenOpenTitles.Add openTitle then
-                                                            match computeOpenInsertEdit lines ast d.Range.Start ns with
+                                                            match computeOpenInsertEdit eol lines ast d.Range.Start ns with
                                                             | Some openEdit ->
                                                                 addLocal openTitle CodeActionKind.QuickFix lspDiag None [| openEdit |]
                                                             | None -> ()
@@ -1906,8 +2357,12 @@ let internal provideWithCapabilities
                                                             [| { Range = lspDiagRange; NewText = fqName } |]
 
                                     | 576 ->
-                                        // Family 5: FS0576 explicit recursive reference error
-                                        match tryFindSelfRecursiveBinding ast d.Range.Start diagText with
+                                        // Family 5: FS0576 (`let ... and ...` without `rec`, `d.Range` spans `let` keyword)
+                                        let recTarget =
+                                            tryFindNonRecLetKeywordBinding ast d.Range
+                                            |> Option.orElseWith (fun () -> tryFindSelfRecursiveBinding ast d.Range.Start diagText)
+
+                                        match recTarget with
                                         | Some(fnName, afterLetPos) ->
                                             let insLsp = fcsPosToLsp afterLetPos
 
@@ -1923,11 +2378,13 @@ let internal provideWithCapabilities
                                     | 760 ->
                                         // Family 6: Add `new` keyword to IDisposable construction
                                         if not (String.IsNullOrWhiteSpace diagText) then
+                                            let normDiagText = normalizeEol eol diagText
+
                                             let replacement =
                                                 if isChainedReceiver lines ast d.Range then
-                                                    $"(new %s{diagText})"
+                                                    $"(new %s{normDiagText})"
                                                 else
-                                                    $"new %s{diagText}"
+                                                    $"new %s{normDiagText}"
 
                                             addLocal
                                                 "Add 'new' keyword"
@@ -1962,30 +2419,35 @@ let internal provideWithCapabilities
                                                     [| { Range = { Start = endLsp; End = endLsp }
                                                          NewText = " |> ignore" } |]
                                             else
+                                                let normExpr = normalizeEol eol exprSlice
+
                                                 addLocal
                                                     "Pipe to 'ignore'"
                                                     CodeActionKind.QuickFix
                                                     lspDiag
                                                     None
                                                     [| { Range = lspDiagRange
-                                                         NewText = $"(%s{exprSlice}) |> ignore" } |]
+                                                         NewText = $"(%s{normExpr}) |> ignore" } |]
 
                                     | 10
                                     | 3360 ->
-                                        // Family 7c: Missing `=` in type definition
+                                        // Family 7c: Missing `=` in single-line or multiline `type` definition
                                         let ln = getLine d.Range.StartLine
+                                        let mutable backCol = min ln.Length d.Range.StartColumn - 1
 
-                                        if
-                                            d.Message.Contains("'='", StringComparison.Ordinal)
-                                            || d.ErrorNumber = 3360
-                                            || ln.TrimStart().StartsWith("type ", StringComparison.Ordinal)
-                                        then
-                                            let mutable backCol = min ln.Length d.Range.StartColumn - 1
+                                        while backCol >= 0 && Char.IsWhiteSpace ln[backCol] do
+                                            backCol <- backCol - 1
 
-                                            while backCol >= 0 && Char.IsWhiteSpace ln[backCol] do
-                                                backCol <- backCol - 1
+                                        if backCol >= 0 then
+                                            let trimmedLn = ln.TrimStart()
 
-                                            if backCol >= 0 && ln[backCol] <> '=' then
+                                            if
+                                                (d.Message.Contains("'='", StringComparison.Ordinal)
+                                                 || d.ErrorNumber = 3360
+                                                 || trimmedLn.StartsWith("type ", StringComparison.Ordinal)
+                                                 || trimmedLn.StartsWith("and ", StringComparison.Ordinal))
+                                                && ln[backCol] <> '='
+                                            then
                                                 let startPos: LspPos =
                                                     { Line = uint32 (d.Range.StartLine - 1)
                                                       Character = uint32 (backCol + 1) }
@@ -1997,6 +2459,68 @@ let internal provideWithCapabilities
                                                     (Some true)
                                                     [| { Range = { Start = startPos; End = lspDiagRange.Start }
                                                          NewText = " = " } |]
+                                        else
+                                            // Multiline type header: walk upward to the previous non-blank, non-comment line
+                                            let stripLineComment (s: string) : string =
+                                                let idx = s.IndexOf("//", StringComparison.Ordinal)
+                                                if idx >= 0 then s.Substring(0, idx) else s
+
+                                            let mutable prevIdx = d.Range.StartLine - 1
+                                            let mutable hdrLineOpt: (int * string) option = None
+
+                                            while prevIdx >= 1 && hdrLineOpt.IsNone do
+                                                let codePart = (stripLineComment (getLine prevIdx)).TrimEnd()
+
+                                                if not (String.IsNullOrWhiteSpace codePart) then
+                                                    hdrLineOpt <- Some(prevIdx, codePart)
+                                                else
+                                                    prevIdx <- prevIdx - 1
+
+                                            match hdrLineOpt with
+                                            | Some(hdrLine1Based, hdrCode) when hdrCode[hdrCode.Length - 1] <> '=' ->
+                                                let rec belongsToTypeHeader (lineIdx: int) : bool =
+                                                    if lineIdx < 1 then
+                                                        false
+                                                    else
+                                                        let trimmed = (stripLineComment (getLine lineIdx)).Trim()
+
+                                                        if String.IsNullOrWhiteSpace trimmed then
+                                                            false
+                                                        elif
+                                                            trimmed.StartsWith("type ", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("type\t", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("and ", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("and\t", StringComparison.Ordinal)
+                                                        then
+                                                            true
+                                                        elif trimmed.StartsWith("[<", StringComparison.Ordinal) then
+                                                            belongsToTypeHeader (lineIdx - 1)
+                                                        elif
+                                                            trimmed.StartsWith("let ", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("module ", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("namespace ", StringComparison.Ordinal)
+                                                            || trimmed.StartsWith("open ", StringComparison.Ordinal)
+                                                        then
+                                                            false
+                                                        else
+                                                            belongsToTypeHeader (lineIdx - 1)
+
+                                                if
+                                                    belongsToTypeHeader hdrLine1Based
+                                                    && not (actions |> Seq.exists (fun a -> a.Title = "Add '='"))
+                                                then
+                                                    let hdrEndPos: LspPos =
+                                                        { Line = uint32 (hdrLine1Based - 1)
+                                                          Character = uint32 hdrCode.Length }
+
+                                                    addLocal
+                                                        "Add '='"
+                                                        CodeActionKind.QuickFix
+                                                        lspDiag
+                                                        (Some true)
+                                                        [| { Range = { Start = hdrEndPos; End = hdrEndPos }
+                                                             NewText = " =" } |]
+                                            | _ -> ()
 
                                     | 34 ->
                                         // Family 12a: Signature mismatch FS0034 -> Update val in signature file
@@ -2092,31 +2616,61 @@ let internal provideWithCapabilities
                                 // Family 9: Implement interface & abstract class member stubs
                                 // -------------------------------------------------------------------------
                                 if config.InterfaceStubGeneration then
-                                    match tryImplementInterfaceEdits config lines ast checkAtCursor cursorPos with
-                                    | Some ifaceEdits ->
-                                        let hasFs366 = overlappingDiags |> Array.exists (fun d -> d.ErrorNumber = 366)
+                                    match tryImplementInterfaceEdits eol config lines ast checkAtCursor cursorPos with
+                                    | Some(ifaceRange, ifaceEdits) ->
+                                        let isIfaceMissingErr (n: int) = n = 366 || n = 365
+
+                                        let fs366Diag =
+                                            overlappingDiags
+                                            |> Array.tryFind (fun d -> isIfaceMissingErr d.ErrorNumber)
+                                            |> Option.orElseWith (fun () ->
+                                                fileDiags
+                                                |> Array.tryFind (fun d ->
+                                                    isIfaceMissingErr d.ErrorNumber && fcsRangesOverlap d.Range ifaceRange))
+                                            |> Option.map toCompilerLspDiag
+                                            |> Option.orElseWith (fun () ->
+                                                p.Context.Diagnostics
+                                                |> Array.tryFind (fun cd ->
+                                                    let c = contextDiagCode cd
+                                                    String.Equals(c, "FS0366", StringComparison.OrdinalIgnoreCase)
+                                                    || String.Equals(c, "FS0365", StringComparison.OrdinalIgnoreCase)))
+
+                                        let hasFs366 = fs366Diag.IsSome
                                         let kind = if hasFs366 then CodeActionKind.QuickFix else CodeActionKind.Refactor
-                                        addLocal "Implement interface" kind None (Some hasFs366) ifaceEdits
+                                        addLocal "Implement interface" kind fs366Diag (Some hasFs366) ifaceEdits
                                     | None -> ()
 
                                 if config.AbstractClassStubGeneration then
-                                    match tryImplementAbstractClassEdits config lines ast checkAtCursor cursorPos with
-                                    | Some absEdits ->
-                                        let hasFs365 = overlappingDiags |> Array.exists (fun d -> d.ErrorNumber = 365)
+                                    match tryImplementAbstractClassEdits eol config lines ast checkAtCursor cursorPos with
+                                    | Some(absRange, absEdits) ->
+                                        let fs365Diag =
+                                            overlappingDiags
+                                            |> Array.tryFind (fun d -> d.ErrorNumber = 365)
+                                            |> Option.orElseWith (fun () ->
+                                                fileDiags
+                                                |> Array.tryFind (fun d ->
+                                                    d.ErrorNumber = 365 && fcsRangesOverlap d.Range absRange))
+                                            |> Option.map toCompilerLspDiag
+                                            |> Option.orElseWith (fun () ->
+                                                p.Context.Diagnostics
+                                                |> Array.tryFind (fun cd ->
+                                                    String.Equals(contextDiagCode cd, "FS0365", StringComparison.OrdinalIgnoreCase)))
+
+                                        let hasFs365 = fs365Diag.IsSome
                                         let kind = if hasFs365 then CodeActionKind.QuickFix else CodeActionKind.Refactor
-                                        addLocal "Implement abstract members" kind None (Some hasFs365) absEdits
+                                        addLocal "Implement abstract members" kind fs365Diag (Some hasFs365) absEdits
                                     | None -> ()
 
                                 // -------------------------------------------------------------------------
                                 // Family 10: Generate missing union pattern match cases
                                 // -------------------------------------------------------------------------
                                 if config.UnionCaseStubGeneration then
-                                    match tryGenerateUnionCasesEdits config lines ast checkAtCursor cursorPos with
+                                    match tryGenerateUnionCasesEdits eol config lines ast checkAtCursor cursorPos with
                                     | Some ucEdits ->
                                         let fs25Diag =
                                             overlappingDiags
                                             |> Array.tryFind (fun d -> d.ErrorNumber = 25)
-                                            |> Option.map fcsDiagToLsp
+                                            |> Option.map toCompilerLspDiag
 
                                         addLocal "Generate union pattern match cases" CodeActionKind.QuickFix fs25Diag (Some true) ucEdits
                                     | None -> ()
@@ -2125,12 +2679,12 @@ let internal provideWithCapabilities
                                 // Family 11: Generate missing record fields
                                 // -------------------------------------------------------------------------
                                 if config.RecordStubGeneration then
-                                    match tryGenerateRecordStubEdits config lines ast checkAtCursor cursorPos with
+                                    match tryGenerateRecordStubEdits eol config lines ast checkAtCursor cursorPos with
                                     | Some recEdits ->
                                         let fs764Diag =
                                             overlappingDiags
                                             |> Array.tryFind (fun d -> d.ErrorNumber = 764)
-                                            |> Option.map fcsDiagToLsp
+                                            |> Option.map toCompilerLspDiag
 
                                         addLocal "Generate record stub" CodeActionKind.QuickFix fs764Diag (Some true) recEdits
                                     | None -> ()

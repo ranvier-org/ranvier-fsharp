@@ -358,7 +358,34 @@ let private resolveTool (searchPathOverride: string option) (fileDir: string) : 
                     | None -> ToolKind.Missing
     )
 
-let private tryFindNearestEditorConfig (startDir: string) : string option =
+let private hasEditorConfigRootTrue (content: string) : bool =
+    let mutable inSection = false
+    let mutable isRoot = false
+
+    for rawLine in content.Split '\n' do
+        let line = rawLine.Trim()
+
+        if not inSection && line.Length > 0 && line[0] <> '#' && line[0] <> ';' then
+            if line[0] = '[' then
+                inSection <- true
+            else
+                let eqIdx = line.IndexOf '='
+
+                if eqIdx > 0 then
+                    let key = line.Substring(0, eqIdx).Trim()
+                    let value = line.Substring(eqIdx + 1).Trim()
+
+                    if
+                        String.Equals(key, "root", StringComparison.OrdinalIgnoreCase)
+                        && String.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+                    then
+                        isRoot <- true
+
+    isRoot
+
+/// Collects ancestor directories from `startDir` upward up to the first `.editorconfig` declaring `root = true`
+/// (or filesystem root), returning `(dirFullPath, (cfgContent * hasRootTrue) option) list` ordered leaf-to-root.
+let private collectAncestorEditorConfigs (startDir: string) : (string * (string * bool) option) list =
     let mutable current =
         if String.IsNullOrWhiteSpace startDir then
             null
@@ -368,18 +395,31 @@ let private tryFindNearestEditorConfig (startDir: string) : string option =
             with _ ->
                 null
 
-    let mutable hit = None
+    let acc = ResizeArray<string * (string * bool) option>()
+    let mutable stop = false
 
-    while not (isNull current) && hit.IsNone do
+    while not (isNull current) && not stop do
         let candidate = Path.Combine(current, ".editorconfig")
 
-        if File.Exists candidate then
-            hit <- Some candidate
-        else
+        let cfgOpt =
+            if File.Exists candidate then
+                try
+                    let content = File.ReadAllText(candidate, Encoding.UTF8)
+                    Some(content, hasEditorConfigRootTrue content)
+                with _ ->
+                    None
+            else
+                None
+
+        acc.Add(current, cfgOpt)
+
+        match cfgOpt with
+        | Some(_, true) -> stop <- true
+        | _ ->
             let parent = Directory.GetParent current
             current <- if isNull parent then null else parent.FullName
 
-    hit
+    acc |> Seq.toList
 
 let internal runWithSearchPath
     (searchPathOverride: string option)
@@ -399,21 +439,53 @@ let internal runWithSearchPath
             let tempDir = Directory.CreateTempSubdirectory "rfs-fantomas-"
 
             try
-                let editorCfgDest = Path.Combine(tempDir.FullName, ".editorconfig")
+                let ancestorsLeafToRoot = collectAncestorEditorConfigs fileDir
 
-                match tryFindNearestEditorConfig fileDir with
-                | Some existingCfg ->
-                    try
-                        File.Copy(existingCfg, editorCfgDest, overwrite = true)
-                    with _ ->
-                        ()
-                | None ->
-                    let indentSize = if options.TabSize > 0u then int options.TabSize else 4
-                    let indentStyle = if options.InsertSpaces then "space" else "tab"
-                    let cfgText = $"root = true\n\n[*.{{fs,fsi}}]\nindent_style = %s{indentStyle}\nindent_size = %d{indentSize}\n"
-                    File.WriteAllText(editorCfgDest, cfgText, UTF8Encoding(false))
+                let topCfgIdxOpt =
+                    ancestorsLeafToRoot
+                    |> List.indexed
+                    |> List.choose (fun (idx, (_, cfgOpt)) -> if cfgOpt.IsSome then Some idx else None)
+                    |> List.tryLast
 
-                let tempFile = Path.Combine(tempDir.FullName, if isSignature then "Input.fsi" else "Input.fs")
+                let workLeafDir =
+                    match topCfgIdxOpt with
+                    | None ->
+                        let indentSize = if options.TabSize > 0u then int options.TabSize else 4
+                        let indentStyle = if options.InsertSpaces then "space" else "tab"
+                        let cfgText = $"root = true\n\n[*.{{fs,fsi}}]\nindent_style = %s{indentStyle}\nindent_size = %d{indentSize}\n"
+                        File.WriteAllText(Path.Combine(tempDir.FullName, ".editorconfig"), cfgText, UTF8Encoding(false))
+                        tempDir.FullName
+                    | Some topIdx ->
+                        let chainTopToLeaf = ancestorsLeafToRoot |> List.take (topIdx + 1) |> List.rev
+                        let topDir = fst chainTopToLeaf.Head
+                        let mutable leafDest = tempDir.FullName
+
+                        chainTopToLeaf
+                        |> List.iteri (fun idxFromTop (ancDir, cfgOpt) ->
+                            let destDir =
+                                if idxFromTop = 0 then
+                                    tempDir.FullName
+                                else
+                                    let rel = Path.GetRelativePath(topDir, ancDir)
+                                    Path.Combine(tempDir.FullName, rel)
+
+                            Directory.CreateDirectory destDir |> ignore
+                            leafDest <- destDir
+
+                            match cfgOpt with
+                            | Some(content, hasRoot) ->
+                                let finalContent =
+                                    if idxFromTop = 0 && not hasRoot then
+                                        "root = true\n" + content
+                                    else
+                                        content
+
+                                File.WriteAllText(Path.Combine(destDir, ".editorconfig"), finalContent, UTF8Encoding(false))
+                            | None -> ())
+
+                        leafDest
+
+                let tempFile = Path.Combine(workLeafDir, if isSignature then "Input.fsi" else "Input.fs")
                 File.WriteAllText(tempFile, sourceText, UTF8Encoding(false))
 
                 let psi =
@@ -433,6 +505,11 @@ let internal runWithSearchPath
                     | ToolKind.DotnetLocalTool rootDir ->
                         let info = ProcessStartInfo("dotnet")
                         info.WorkingDirectory <- rootDir
+                        info.Environment.Remove "MSBUILD_EXE_PATH" |> ignore
+                        info.Environment.Remove "MSBuildExtensionsPath" |> ignore
+                        info.Environment.Remove "MSBuildSDKsPath" |> ignore
+                        info.Environment.Remove "DOTNET_HOST_PATH" |> ignore
+                        info.Environment["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] <- "1"
                         info.ArgumentList.Add "tool"
                         info.ArgumentList.Add "run"
                         info.ArgumentList.Add "fantomas"
@@ -507,6 +584,36 @@ let defaultRunner: FormattingRunner =
     fun filePath sourceText isSignature options ct ->
         runWithSearchPath None filePath sourceText isSignature options ct
 
+let private runVerifiedFormatting
+    (runnerOverride: FormattingRunner option)
+    (graph: ProjectGraph)
+    (path: string)
+    (options: FormattingOptions)
+    (computeEdits: string -> string -> TextEdit[])
+    (ct: CancellationToken)
+    : Task<TextEdit[] option> =
+    let isSignature = path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
+    let runner = defaultArg runnerOverride defaultRunner
+
+    let rec loop (attempt: int) : Task<TextEdit[] option> =
+        task {
+            let! view = graph.LatestParse(path, ct)
+
+            match! runner path view.Text isSignature options ct with
+            | None -> return None
+            | Some formatted ->
+                let! after = graph.LatestParse(path, ct)
+
+                if after.Version = view.Version then
+                    return Some(computeEdits view.Text formatted)
+                elif attempt < 1 then
+                    return! loop (attempt + 1)
+                else
+                    return None
+        }
+
+    loop 0
+
 let formatDocument
     (runnerOverride: FormattingRunner option)
     (graph: ProjectGraph)
@@ -514,15 +621,7 @@ let formatDocument
     (options: FormattingOptions)
     (ct: CancellationToken)
     : Task<TextEdit[] option> =
-    task {
-        let! view = graph.LatestParse(path, ct)
-        let isSignature = path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
-        let runner = defaultArg runnerOverride defaultRunner
-
-        match! runner path view.Text isSignature options ct with
-        | None -> return None
-        | Some formatted -> return Some(computeDocumentEdits view.Text formatted)
-    }
+    runVerifiedFormatting runnerOverride graph path options computeDocumentEdits ct
 
 let formatRange
     (runnerOverride: FormattingRunner option)
@@ -532,12 +631,4 @@ let formatRange
     (options: FormattingOptions)
     (ct: CancellationToken)
     : Task<TextEdit[] option> =
-    task {
-        let! view = graph.LatestParse(path, ct)
-        let isSignature = path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)
-        let runner = defaultArg runnerOverride defaultRunner
-
-        match! runner path view.Text isSignature options ct with
-        | None -> return None
-        | Some formatted -> return Some(computeRangeEdits view.Text formatted lspRange)
-    }
+    runVerifiedFormatting runnerOverride graph path options (fun src fmt -> computeRangeEdits src fmt lspRange) ct
