@@ -58,7 +58,7 @@ $nupkgDir = [System.IO.Path]::Combine($OutputDir, 'nupkg')
 $publishDir = [System.IO.Path]::Combine($OutputDir, 'publish')
 
 $fcsProp = "-p:FickleFcsDir=$([System.IO.Path]::TrimEndingDirectorySeparator($fcsDir))$([System.IO.Path]::DirectorySeparatorChar)"
-$verArgs = if ($Version) { @("-p:Version=$Version") } else { @() }
+[string[]]$verArgs = if ($Version) { @("-p:Version=$Version") } else { @() }
 
 $allRids = @()
 if ($Runtime) { $allRids += $Runtime }
