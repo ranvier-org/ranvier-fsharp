@@ -331,7 +331,7 @@ type FileUses
 
         struct (keyed, raw)
 
-module private AstIndex =
+module internal AstIndex =
     [<Struct>]
     type RangeKey = RangeKey of int * int * int * int
 
@@ -450,128 +450,7 @@ module private AstIndex =
                 | Some id -> typeRanges[rangeKey id.idRange] <- fullRange
                 | None -> typeRanges[rangeKey infoRange] <- fullRange
 
-        let rec walkExpr (expr: SynExpr) =
-            match expr with
-            | SynExpr.Paren(expr = e)
-            | SynExpr.Quote(quotedExpr = e)
-            | SynExpr.Typed(expr = e)
-            | SynExpr.New(expr = e)
-            | SynExpr.ArrayOrListComputed(expr = e)
-            | SynExpr.ComputationExpr(expr = e)
-            | SynExpr.Do(expr = e)
-            | SynExpr.Assert(expr = e)
-            | SynExpr.Lazy(expr = e)
-            | SynExpr.TypeApp(expr = e)
-            | SynExpr.LongIdentSet(expr = e)
-            | SynExpr.DotGet(expr = e)
-            | SynExpr.DotLambda(expr = e)
-            | SynExpr.TypeTest(expr = e)
-            | SynExpr.Upcast(expr = e)
-            | SynExpr.Downcast(expr = e)
-            | SynExpr.InferredUpcast(expr = e)
-            | SynExpr.InferredDowncast(expr = e)
-            | SynExpr.AddressOf(expr = e)
-            | SynExpr.TraitCall(argExpr = e)
-            | SynExpr.YieldOrReturn(expr = e)
-            | SynExpr.YieldOrReturnFrom(expr = e)
-            | SynExpr.DoBang(expr = e)
-            | SynExpr.Fixed(expr = e)
-            | SynExpr.FromParseError(expr = e)
-            | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = e)
-            | SynExpr.IndexFromEnd(expr = e)
-            | SynExpr.DebugPoint(innerExpr = e) -> walkExpr e
-            | SynExpr.Tuple(exprs = es)
-            | SynExpr.ArrayOrList(exprs = es) -> es |> List.iter walkExpr
-            | SynExpr.Record(copyInfo = copyOpt; recordFields = fields) ->
-                copyOpt |> Option.iter (fst >> walkExpr)
-
-                for f in fields do
-                    match f with
-                    | SynExprRecordFieldOrSpread.Field(SynExprRecordField(expr = eo), _) -> eo |> Option.iter walkExpr
-                    | SynExprRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
-            | SynExpr.AnonRecd(copyInfo = copyOpt; recordFields = fields) ->
-                copyOpt |> Option.iter (fst >> walkExpr)
-
-                for f in fields do
-                    match f with
-                    | SynExprAnonRecordFieldOrSpread.Field(SynExprAnonRecordField(expr = e), _) -> walkExpr e
-                    | SynExprAnonRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> walkExpr e
-            | SynExpr.ObjExpr(objType = objTy; argOptions = argOpts; bindings = bindings; members = members; extraImpls = extras; newExprRange = newExprRange) ->
-                recordObjType newExprRange objTy
-
-                match argOpts with
-                | Some(argExpr, _) ->
-                    if not (Range.equals newExprRange Range.range0) then
-                        objExprTypes.Add(rangeKey (Range.unionRanges newExprRange argExpr.Range)) |> ignore
-
-                    walkExpr argExpr
-                | None -> ()
-
-                bindings |> List.iter (walkBinding true)
-                members |> List.iter walkMemberDefn
-
-                for SynInterfaceImpl(interfaceTy = ifcTy; bindings = ibs; members = ims) in extras do
-                    recordObjType Range.range0 ifcTy
-                    ibs |> List.iter (walkBinding true)
-                    ims |> List.iter walkMemberDefn
-            | SynExpr.While(whileExpr = e1; doExpr = e2)
-            | SynExpr.WhileBang(whileExpr = e1; doExpr = e2)
-            | SynExpr.Sequential(expr1 = e1; expr2 = e2)
-            | SynExpr.SequentialOrImplicitYield(expr1 = e1; expr2 = e2)
-            | SynExpr.App(funcExpr = e1; argExpr = e2)
-            | SynExpr.TryFinally(tryExpr = e1; finallyExpr = e2)
-            | SynExpr.DotSet(targetExpr = e1; rhsExpr = e2)
-            | SynExpr.Set(targetExpr = e1; rhsExpr = e2)
-            | SynExpr.DotIndexedGet(objectExpr = e1; indexArgs = e2)
-            | SynExpr.NamedIndexedPropertySet(expr1 = e1; expr2 = e2)
-            | SynExpr.JoinIn(lhsExpr = e1; rhsExpr = e2)
-            | SynExpr.Dynamic(funcExpr = e1; argExpr = e2)
-            | SynExpr.ForEach(enumExpr = e1; bodyExpr = e2) ->
-                walkExpr e1
-                walkExpr e2
-            | SynExpr.For(identBody = e1; toBody = e2; doBody = e3)
-            | SynExpr.DotIndexedSet(objectExpr = e1; indexArgs = e2; valueExpr = e3)
-            | SynExpr.DotNamedIndexedPropertySet(targetExpr = e1; argExpr = e2; rhsExpr = e3) ->
-                walkExpr e1
-                walkExpr e2
-                walkExpr e3
-            | SynExpr.IfThenElse(ifExpr = e1; thenExpr = e2; elseExpr = e3Opt) ->
-                walkExpr e1
-                walkExpr e2
-                e3Opt |> Option.iter walkExpr
-            | SynExpr.IndexRange(expr1 = e1Opt; expr2 = e2Opt) ->
-                e1Opt |> Option.iter walkExpr
-                e2Opt |> Option.iter walkExpr
-            | SynExpr.Lambda(body = body) -> walkExpr body
-            | SynExpr.MatchLambda(matchClauses = clauses) -> clauses |> List.iter walkClause
-            | SynExpr.Match(expr = e; clauses = clauses)
-            | SynExpr.MatchBang(expr = e; clauses = clauses)
-            | SynExpr.TryWith(tryExpr = e; withCases = clauses) ->
-                walkExpr e
-                clauses |> List.iter walkClause
-            | SynExpr.LetOrUse({ Bindings = bs; Body = body }) ->
-                bs |> List.iter (walkBinding false)
-                walkExpr body
-            | SynExpr.InterpolatedString(contents = parts) ->
-                for p in parts do
-                    match p with
-                    | SynInterpolatedStringPart.FillExpr(fillExpr = e) -> walkExpr e
-                    | SynInterpolatedStringPart.String _ -> ()
-            | SynExpr.LibraryOnlyStaticOptimization(expr = e1; optimizedExpr = e2) ->
-                walkExpr e1
-                walkExpr e2
-            | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = e) -> walkExpr e
-            | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = e1; rhsExpr = e2) ->
-                walkExpr e1
-                walkExpr e2
-            | SynExpr.LibraryOnlyILAssembly(args = es) -> es |> List.iter walkExpr
-            | _ -> ()
-
-        and walkClause (SynMatchClause(whenExpr = wOpt; resultExpr = res)) =
-            wOpt |> Option.iter walkExpr
-            walkExpr res
-
-        and walkBinding (isTopOrMember: bool) (b: SynBinding) =
+        let recordBindingHeader (isTopOrMember: bool) (b: SynBinding) : SynExpr =
             let (SynBinding(kind = kind; valData = SynValData(memberFlags = memberFlags); headPat = headPat; expr = expr)) = b
 
             let isCallable =
@@ -586,7 +465,148 @@ module private AstIndex =
                 for idRange in headPatIdentRanges headPat do
                     callableRanges[rangeKey idRange] <- fullRange
 
-            walkExpr expr
+            expr
+
+        let rec walkExpr (rootExpr: SynExpr) =
+            let stack = Stack<SynExpr>()
+            stack.Push rootExpr
+
+            while stack.Count > 0 do
+                match stack.Pop() with
+                | SynExpr.Paren(expr = e)
+                | SynExpr.Quote(quotedExpr = e)
+                | SynExpr.Typed(expr = e)
+                | SynExpr.New(expr = e)
+                | SynExpr.ArrayOrListComputed(expr = e)
+                | SynExpr.ComputationExpr(expr = e)
+                | SynExpr.Do(expr = e)
+                | SynExpr.Assert(expr = e)
+                | SynExpr.Lazy(expr = e)
+                | SynExpr.TypeApp(expr = e)
+                | SynExpr.LongIdentSet(expr = e)
+                | SynExpr.DotGet(expr = e)
+                | SynExpr.DotLambda(expr = e)
+                | SynExpr.TypeTest(expr = e)
+                | SynExpr.Upcast(expr = e)
+                | SynExpr.Downcast(expr = e)
+                | SynExpr.InferredUpcast(expr = e)
+                | SynExpr.InferredDowncast(expr = e)
+                | SynExpr.AddressOf(expr = e)
+                | SynExpr.TraitCall(argExpr = e)
+                | SynExpr.YieldOrReturn(expr = e)
+                | SynExpr.YieldOrReturnFrom(expr = e)
+                | SynExpr.DoBang(expr = e)
+                | SynExpr.Fixed(expr = e)
+                | SynExpr.FromParseError(expr = e)
+                | SynExpr.DiscardAfterMissingQualificationAfterDot(expr = e)
+                | SynExpr.IndexFromEnd(expr = e)
+                | SynExpr.DebugPoint(innerExpr = e) -> stack.Push e
+                | SynExpr.Tuple(exprs = es)
+                | SynExpr.ArrayOrList(exprs = es) ->
+                    for e in es do
+                        stack.Push e
+                | SynExpr.Record(copyInfo = copyOpt; recordFields = fields) ->
+                    copyOpt |> Option.iter (fst >> stack.Push)
+
+                    for f in fields do
+                        match f with
+                        | SynExprRecordFieldOrSpread.Field(SynExprRecordField(expr = eo), _) -> eo |> Option.iter stack.Push
+                        | SynExprRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> stack.Push e
+                | SynExpr.AnonRecd(copyInfo = copyOpt; recordFields = fields) ->
+                    copyOpt |> Option.iter (fst >> stack.Push)
+
+                    for f in fields do
+                        match f with
+                        | SynExprAnonRecordFieldOrSpread.Field(SynExprAnonRecordField(expr = e), _) -> stack.Push e
+                        | SynExprAnonRecordFieldOrSpread.Spread(SynExprSpread(expr = e), _) -> stack.Push e
+                | SynExpr.ObjExpr(objType = objTy; argOptions = argOpts; bindings = bindings; members = members; extraImpls = extras; newExprRange = newExprRange) ->
+                    recordObjType newExprRange objTy
+
+                    match argOpts with
+                    | Some(argExpr, _) ->
+                        if not (Range.equals newExprRange Range.range0) then
+                            objExprTypes.Add(rangeKey (Range.unionRanges newExprRange argExpr.Range)) |> ignore
+
+                        stack.Push argExpr
+                    | None -> ()
+
+                    for b in bindings do
+                        stack.Push(recordBindingHeader true b)
+
+                    members |> List.iter walkMemberDefn
+
+                    for SynInterfaceImpl(interfaceTy = ifcTy; bindings = ibs; members = ims) in extras do
+                        recordObjType Range.range0 ifcTy
+
+                        for ib in ibs do
+                            stack.Push(recordBindingHeader true ib)
+
+                        ims |> List.iter walkMemberDefn
+                | SynExpr.While(whileExpr = e1; doExpr = e2)
+                | SynExpr.WhileBang(whileExpr = e1; doExpr = e2)
+                | SynExpr.Sequential(expr1 = e1; expr2 = e2)
+                | SynExpr.SequentialOrImplicitYield(expr1 = e1; expr2 = e2)
+                | SynExpr.App(funcExpr = e1; argExpr = e2)
+                | SynExpr.TryFinally(tryExpr = e1; finallyExpr = e2)
+                | SynExpr.DotSet(targetExpr = e1; rhsExpr = e2)
+                | SynExpr.Set(targetExpr = e1; rhsExpr = e2)
+                | SynExpr.DotIndexedGet(objectExpr = e1; indexArgs = e2)
+                | SynExpr.NamedIndexedPropertySet(expr1 = e1; expr2 = e2)
+                | SynExpr.JoinIn(lhsExpr = e1; rhsExpr = e2)
+                | SynExpr.Dynamic(funcExpr = e1; argExpr = e2)
+                | SynExpr.ForEach(enumExpr = e1; bodyExpr = e2) ->
+                    stack.Push e2
+                    stack.Push e1
+                | SynExpr.For(identBody = e1; toBody = e2; doBody = e3)
+                | SynExpr.DotIndexedSet(objectExpr = e1; indexArgs = e2; valueExpr = e3)
+                | SynExpr.DotNamedIndexedPropertySet(targetExpr = e1; argExpr = e2; rhsExpr = e3) ->
+                    stack.Push e3
+                    stack.Push e2
+                    stack.Push e1
+                | SynExpr.IfThenElse(ifExpr = e1; thenExpr = e2; elseExpr = e3Opt) ->
+                    e3Opt |> Option.iter stack.Push
+                    stack.Push e2
+                    stack.Push e1
+                | SynExpr.IndexRange(expr1 = e1Opt; expr2 = e2Opt) ->
+                    e2Opt |> Option.iter stack.Push
+                    e1Opt |> Option.iter stack.Push
+                | SynExpr.Lambda(body = body) -> stack.Push body
+                | SynExpr.MatchLambda(matchClauses = clauses) ->
+                    for SynMatchClause(whenExpr = wOpt; resultExpr = res) in clauses do
+                        stack.Push res
+                        wOpt |> Option.iter stack.Push
+                | SynExpr.Match(expr = e; clauses = clauses)
+                | SynExpr.MatchBang(expr = e; clauses = clauses)
+                | SynExpr.TryWith(tryExpr = e; withCases = clauses) ->
+                    for SynMatchClause(whenExpr = wOpt; resultExpr = res) in clauses do
+                        stack.Push res
+                        wOpt |> Option.iter stack.Push
+
+                    stack.Push e
+                | SynExpr.LetOrUse({ Bindings = bs; Body = body }) ->
+                    stack.Push body
+
+                    for b in bs do
+                        stack.Push(recordBindingHeader false b)
+                | SynExpr.InterpolatedString(contents = parts) ->
+                    for p in parts do
+                        match p with
+                        | SynInterpolatedStringPart.FillExpr(fillExpr = e) -> stack.Push e
+                        | SynInterpolatedStringPart.String _ -> ()
+                | SynExpr.LibraryOnlyStaticOptimization(expr = e1; optimizedExpr = e2) ->
+                    stack.Push e2
+                    stack.Push e1
+                | SynExpr.LibraryOnlyUnionCaseFieldGet(expr = e) -> stack.Push e
+                | SynExpr.LibraryOnlyUnionCaseFieldSet(expr = e1; rhsExpr = e2) ->
+                    stack.Push e2
+                    stack.Push e1
+                | SynExpr.LibraryOnlyILAssembly(args = es) ->
+                    for e in es do
+                        stack.Push e
+                | _ -> ()
+
+        and walkBinding (isTopOrMember: bool) (b: SynBinding) =
+            walkExpr (recordBindingHeader isTopOrMember b)
 
         and walkMemberDefn (m: SynMemberDefn) =
             match m with

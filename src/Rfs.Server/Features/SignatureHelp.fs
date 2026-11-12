@@ -246,8 +246,13 @@ module SignatureHelp =
                           Method = methodPrep
                           FuncApp = funcAppPrep })
 
-    let private computeMethod (view: FileView) (mPrep: MethodPrep) : ComputedRaw option =
-        let check = view.CheckResultsAt(mPrep.LidEnd.Line, mPrep.LidEnd.Column)
+    let private computeMethod (view: FileView) (wholeCheck: Lazy<FSharpCheckFileResults>) (mPrep: MethodPrep) : ComputedRaw option =
+        let check =
+            if view.Whole then
+                wholeCheck.Value
+            else
+                view.CheckResultsAt(mPrep.LidEnd.Line, mPrep.LidEnd.Column)
+
         let methodGroup = check.GetMethods(mPrep.LidEnd.Line, mPrep.LidEnd.Column, mPrep.LineText, Some mPrep.Names)
         let methods = methodGroup.Methods
 
@@ -300,8 +305,12 @@ module SignatureHelp =
                       Identity = view.Identity
                       AskingDocs = view.Docs }
 
-    let private computeFuncApp (view: FileView) (caretPos: pos) (fPrep: FuncAppPrep) : ComputedRaw option =
-        let check = view.CheckResultsAt(fPrep.CalleeEnd.Line, fPrep.CalleeEndCol)
+    let private computeFuncApp (view: FileView) (wholeCheck: Lazy<FSharpCheckFileResults>) (caretPos: pos) (fPrep: FuncAppPrep) : ComputedRaw option =
+        let check =
+            if view.Whole then
+                wholeCheck.Value
+            else
+                view.CheckResultsAt(fPrep.CalleeEnd.Line, fPrep.CalleeEndCol)
 
         match check.GetSymbolUseAtLocation(fPrep.CalleeEnd.Line, fPrep.CalleeEndCol, fPrep.CalleeLineText, fPrep.CalleeNames) with
         | None -> None
@@ -427,6 +436,8 @@ module SignatureHelp =
         | None -> None
         | Some prep ->
             StackGuard.onLargeStack (fun () ->
+                let wholeCheck = lazy view.Result.CheckResultsNotKept
+
                 let preferMethod =
                     match prep.Method, prep.FuncApp, prep.PrevNonWsChar with
                     | Some _, _, ValueSome(',' | '(' | '<') -> true
@@ -437,13 +448,13 @@ module SignatureHelp =
                     | None, _, _ -> false
 
                 if preferMethod then
-                    match prep.Method |> Option.bind (computeMethod view) with
+                    match prep.Method |> Option.bind (computeMethod view wholeCheck) with
                     | Some r -> Some r
-                    | None -> prep.FuncApp |> Option.bind (computeFuncApp view prep.CaretPos)
+                    | None -> prep.FuncApp |> Option.bind (computeFuncApp view wholeCheck prep.CaretPos)
                 else
-                    match prep.FuncApp |> Option.bind (computeFuncApp view prep.CaretPos) with
+                    match prep.FuncApp |> Option.bind (computeFuncApp view wholeCheck prep.CaretPos) with
                     | Some r -> Some r
-                    | None -> prep.Method |> Option.bind (computeMethod view))
+                    | None -> prep.Method |> Option.bind (computeMethod view wholeCheck))
 
     let internal atWithTrigger
         (triggerChar: char option)

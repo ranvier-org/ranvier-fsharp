@@ -153,7 +153,14 @@ module Declaration =
                         (fun view -> Hover.lookupOf view.Text line character),
                         (fun view lookup ->
                             match lookup with
-                            | Some l -> findInFs view.Result.CheckResults line l ct
+                            | Some l ->
+                                let check =
+                                    if view.Whole then
+                                        view.Result.CheckResultsNotKept
+                                    else
+                                        view.Result.CheckResults
+
+                                findInFs check line l ct
                             | None -> DeclNowhere),
                         ct
                     )

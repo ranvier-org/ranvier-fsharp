@@ -734,6 +734,8 @@ let outgoing
                                         with
                                         | :? OperationCanceledException when not ct.IsCancellationRequested ->
                                             return ValueNone
+                                        | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException when not ct.IsCancellationRequested ->
+                                            return ValueNone
                                         | :? ObjectDisposedException ->
                                             return ValueNone
                                     }

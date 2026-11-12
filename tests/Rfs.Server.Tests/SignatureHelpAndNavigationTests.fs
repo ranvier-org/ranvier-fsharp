@@ -670,6 +670,103 @@ let featureTests =
                               Expect.isTrue (sameFile fsiTypeRanges[0].FileName fsPath) "Points to Signed.fs"
                               Expect.equal (sliceFcsRange signedFs fsiTypeRanges[0]) "SignedBox" "Points to SignedBox in Signed.fs"
                           })
+          }
+
+          testTask "Whole-checked (FileLevel) files never latch FSharpCheckFileResults across Completion, SignatureHelp, DocumentHighlight, Declaration, TypeDefinition, Implementation, or CheckResultsAt" {
+              do!
+                  withTwoProjectWorkspace
+                      [ "Types.fs", typesFs; "Signed.fsi", signedFsi; "Signed.fs", signedFs ]
+                      [ "Use.fs", appUseFs ]
+                      (fun libGraph appGraph libPath appPath scope ->
+                          task {
+                              let fsPath = libPath "Signed.fs"
+                              let usePath = appPath "Use.fs"
+
+                              let isCheckResultsLatched (res: FSharp.Compiler.Declarations.FileResult) : bool =
+                                  let flags =
+                                      System.Reflection.BindingFlags.Instance
+                                      ||| System.Reflection.BindingFlags.NonPublic
+                                      ||| System.Reflection.BindingFlags.Public
+
+                                  let field =
+                                      typeof<FSharp.Compiler.Declarations.FileResult>.GetFields(flags)
+                                      |> Array.find (fun f ->
+                                          f.FieldType = typeof<Lazy<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>>)
+
+                                  let lazyVal = field.GetValue(res) :?> Lazy<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+                                  lazyVal.IsValueCreated
+
+                              let assertUnlatchedWhole (graph: ProjectGraph) (path: string) (label: string) =
+                                  task {
+                                      let! struct (isWhole, latched) =
+                                          graph.ReadFile(
+                                              path,
+                                              (fun view -> struct (view.Whole, isCheckResultsLatched view.Result)),
+                                              CancellationToken.None
+                                          )
+
+                                      Expect.isTrue isWhole $"%s{label}: expected FileView.Whole = true on closed FileLevel file"
+                                      Expect.isFalse latched $"%s{label}: FileResult.checkResults Lazy must remain uncreated (CheckResultsNotKept)"
+                                  }
+
+                              do! assertUnlatchedWhole appGraph usePath "initial Use.fs"
+                              do! assertUnlatchedWhole libGraph fsPath "initial Signed.fs"
+
+                              // 1) Direct FileView.CheckResultsAt on Whole = true
+                              let! symbolCount =
+                                  appGraph.ReadFile(
+                                      usePath,
+                                      (fun view ->
+                                          let c = view.CheckResultsAt(1, 0)
+                                          c.GetAllUsesOfAllSymbolsInFile CancellationToken.None |> Seq.length),
+                                      CancellationToken.None
+                                  )
+
+                              Expect.isGreaterThan symbolCount 0 "CheckResultsAt on Whole file returns symbol uses"
+                              do! assertUnlatchedWhole appGraph usePath "after FileView.CheckResultsAt"
+
+                              // 2) Completion.atWithKeywords on Whole = true
+                              let compPos = findAfter appUseFs "boxVal." 0
+                              let! compItems = Completion.atWithKeywords true appGraph usePath (fst compPos) (snd compPos) CancellationToken.None
+                              Expect.isNonEmpty compItems "Completion on Whole Use.fs returns items"
+                              do! assertUnlatchedWhole appGraph usePath "after Completion.atWithKeywords"
+
+                              // 3) SignatureHelp.atWithTrigger on Whole = true (exercise both method call and curried function fallback)
+                              let shMethodPos = findAfter appUseFs "w.Execute(" 0
+                              let! shMethod = SignatureHelp.atWithTrigger (Some '(') scope.OwnersOf appGraph usePath (fst shMethodPos) (snd shMethodPos) CancellationToken.None
+                              Expect.isSome shMethod "SignatureHelp method call on Whole Use.fs succeeds"
+                              do! assertUnlatchedWhole appGraph usePath "after SignatureHelp (method)"
+
+                              let shFuncPos = findAfter appUseFs "makeCustomer " 0
+                              let! shFunc = SignatureHelp.atWithTrigger (Some ' ') scope.OwnersOf appGraph usePath (fst shFuncPos) (snd shFuncPos) CancellationToken.None
+                              Expect.isSome shFunc "SignatureHelp curried function on Whole Use.fs succeeds"
+                              do! assertUnlatchedWhole appGraph usePath "after SignatureHelp (funcApp)"
+
+                              // 4) DocumentHighlight.at on Whole = true
+                              let hlPos = findPos appUseFs "let cust =" 0 5
+                              let! hlItems = DocumentHighlight.at appGraph usePath (fst hlPos) (snd hlPos) CancellationToken.None
+                              Expect.isSome hlItems "DocumentHighlight on Whole Use.fs succeeds"
+                              Expect.isNonEmpty hlItems.Value "DocumentHighlight on Whole Use.fs finds occurrences"
+                              do! assertUnlatchedWhole appGraph usePath "after DocumentHighlight.at"
+
+                              // 5) Declaration.at on Whole = true (Signed.fs -> Signed.fsi)
+                              let declPos = findPos signedFs "let makeCustomer" 0 6
+                              let! declRes = Declaration.at scope.OwnersOf libGraph fsPath (fst declPos) (snd declPos) CancellationToken.None
+                              Expect.isSome declRes "Declaration.at on Whole Signed.fs jumps to Signed.fsi"
+                              do! assertUnlatchedWhole libGraph fsPath "after Declaration.at"
+
+                              // 6) TypeDefinition.at on Whole = true
+                              let! tdRes = TypeDefinition.at scope.OwnersOf appGraph usePath (fst hlPos) (snd hlPos) CancellationToken.None
+                              Expect.isSome tdRes "TypeDefinition.at on Whole Use.fs resolves Customer"
+                              do! assertUnlatchedWhole appGraph usePath "after TypeDefinition.at"
+
+                              // 7) Implementation.find on Whole = true
+                              let execCallPos = findPos appUseFs "w.Execute(1)" 0 4
+                              let! implRes = Implementation.find scope appGraph usePath (fst execCallPos) (snd execCallPos) CancellationToken.None
+                              let implRanges = Expect.wantOk implRes "Implementation.find on Whole Use.fs succeeds"
+                              Expect.equal implRanges.Length 3 "Implementation.find on Whole Use.fs finds all 3 Execute implementations"
+                              do! assertUnlatchedWhole appGraph usePath "after Implementation.find"
+                          })
           } ]
 
 let private runLspProtocolTest () =

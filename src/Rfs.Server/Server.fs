@@ -1122,18 +1122,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
                     return Ok answer
                 with ex ->
-                    let rec root (e: exn) =
-                        match e with
-                        | :? AggregateException as a when a.InnerExceptions.Count = 1 -> root a.InnerException
-                        | e -> e
-
-                    match root ex with
-                    | :? OperationCanceledException
-                    | :? ObjectDisposedException
-                    | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return Ok(Some(U2.C2 [||]))
-                    | e ->
-                        eprintfn "[ranvierautocomplete] workspace/symbol failed: %O" e
-                        return internalError e.Message
+                    return handleReadExn "workspace/symbol" (Some(U2.C2 [||])) ex
             }
 
         member _.WorkspaceSymbolResolve(sym: WorkspaceSymbol) =

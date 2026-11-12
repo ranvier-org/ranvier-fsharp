@@ -161,7 +161,15 @@ module Completion =
             else character - 1
 
     let private itemsAndKeywordsAt (view: FileView) (line: int) (character: int) =
-        itemsAndShouldKeywords (view.CheckResultsAt(line + 1, queryColumn view.Text line character)) view.Parse view.Text line character
+        let col = queryColumn view.Text line character
+
+        let check =
+            if view.Whole then
+                view.Result.CheckResultsNotKept
+            else
+                view.CheckResultsAt(line + 1, col)
+
+        itemsAndShouldKeywords check view.Parse view.Text line character
 
     /// The items at the 0-based line and character of the read's text, through FileView.CheckResultsAt.
     let itemsAt (view: FileView) (line: int) (character: int) =

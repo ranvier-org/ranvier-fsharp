@@ -825,7 +825,7 @@ and [<Sealed>] ProjectGraph private (host: GraphHost, project: ProjectShared, sp
                 fun line column ->
                     match r.Declarations with
                     | ValueSome(f, roles) -> RowView.at project f roles line column checks
-                    | ValueNone -> r.Result.CheckResults }
+                    | ValueNone -> r.Result.CheckResultsNotKept }
 
         let body (flight: CancellationToken) : Task<'T> =
             let readReadable () =

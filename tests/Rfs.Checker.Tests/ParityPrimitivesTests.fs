@@ -760,14 +760,18 @@ type DerivedCtor(seed: int) =
               Expect.equal (nameOf inCompute) (ValueSome "Compute") "method body after helper returns Compute"
 
               // ImplicitCtor covers `inherit BaseCtor(seed + 1)` (line 23) and `do ignore (seed + 2)` (line 24),
-              // while narrower `ctorHelper` (line 25) and `Run` (line 26) still win inside their bodies
+              // while narrower `ctorHelper` (line 25) and `Run` (line 26) still win inside their bodies.
+              // Constructor CallableDecl.Name uses the declaring type's display name ("DerivedCtor") while Glyph is Constructor and Key carries "|.ctor".
               let inInherit = uses.EnclosingCallable(Position.mkPos 23 22)
               Expect.isTrue inInherit.IsSome "inherit argument has enclosing implicit constructor"
-              Expect.equal (nameOf inInherit) (ValueSome ".ctor") "inherit argument enclosing callable is .ctor"
+              Expect.equal (nameOf inInherit) (ValueSome "DerivedCtor") "inherit argument enclosing callable uses type display name DerivedCtor"
+              Expect.equal inInherit.Value.Glyph SymbolGlyph.Constructor "inherit argument enclosing callable has Constructor glyph"
               Expect.stringContains inInherit.Value.Key "DerivedCtor" "inherit enclosing .ctor belongs to DerivedCtor"
+              Expect.stringContains inInherit.Value.Key "|.ctor" "inherit enclosing .ctor key carries |.ctor"
 
               let inDo = uses.EnclosingCallable(Position.mkPos 24 16)
-              Expect.equal (nameOf inDo) (ValueSome ".ctor") "class do binding enclosing callable is .ctor"
+              Expect.equal (nameOf inDo) (ValueSome "DerivedCtor") "class do binding enclosing callable uses type display name DerivedCtor"
+              Expect.equal inDo.Value.Glyph SymbolGlyph.Constructor "class do binding enclosing callable has Constructor glyph"
               Expect.equal inDo.Value.Key inInherit.Value.Key "class do binding resolves to same DerivedCtor .ctor"
 
               let inCtorHelper = uses.EnclosingCallable(Position.mkPos 25 32)
@@ -780,4 +784,35 @@ type DerivedCtor(seed: int) =
               let struct (keyedBytes, rawBytes) = uses.Footprint
               Expect.isGreaterThan keyedBytes 6000L "Footprint keyed byte estimate includes relational, subtype, and callable tables"
               Expect.isGreaterThan rawBytes 0L "Footprint raw byte estimate is positive"
-          } ]
+          }
+
+          testCase "AstIndex.build handles 4000-deep pipeline and nested bindings on a 256KB stack"
+          <| fun () ->
+              let src =
+                  "module Deep\nlet topFn x =\n    (let deepLeaf () = x in deepLeaf ())"
+                  + String.replicate 4000 " |> id"
+
+              let checker = FSharpChecker.Create()
+              let parseOpts = { FSharpParsingOptions.Default with SourceFiles = [| "Deep.fs" |] }
+              let parseRes =
+                  checker.ParseFile("Deep.fs", SourceText.ofString src, parseOpts)
+                  |> Async.RunSynchronously
+
+              let mutable callableCount = -1
+              let mutable failure: exn option = None
+
+              let worker =
+                  System.Threading.Thread(
+                      System.Threading.ThreadStart(fun () ->
+                          try
+                              let info = AstIndex.build (Some parseRes.ParseTree)
+                              callableCount <- info.CallableRanges.Count
+                          with ex ->
+                              failure <- Some ex),
+                      262144
+                  )
+
+              worker.Start()
+              worker.Join()
+              Expect.isNone failure "AstIndex.build must not overflow or fail on a 256KB stack"
+              Expect.equal callableCount 2 "Records both top-level binding and nested function inside deep pipeline" ]

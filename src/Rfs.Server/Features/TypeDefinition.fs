@@ -149,7 +149,13 @@ module TypeDefinition =
                             match lookup with
                             | None -> []
                             | Some(lineStr, names, endColumn) ->
-                                match view.Result.CheckResults.GetSymbolUseAtLocation(line + 1, endColumn, lineStr, names) with
+                                let check =
+                                    if view.Whole then
+                                        view.Result.CheckResultsNotKept
+                                    else
+                                        view.CheckResultsAt(line + 1, endColumn)
+
+                                match check.GetSymbolUseAtLocation(line + 1, endColumn, lineStr, names) with
                                 | Some u -> candidateTargets u.Symbol
                                 | None -> []),
                         ct

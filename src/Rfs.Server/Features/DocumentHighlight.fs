@@ -221,7 +221,11 @@ module DocumentHighlight =
                     match lookup with
                     | None -> None
                     | Some(lineStr, names, endColumn) ->
-                        let check = view.Result.CheckResults
+                        let check =
+                            if view.Whole then
+                                view.Result.CheckResultsNotKept
+                            else
+                                view.Result.CheckResults
 
                         match check.GetSymbolUseAtLocation(line + 1, endColumn, lineStr, names) with
                         | None -> None
