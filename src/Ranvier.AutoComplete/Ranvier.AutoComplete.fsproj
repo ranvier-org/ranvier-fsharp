@@ -8,7 +8,7 @@
     <PackageId>Ranvier.AutoComplete</PackageId>
     <Version Condition="'$(ToolVersion)' != ''">$(ToolVersion)</Version>
     <Description>Demand-driven declaration-incremental F# language server CLI tool (`ranvierautocomplete`) powered by Ranvier and built on the Ionide ecosystem (FsAutoComplete, Ionide.LanguageServerProtocol, Ionide.ProjInfo).</Description>
-    <PackageReleaseNotes>0.1.0 release of the Ranvier.AutoComplete F# LSP server CLI tool (ranvierautocomplete).</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.1 release of the Ranvier.AutoComplete F# LSP server CLI tool (ranvierautocomplete), built on Ranvier 0.2.0.</PackageReleaseNotes>
     <PackageTags>fsharp;lsp;language-server;ionide;ranvier;fsautocomplete;dotnet-tool</PackageTags>
   </PropertyGroup>
   <ItemGroup>

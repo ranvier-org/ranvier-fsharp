@@ -11,8 +11,8 @@
     <PackageVersion Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.750501" />
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />
     <PackageVersion Include="Expecto" Version="11.1.1" />
-    <PackageVersion Include="Ranvier" Version="0.1.1-preview.3" />
-    <PackageVersion Include="Ranvier.Traced" Version="0.1.1-preview.3" />
+    <PackageVersion Include="Ranvier" Version="0.2.0" />
+    <PackageVersion Include="Ranvier.Traced" Version="0.2.0" />
     <PackageVersion Include="System.IO.Pipelines" Version="10.0.14" />
   </ItemGroup>
 </Project>
