@@ -8,8 +8,8 @@
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
 
     <!-- Package and SourceLink metadata (individual library/tool projects opt in with IsPackable=true). -->
-    <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.0-preview.3</LibraryVersion>
-    <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.0</ToolVersion>
+    <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.0</LibraryVersion>
+    <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.1</ToolVersion>
     <Version Condition="'$(Version)' == ''">$(LibraryVersion)</Version>
     <Authors>shayanhabibi</Authors>
     <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
@@ -22,7 +22,7 @@
     <DebugType>embedded</DebugType>
     <IncludeSymbols>false</IncludeSymbols>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview release of Ranvier.FSharp libraries and Ranvier.AutoComplete LSP server.</PackageReleaseNotes>
+    <PackageReleaseNotes>Stable release of Ranvier.FSharp libraries and Ranvier.AutoComplete LSP server.</PackageReleaseNotes>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
