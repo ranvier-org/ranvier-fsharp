@@ -163,20 +163,26 @@ let tests =
                             task {
                                 // A. Dead PID record cleanup
                                 ProcessRegistry.ensureDirs ()
-                                let deadProcPsi =
-                                    if OperatingSystem.IsWindows() then
-                                        ProcessStartInfo("cmd.exe", "/c exit 0")
-                                    else
-                                        let psi = ProcessStartInfo("/bin/sh")
-                                        psi.ArgumentList.Add "-c"
-                                        psi.ArgumentList.Add "exit 0"
-                                        psi
-                                deadProcPsi.CreateNoWindow <- true
-                                deadProcPsi.UseShellExecute <- false
-                                use deadProc = Process.Start deadProcPsi
-                                deadProc.WaitForExit()
-                                let deadPid = deadProc.Id
-                                let deadStart = deadProc.StartTime.ToUniversalTime().Ticks
+
+                                let deadPid, deadStart =
+                                    let deadProcPsi =
+                                        if OperatingSystem.IsWindows() then
+                                            ProcessStartInfo("pwsh", "-NoProfile -Command \"Start-Sleep 30\"")
+                                        else
+                                            let psi = ProcessStartInfo("sleep")
+                                            psi.ArgumentList.Add "30"
+                                            psi
+
+                                    deadProcPsi.CreateNoWindow <- true
+                                    deadProcPsi.UseShellExecute <- false
+                                    use deadProc = Process.Start deadProcPsi
+                                    let pid = deadProc.Id
+                                    let startTicks = deadProc.StartTime.ToUniversalTime().Ticks
+                                    deadProc.Kill(true)
+                                    deadProc.WaitForExit()
+                                    pid, startTicks
+
+                                Expect.isTrue (waitProcessExit deadPid 3000) "dead test process exited"
                                 let wsId = WorkspaceRoot.workspaceId wsRoot
                                 let pipeName = WorkspaceRoot.pipeName stateDir wsRoot
 
