@@ -11,7 +11,7 @@
 
   <!--
     A traced build packs only under a `.Traced` package id, which traced-capable projects select on an explicit
-    `-p:RanvierTrace=true`. Untraced-only packages (`Ranvier.FSharp.Lsp`, `Ranvier.FSharp.Projects`, `Ranvier.AutoComplete`)
+    `-p:RanvierTrace=true`. Untraced-only packages (`Ranvier.FSharp.Lsp`, `Ranvier.FSharp.Projects`, `Ranvier.AutoComplete`, `Ranvier.FSharp.Agent`)
     must be packed with `-c Release` (`RanvierTrace != 'true'`).
   -->
   <Target Name="RefuseTracedPack" BeforeTargets="GenerateNuspec"

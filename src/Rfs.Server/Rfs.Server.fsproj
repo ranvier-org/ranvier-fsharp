@@ -48,7 +48,9 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="ranvierautocomplete" />
+    <InternalsVisibleTo Include="rfs" />
     <InternalsVisibleTo Include="Rfs.Server.Tests" />
+    <InternalsVisibleTo Include="Rfs.Agent.Tests" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Ionide.LanguageServerProtocol" />

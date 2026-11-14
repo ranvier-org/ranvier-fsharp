@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Ranvier.AutoComplete/Ranvier.AutoComplete.fsproj" />
+    <Project Path="src/Rfs.Agent/Rfs.Agent.fsproj" />
     <Project Path="src/Rfs.Checker/Rfs.Checker.fsproj" />
     <Project Path="src/Rfs.Checkpoint/Rfs.Checkpoint.fsproj" />
     <Project Path="src/Rfs.Harness/Rfs.Harness.fsproj" />
@@ -16,5 +17,6 @@
     <Project Path="tests/Rfs.Harness.Tests/Rfs.Harness.Tests.fsproj" />
     <Project Path="tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj" />
     <Project Path="tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj" />
+    <Project Path="tests/Rfs.Agent.Tests/Rfs.Agent.Tests.fsproj" />
   </Folder>
 </Solution>

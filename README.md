@@ -1,8 +1,8 @@
-# Ranvier.AutoComplete (`ranvierautocomplete`)
+# Ranvier.AutoComplete (`ranvierautocomplete`) & `Ranvier.FSharp.Agent` (`rfs`)
 
-Demand-driven, declaration-incremental F# Language Server Protocol (LSP) server built on [Ranvier](https://github.com/ranvier-org/Ranvier) and [`fickle-fsharp`](https://github.com/shayanhabibi/fickle-fsharp) (`FSharp.Compiler.Service`).
+Demand-driven, declaration-incremental F# Language Server Protocol (LSP) server (`ranvierautocomplete`) and AI coding agent CLI/MCP semantic analysis tool (`rfs`) built on [Ranvier](https://github.com/ranvier-org/Ranvier) and [`fickle-fsharp`](https://github.com/shayanhabibi/fickle-fsharp) (`FSharp.Compiler.Service`).
 
-`ranvierautocomplete` is a drop-in replacement for `fsautocomplete` (FSAC) in **Ionide for VS Code**, **Neovim**, **Helix**, **Zed**, **Emacs**, and any stdio LSP client.
+`ranvierautocomplete` is a drop-in replacement for `fsautocomplete` (FSAC) in **Ionide for VS Code**, **Neovim**, **Helix**, **Zed**, **Emacs**, and any stdio LSP client. `rfs` (`Ranvier.FSharp.Agent`) brings the same incremental F# compiler graph to **Claude Code**, **Codex**, **Cursor**, and CLI agent workflows over a persistent daemon with automatic stale-process reaping.
 
 > **Massive Props to the [Ionide](https://ionide.io) Team:** `Ranvier.AutoComplete` would not exist without the talent and dedication of the **[Ionide](https://github.com/ionide)** maintainers and contributors. The language server surface, protocol handling, workspace loading, analyzers, code actions, and editor feature behavior in this repository are largely based on and adapted from their landmark work across **[FsAutoComplete (FSAC)](https://github.com/ionide/FsAutoComplete)**, **[Ionide.LanguageServerProtocol](https://github.com/ionide/LanguageServerProtocol)**, **[Ionide.ProjInfo](https://github.com/ionide/proj-info)**, and **[ionide-vscode-fsharp](https://github.com/ionide/ionide-vscode-fsharp)**. While `ranvier-fsharp` introduces a new declaration-incremental [Ranvier](https://github.com/ranvier-org/Ranvier) checking graph underneath, the rich F# IDE experience it delivers stands squarely on the foundation Ionide built for the F# community. See [Acknowledgements & Attribution](#acknowledgements--attribution) for full credit.
 
@@ -80,6 +80,7 @@ All layers of `ranvier-fsharp` are published as composable `net10.0` NuGet packa
 | Package | Assembly / Namespace | Description |
 | --- | --- | --- |
 | `Ranvier.AutoComplete` | `ranvierautocomplete` (`.NET` Tool) | Drop-in `stdio` F# LSP server CLI executable for Ionide and LSP editors |
+| `Ranvier.FSharp.Agent` | `rfs` (`.NET` Tool) | Semantic F# CLI + MCP server backed by a shared incremental daemon and stale-process reaper |
 | `Ranvier.FSharp.Lsp` | `Rfs.Lsp` | Framing (`JsonRpc`), UTF-16 incremental buffer (`Document`), and `LspClient` |
 | `Ranvier.FSharp.Projects` | `Rfs.Projects` | MSBuild `ProjectSpec` evaluation (`MSBuildLocator`), `.sln`/`.slnx` workspace discovery, `Glob`, and bundled `fickle-fsharp` `FSharp.Compiler.Service` |
 | `Ranvier.FSharp.Checker` | `Rfs.Checker` | Demand-driven declaration-incremental F# type-checking graph (`GraphHost`, `ProjectGraph`) built on `Ranvier` |
@@ -303,6 +304,60 @@ All settings can be passed either in LSP `initializeParams.initializationOptions
 
 ---
 
+## AI Coding Agents — `Ranvier.FSharp.Agent` (`rfs`)
+
+`Ranvier.FSharp.Agent` provides both a `stdio` MCP server (`rfs mcp`) and a low-overhead CLI (`rfs <cmd>`) sharing one per-workspace incremental compiler daemon (`ProjectGraph`) with deterministic stale-process reaping.
+
+### Install & Connect
+
+```bash
+# Global .NET tool (requires .NET 10 SDK)
+dotnet tool install -g Ranvier.FSharp.Agent
+rfs --version
+```
+
+Add to `.mcp.json` (use `["mcp", "--no-always-load"]` on small or mixed-language repos):
+
+```json
+{
+  "mcpServers": {
+    "rfs": {
+      "command": "rfs",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Core Operations
+
+- **Diagnostics (`rfs check` / `rfs_check`)**: Incremental file, project, or downstream errors/warnings from disk.
+- **Type & Definition (`rfs symbol` / `rfs_symbol`)**: Inferred signature, XML doc, definition, type definition, and implementations (1-based `line` + `--symbol <name>`).
+- **References & Calls (`rfs refs` / `rfs_references`)**: Workspace-wide uses and incoming/outgoing call hierarchy.
+- **Search & Outline (`rfs search` / `rfs_search`)**: File outline or cross-project symbol search.
+- **Semantic Rename (`rfs rename` / `rfs_rename`)**: Cross-project rename (`--dry-run` preview or apply + immediate re-check).
+- **Workspace & Daemon Control (`rfs status` / `rfs_status`, `rfs daemon status|reap|kill`)**: Health, RAM, Ranvier counters, and safe stale-process reaping.
+
+### Benchmark Summary: Competing Weightings vs. `no-tool` (`claude --model haiku`, 28 Trials)
+
+Using $V(w_T, w_C) = 100 \cdot Q \cdot (30\text{s}/T)^{w_T} \cdot (\$0.006/C)^{w_C}$ with conservative timeout imputation on the 14-project baseline `dotnet build` timeout (`240.12 s`):
+
+| Arm (Warm, Full 6-Cell Suite) | Total Time (`no-tool` ratio) | Total Cost (`no-tool` ratio) | Time-Weighted $V_{80T}$ (`no-tool` ratio) | Cost-Weighted $V_{80C}$ (`no-tool` ratio) |
+| :--- | :---: | :---: | :---: | :---: |
+| `baseline-no-rfs` (`no-tool`) | `389.91s (1.00x)` | `$0.03973* (1.00x)` | `52.51 (1.00x)` | `78.70 (1.00x)` |
+| `stdio-daemon` (`rfs` CLI) | `215.27s (0.55x)` | `$0.04167 (1.05x)` | `82.76 (1.58x)` | **`84.40 (1.07x)` (#1)** |
+| `mcp-daemon-always` (`rfs mcp`) | **`195.08s (0.50x)`** | `$0.05018 (1.26x)` | **`86.07 (1.64x)` (#1)** | `74.02 (0.94x)` |
+| `mcp-daemon-deferred` (`--no-always-load`) | `234.88s (0.60x)` | `$0.04414 (1.11x)` | `77.13 (1.47x)` | `80.07 (1.02x)` |
+
+On large multi-project edit loops (`ranvier-fsharp`, 14 projects), `rfs mcp` cuts warm edit-check-fix time to **`37.46 s` (`4.17x` $V_{80T}$)** vs. the `240.12 s` baseline timeout, while `rfs` CLI wins Cost-Weighted valuation on both large read-only analysis (**`1.33x` $V_{80C}$**, `0.74x` USD cost) and large edit loops (**`1.27x` $V_{80C}$**, `0.30x` time).
+
+- Full operator guide: [docs/rfs.md](docs/rfs.md)
+- Purely agent-relevant operational spec: [docs/rfs-agent.md](docs/rfs-agent.md)
+- Full 28-trial methodology & ratio matrices: [docs/agent-mcp-vs-stdio.md](docs/agent-mcp-vs-stdio.md)
+- Agent skills: [skills/rfs/SKILL.md](skills/rfs/SKILL.md) (usage) · [skills/setup-rfs/SKILL.md](skills/setup-rfs/SKILL.md) (setup)
+
+---
+
 ## Building & Packing from Source
 
 ### Repository Layout
@@ -340,22 +395,23 @@ dotnet run --project tests/Rfs.Checkpoint.Tests -c Release --no-build
 dotnet run --project tests/Rfs.Decl.Tests -c Release --no-build
 dotnet run --project tests/Rfs.Checker.Tests -c Release --no-build
 dotnet run --project tests/Rfs.Server.Tests -c Release --no-build
+dotnet run --project tests/Rfs.Agent.Tests -c Release --no-build
 ```
 
-### 3. Pack & Verify All NuGet Packages + Portable Bundle
+### 3. Pack & Verify All NuGet Packages + Portable Bundles
 
 ```powershell
 pwsh -File build/pack.ps1
 pwsh -File build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
 ```
 
-This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp,Projects,Checker,Checker.Traced,Server,Server.Traced}` + `Ranvier.AutoComplete`) and `artifacts/publish/ranvierautocomplete.dll` (ready to set as `"FSharp.fsac.netCoreDllPath"` in VS Code), then verifies them in isolated out-of-repo F# and C# consumer builds.
+This outputs all 8 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp,Projects,Checker,Checker.Traced,Server,Server.Traced}` + `Ranvier.AutoComplete` + `Ranvier.FSharp.Agent`), `artifacts/publish/ranvierautocomplete.dll` (ready for `"FSharp.fsac.netCoreDllPath"` in VS Code), and `artifacts/publish-rfs/rfs.dll`, then verifies them in isolated out-of-repo tool, F#, and C# consumer builds.
 
 ---
 
 ## Debugging & Causal Graph Inspection (`rfs/why`)
 
-- **Untraced packages / Release builds** (`Ranvier.FSharp.Checker`, `Ranvier.FSharp.Server`, `Ranvier.AutoComplete`) link the untraced `Ranvier` package for zero tracing overhead.
+- **Untraced packages / Release builds** (`Ranvier.FSharp.Checker`, `Ranvier.FSharp.Server`, `Ranvier.AutoComplete`, `Ranvier.FSharp.Agent`) link the untraced `Ranvier` package for zero tracing overhead.
 - **Traced packages / Debug builds** (`Ranvier.FSharp.Checker.Traced`, `Ranvier.FSharp.Server.Traced`, or `-c Debug` / `-p:RanvierTrace=true`) link `Ranvier.Traced` and enable the custom **`rfs/why`** JSON-RPC request (`{"textDocument": {"uri": "file:///..."}, "position": {"line": 4, "character": 5}}`), returning the exact causal chain from changed input signals to the declaration's last check.
 
 ---
@@ -366,15 +422,19 @@ This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp
    ```bash
    git -C ../fickle-fsharp push origin fickle_decl
    ```
-2. Push `main` and tag either a standalone CLI tool release (`ranvierautocomplete-v0.1.1`) or a full workspace suite release (`v0.1.0`):
+2. Push `main` and tag either a standalone `Ranvier.AutoComplete` release (`ranvierautocomplete-v0.1.1`), a standalone `Ranvier.FSharp.Agent` release (`rfs-v0.1.0`), or a full workspace suite release (`v0.1.0`):
    ```bash
    git push -u origin main
 
-   # Release Ranvier.AutoComplete CLI tool + standalone archives:
-   git tag ranvierautocomplete-v0.1.1
-   git push origin ranvierautocomplete-v0.1.1
+   # Release Ranvier.FSharp.Agent (`rfs`) CLI/MCP tool + standalone archives:
+   git tag rfs-v0.1.0
+   git push origin rfs-v0.1.0
 
-   # Or release all 7 NuGet packages (libraries + CLI tool):
+   # Or release Ranvier.AutoComplete CLI tool + standalone archives:
+   # git tag ranvierautocomplete-v0.1.1
+   # git push origin ranvierautocomplete-v0.1.1
+
+   # Or release all 8 NuGet packages (libraries + both CLI tools):
    # git tag v0.1.0
    # git push origin v0.1.0
    ```
@@ -382,10 +442,13 @@ This outputs all 7 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp
 
 To verify published packages live from `https://api.nuget.org/v3/index.json` in a clean NuGet cache:
 ```powershell
-# Verify the 0.1.1 CLI tool:
+# Verify the 0.1.0 Ranvier.FSharp.Agent (`rfs`) tool:
+pwsh -File build/verify-packages.ps1 -OnlineOnly -AgentOnly -AgentVersion 0.1.0
+
+# Verify the 0.1.1 Ranvier.AutoComplete CLI tool:
 pwsh -File build/verify-packages.ps1 -OnlineOnly -ToolOnly -ToolVersion 0.1.1
 
-# Verify the full library + tool suite:
+# Verify the full 8-package library + tool suite:
 pwsh -File build/verify-packages.ps1 -OnlineOnly
 ```
 

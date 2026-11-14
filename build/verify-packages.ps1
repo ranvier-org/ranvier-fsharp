@@ -1,34 +1,41 @@
 <#
 .SYNOPSIS
-  Verifies all 7 Ranvier.FSharp / Ranvier.AutoComplete NuGet packages (offline .nupkg inspection + isolated end-to-end consumer builds/runs).
+  Verifies all 8 Ranvier.FSharp / Ranvier.AutoComplete / Ranvier.FSharp.Agent NuGet packages (offline .nupkg inspection + isolated end-to-end consumer builds/runs).
 
 .DESCRIPTION
   Supports two modes:
     1. Offline + Local Feed Verification (`-NupkgDir ./artifacts/nupkg [-Version <ver>]`):
-       - Inspects all 7 `.nupkg` archives, `.nuspec` metadata, bundled FCS DLLs/XMLs, MSBuild `.targets`,
+       - Inspects all 8 `.nupkg` archives, `.nuspec` metadata, bundled FCS DLLs/XMLs, MSBuild `.targets`,
          exact `[version]` sibling ranges, and `AssemblyMetadata("RanvierTrace", "true")` binary attributes.
        - Runs isolated out-of-repo consumer builds and end-to-end runtime smoke tests against `$NupkgDir` + `nuget.org`:
          (a) `Ranvier.AutoComplete` `.NET` tool install, `--version`, `--help`, and stdio LSP `initialize`/`shutdown`/`exit`
-         (b) F# consumer of `Ranvier.FSharp.Server` exercising `Rfs.Lsp`, `Rfs.Projects` (`MSBuildLocator`), `FSharp.Compiler.Service`, `Rfs.Checker`, and `Rfs.Server` hover over LSP
-         (c) F# consumer of `Ranvier.FSharp.Server.Traced` exercising `ProjectGraph.Traced = true` and `rfs/why` causal trace output
-         (d) C# consumer of `Ranvier.FSharp.Checker` proving transitive `FSharp.Core` + `FSharp.Compiler.Service` resolution without implicit F# SDK references
+         (b) `Ranvier.FSharp.Agent` (`rfs`) `.NET` tool install, `--version`, `--help`, `rfs check`, `rfs symbol`, MCP stdio `initialize`/`tools/list`, and `rfs daemon kill --all`
+         (c) F# consumer of `Ranvier.FSharp.Server` exercising `Rfs.Lsp`, `Rfs.Projects` (`MSBuildLocator`), `FSharp.Compiler.Service`, `Rfs.Checker`, and `Rfs.Server` hover over LSP
+         (d) F# consumer of `Ranvier.FSharp.Server.Traced` exercising `ProjectGraph.Traced = true` and `rfs/why` causal trace output
+         (e) C# consumer of `Ranvier.FSharp.Checker` proving transitive `FSharp.Core` + `FSharp.Compiler.Service` resolution without implicit F# SDK references
 
     2. Live NuGet.org Verification (`-OnlineOnly [-Version <ver>]`):
        - Uses ONLY `https://api.nuget.org/v3/index.json` (no local feed) and a fresh empty `NUGET_PACKAGES` cache,
-         running all 4 isolated consumer smoke tests end-to-end as an external user on a clean machine.
+         running all isolated consumer smoke tests end-to-end as an external user on a clean machine.
 #>
 [CmdletBinding()]
 param(
     [string]$NupkgDir = '',
     [string]$Version = '',
     [string]$ToolVersion = '',
+    [string]$AgentVersion = '',
     [switch]$ToolOnly,
+    [switch]$AgentOnly,
     [switch]$OnlineOnly
 )
 $ErrorActionPreference = 'Stop'
 $env:DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER = '1'
 $env:DOTNET_NOLOGO = '1'
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
+
+if ($ToolOnly -and $AgentOnly) {
+    throw "Cannot specify both -ToolOnly and -AgentOnly."
+}
 
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -40,9 +47,14 @@ $libVerNode = $propsXml.Project.PropertyGroup | ForEach-Object { if ($_.LibraryV
 $defaultLibVer = if ($libVerNode -is [System.Xml.XmlElement]) { $libVerNode.InnerText.Trim() } else { "$libVerNode".Trim() }
 $toolVerNode = $propsXml.Project.PropertyGroup | ForEach-Object { $_.ToolVersion } | Where-Object { $_ } | Select-Object -First 1
 $defaultToolVer = if ($toolVerNode -is [System.Xml.XmlElement]) { $toolVerNode.InnerText.Trim() } elseif ($toolVerNode) { "$toolVerNode".Trim() } else { $defaultLibVer }
+$agentVerNode = $propsXml.Project.PropertyGroup | ForEach-Object { $_.AgentVersion } | Where-Object { $_ } | Select-Object -First 1
+$defaultAgentVer = if ($agentVerNode -is [System.Xml.XmlElement]) { $agentVerNode.InnerText.Trim() } elseif ($agentVerNode) { "$agentVerNode".Trim() } else { $defaultToolVer }
 
 if ($Version -and -not $ToolVersion) {
     $ToolVersion = $Version
+}
+if ($Version -and -not $AgentVersion) {
+    $AgentVersion = $Version
 }
 if (-not $Version) {
     $Version = $defaultLibVer
@@ -50,7 +62,10 @@ if (-not $Version) {
 if (-not $ToolVersion) {
     $ToolVersion = $defaultToolVer
 }
-if (-not $Version -or -not $ToolVersion) { throw "Could not determine package version(s)." }
+if (-not $AgentVersion) {
+    $AgentVersion = $defaultAgentVer
+}
+if (-not $Version -or -not $ToolVersion -or -not $AgentVersion) { throw "Could not determine package version(s)." }
 
 if (-not $OnlineOnly) {
     if (-not $NupkgDir) {
@@ -115,20 +130,31 @@ $expectedSpecs = @(
     @{ Id = 'Ranvier.FSharp.Checker.Traced'; Tool = $false; Asm = 'Rfs.Checker';  Traced = $true;  Sibling = 'Ranvier.FSharp.Projects';       RanvierDep = 'Ranvier.Traced'; ExtraLibs = @(); HasTargets = $false },
     @{ Id = 'Ranvier.FSharp.Server';         Tool = $false; Asm = 'Rfs.Server';   Traced = $false; Sibling = 'Ranvier.FSharp.Checker';        RanvierDep = '';               ExtraLibs = @(); HasTargets = $true  },
     @{ Id = 'Ranvier.FSharp.Server.Traced';  Tool = $false; Asm = 'Rfs.Server';   Traced = $true;  Sibling = 'Ranvier.FSharp.Checker.Traced'; RanvierDep = '';               ExtraLibs = @(); HasTargets = $true  },
-    @{ Id = 'Ranvier.AutoComplete';          Tool = $true;  Asm = 'ranvierautocomplete'; Traced = $false; Sibling = '';                      RanvierDep = '';               ExtraLibs = @(); HasTargets = $false }
+    @{ Id = 'Ranvier.AutoComplete';          Tool = $true;  Asm = 'ranvierautocomplete'; Traced = $false; Sibling = '';                      RanvierDep = '';               ExtraLibs = @(); HasTargets = $false },
+    @{ Id = 'Ranvier.FSharp.Agent';          Tool = $true;  Asm = 'rfs';          Traced = $false; Sibling = '';                             RanvierDep = '';               ExtraLibs = @(); HasTargets = $false }
 )
 
-$specsToCheck = if ($ToolOnly) { @($expectedSpecs | Where-Object { $_.Tool }) } else { $expectedSpecs }
+function Get-SpecVersion($s) {
+    if ($s.Id -eq 'Ranvier.AutoComplete') { return $ToolVersion }
+    elseif ($s.Id -eq 'Ranvier.FSharp.Agent') { return $AgentVersion }
+    else { return $Version }
+}
+
+$specsToCheck = @(
+    if ($ToolOnly) { $expectedSpecs | Where-Object { $_.Id -eq 'Ranvier.AutoComplete' } }
+    elseif ($AgentOnly) { $expectedSpecs | Where-Object { $_.Id -eq 'Ranvier.FSharp.Agent' } }
+    else { $expectedSpecs }
+)
 
 if (-not $OnlineOnly) {
-    Write-Host "=== [1/5] Inspecting $($specsToCheck.Count) .nupkg archive(s) in $NupkgDir (libs=$Version, tool=$ToolVersion, ToolOnly=$ToolOnly)" -ForegroundColor Cyan
+    Write-Host "=== [1/5] Inspecting $($specsToCheck.Count) .nupkg archive(s) in $NupkgDir (libs=$Version, tool=$ToolVersion, agent=$AgentVersion, ToolOnly=$ToolOnly, AgentOnly=$AgentOnly)" -ForegroundColor Cyan
     $actualFiles = @(Get-ChildItem -LiteralPath $NupkgDir -Filter '*.nupkg' | Select-Object -ExpandProperty Name | Sort-Object)
-    $expectedFiles = @($specsToCheck | ForEach-Object { $v = if ($_.Tool) { $ToolVersion } else { $Version }; "$($_.Id).$v.nupkg" } | Sort-Object)
+    $expectedFiles = @($specsToCheck | ForEach-Object { $v = Get-SpecVersion $_; "$($_.Id).$v.nupkg" } | Sort-Object)
     Assert-True (($actualFiles -join ';') -eq ($expectedFiles -join ';')) "Expected packages [$($expectedFiles -join ', ')], found [$($actualFiles -join ', ')]"
 
     foreach ($spec in $specsToCheck) {
         $id = $spec.Id
-        $expectedVer = if ($spec.Tool) { $ToolVersion } else { $Version }
+        $expectedVer = Get-SpecVersion $spec
         $pkgPath = Join-Path $NupkgDir "$id.$expectedVer.nupkg"
         $zip = [System.IO.Compression.ZipFile]::OpenRead($pkgPath)
         try {
@@ -162,9 +188,12 @@ if (-not $OnlineOnly) {
                 $toolTopDeps = @($meta.dependencies.dependency | Where-Object { $null -ne $_ })
                 Assert-True (($toolGroupDeps.Count + $toolTopDeps.Count) -eq 0) "$id DotnetTool .nuspec must not declare NuGet package dependencies"
                 Assert-True ($entries -contains 'tools/net10.0/any/DotnetToolSettings.xml') "$id missing DotnetToolSettings.xml"
-                Assert-True ($entries -contains 'tools/net10.0/any/ranvierautocomplete.dll') "$id missing ranvierautocomplete.dll"
+                Assert-True ($entries -contains "tools/net10.0/any/$($spec.Asm).dll") "$id missing $($spec.Asm).dll"
                 Assert-True ($entries -contains 'tools/net10.0/any/FSharp.Compiler.Service.dll') "$id missing FSharp.Compiler.Service.dll"
                 Assert-True (-not ($entries -contains 'tools/net10.0/any/Microsoft.NET.StringTools.dll')) "$id must not bundle copy-local Microsoft.NET.StringTools.dll"
+                if ($id -eq 'Ranvier.FSharp.Agent') {
+                    Assert-True ($entries -contains 'tools/net10.0/any/ModelContextProtocol.Core.dll') "$id missing ModelContextProtocol.Core.dll"
+                }
 
                 $checkerBytes = Read-ZipEntryBytes $zip 'tools/net10.0/any/Rfs.Checker.dll'
                 $serverBytes  = Read-ZipEntryBytes $zip 'tools/net10.0/any/Rfs.Server.dll'
@@ -286,6 +315,7 @@ let addNumbers (x: int) (y: int) : int =
         Pop-Location
     }
 
+    if (-not $AgentOnly) {
     # -------------------------------------------------------------------------
     # Smoke Test 1: Ranvier.AutoComplete CLI tool
     # -------------------------------------------------------------------------
@@ -373,8 +403,115 @@ let addNumbers (x: int) (y: int) : int =
         if (-not $proc.HasExited) { $proc.Kill($true) }
         $proc.Dispose()
     }
+    }
 
     if (-not $ToolOnly) {
+    # -------------------------------------------------------------------------
+    # Smoke Test 1b: Ranvier.FSharp.Agent (`rfs`) CLI + Daemon + MCP server
+    # -------------------------------------------------------------------------
+    Write-Host "=== [3b/5] Smoke-testing Ranvier.FSharp.Agent (rfs) CLI + MCP tool ($AgentVersion)" -ForegroundColor Cyan
+    $rfsToolDir = Join-Path $workDir 'rfs-tool-bin'
+    dotnet tool install Ranvier.FSharp.Agent --tool-path $rfsToolDir --version $AgentVersion --configfile $nugetConfigPath
+    if ($LASTEXITCODE -ne 0) { throw "dotnet tool install Ranvier.FSharp.Agent failed" }
+
+    if (-not $AgentVersion.Contains('-')) {
+        $defaultRfsToolDir = Join-Path $workDir 'rfs-tool-bin-default'
+        dotnet tool install Ranvier.FSharp.Agent --tool-path $defaultRfsToolDir --configfile $nugetConfigPath
+        if ($LASTEXITCODE -ne 0) { throw "dotnet tool install Ranvier.FSharp.Agent (without --prerelease) failed" }
+    }
+
+    $rfsExe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { Join-Path $rfsToolDir 'rfs.exe' } else { Join-Path $rfsToolDir 'rfs' }
+    Assert-True (Test-Path $rfsExe) "rfs executable not found at $rfsExe"
+
+    $rfsStateDir = Join-Path $workDir 'rfs-state'
+    $prevRfsStateDir = $env:RFS_STATE_DIR
+    $prevRfsIdle = $env:RFS_IDLE_TIMEOUT_SECONDS
+    $env:RFS_STATE_DIR = $rfsStateDir
+    $env:RFS_IDLE_TIMEOUT_SECONDS = '60'
+
+    try {
+        $rfsVerOut = (& $rfsExe --version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "rfs --version failed" }
+        Assert-True ($rfsVerOut -eq "rfs $AgentVersion" -or $rfsVerOut.StartsWith("rfs $AgentVersion+")) "Expected 'rfs $AgentVersion[+sha]', got '$rfsVerOut'"
+
+        $rfsHelpOut = (& $rfsExe --help | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "rfs --help failed" }
+        Assert-True ($rfsHelpOut.Contains('Ranvier F# semantic analysis') -and $rfsHelpOut.Contains('mcp')) "rfs --help missing expected summary/commands"
+
+        $sampleLibPath = Join-Path $sampleDir 'Lib.fs'
+        $checkOut = (& $rfsExe check $sampleLibPath --workspace $sampleDir --fail-on-error | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "rfs check failed (exit=$LASTEXITCODE): $checkOut" }
+        Assert-True ($checkOut.Contains('0 errors, 0 warnings')) "rfs check output expected '0 errors, 0 warnings': $checkOut"
+
+        $symOut = (& $rfsExe symbol $sampleLibPath 5 --symbol addNumbers --workspace $sampleDir | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "rfs symbol failed: $symOut" }
+        Assert-True ($symOut.Contains('addNumbers') -and $symOut.Contains('int')) "rfs symbol output unexpected: $symOut"
+
+        # Exercise newline-delimited JSON-RPC over stdio on `rfs mcp`
+        $mcpPsi = [System.Diagnostics.ProcessStartInfo]::new($rfsExe)
+        $mcpPsi.WorkingDirectory = $sampleDir
+        $mcpPsi.UseShellExecute = $false
+        $mcpPsi.RedirectStandardInput = $true
+        $mcpPsi.RedirectStandardOutput = $true
+        $mcpPsi.RedirectStandardError = $true
+        $mcpPsi.ArgumentList.Add('mcp')
+        $mcpPsi.ArgumentList.Add('--workspace')
+        $mcpPsi.ArgumentList.Add($sampleDir)
+        $mcpProc = [System.Diagnostics.Process]::Start($mcpPsi)
+        try {
+            $mcpProc.BeginErrorReadLine()
+            $mcpProc.StandardInput.WriteLine("{`"jsonrpc`":`"2.0`",`"id`":1,`"method`":`"initialize`",`"params`":{`"protocolVersion`":`"2025-11-25`",`"capabilities`":{},`"clientInfo`":{`"name`":`"verify`",`"version`":`"0.1.0`"}}}")
+            $mcpProc.StandardInput.Flush()
+
+            $initTask = $mcpProc.StandardOutput.ReadLineAsync()
+            if (-not $initTask.Wait(15000)) { throw "Timed out waiting for rfs mcp initialize response" }
+            $mcpInit = $initTask.Result
+            Assert-True ($null -ne $mcpInit -and $mcpInit.Contains('ranvier-fsharp') -and $mcpInit.Contains("`"version`":`"$AgentVersion`"")) "rfs mcp initialize response mismatch: $mcpInit"
+
+            $mcpProc.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+            $mcpProc.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+            $mcpProc.StandardInput.Flush()
+
+            $toolsResp = ''
+            while ($true) {
+                $lineTask = $mcpProc.StandardOutput.ReadLineAsync()
+                if (-not $lineTask.Wait(15000)) { throw "Timed out waiting for rfs mcp tools/list response" }
+                $line = $lineTask.Result
+                if ($null -eq $line) { throw "EOF waiting for rfs mcp tools/list response" }
+                if ($line.Contains('"id":2')) {
+                    $toolsResp = $line
+                    break
+                }
+            }
+
+            foreach ($toolName in 'rfs_check', 'rfs_symbol', 'rfs_references', 'rfs_search', 'rfs_rename', 'rfs_status') {
+                Assert-True ($toolsResp.Contains("`"$toolName`"")) "rfs mcp tools/list missing tool '$toolName'"
+            }
+
+            $mcpProc.StandardInput.Close()
+            if (-not $mcpProc.WaitForExit(10000)) {
+                $mcpProc.Kill($true)
+                throw "rfs mcp did not exit cleanly within 10s"
+            }
+            Assert-True ($mcpProc.ExitCode -eq 0) "rfs mcp exited with non-zero code $($mcpProc.ExitCode)"
+        }
+        finally {
+            if (-not $mcpProc.HasExited) { $mcpProc.Kill($true) }
+            $mcpProc.Dispose()
+        }
+
+        $killOut = (& $rfsExe daemon kill --all | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "rfs daemon kill --all failed: $killOut" }
+        Write-Host "  OK: Ranvier.FSharp.Agent ($rfsVerOut + CLI check/symbol + stdio MCP + daemon cleanup)" -ForegroundColor Green
+    }
+    finally {
+        try { & $rfsExe daemon kill --all | Out-Null } catch { }
+        $env:RFS_STATE_DIR = $prevRfsStateDir
+        $env:RFS_IDLE_TIMEOUT_SECONDS = $prevRfsIdle
+    }
+    }
+
+    if ((-not $ToolOnly) -and (-not $AgentOnly)) {
     # -------------------------------------------------------------------------
     # Smoke Test 2: Untraced F# Library Stack + Traced F# Library Stack
     # -------------------------------------------------------------------------
@@ -671,7 +808,7 @@ Console.WriteLine("OK: CSharpConsumer resolved FSharp.Core + FSharp.Compiler.Ser
     }
 
     Write-Host ""
-    Write-Host "ALL PACKAGE VERIFICATIONS PASSED (libs=$Version, tool=$ToolVersion, ToolOnly=$ToolOnly, OnlineOnly=$OnlineOnly)!" -ForegroundColor Green
+    Write-Host "ALL PACKAGE VERIFICATIONS PASSED (libs=$Version, tool=$ToolVersion, agent=$AgentVersion, ToolOnly=$ToolOnly, AgentOnly=$AgentOnly, OnlineOnly=$OnlineOnly)!" -ForegroundColor Green
 }
 finally {
     $env:NUGET_PACKAGES = $prevNugetPackages

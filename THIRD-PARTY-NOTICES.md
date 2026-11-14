@@ -1,6 +1,6 @@
 # Third-Party Notices & Attribution
 
-`ranvier-fsharp` (`Ranvier.AutoComplete` and `Ranvier.FSharp.*`) builds directly on the work of the **[Ionide](https://github.com/ionide)** team and the **F# Compiler** community. Significant portions of the Language Server Protocol surface, custom `fsharp/*` Ionide protocol endpoints, workspace discovery/loading conventions, editor feature semantics, analyzers, and code-action workflows in `Ranvier.FSharp.Server` and `Ranvier.FSharp.Projects` are derived from, adapted from, or modeled directly after the upstream projects credited below.
+`ranvier-fsharp` (`Ranvier.AutoComplete`, `Ranvier.FSharp.Agent`, and `Ranvier.FSharp.*`) builds directly on the work of the **[Ionide](https://github.com/ionide)** team and the **F# Compiler** community. Significant portions of the Language Server Protocol surface, custom `fsharp/*` Ionide protocol endpoints, workspace discovery/loading conventions, editor feature semantics, analyzers, and code-action workflows in `Ranvier.FSharp.Server` and `Ranvier.FSharp.Projects` are derived from, adapted from, or modeled directly after the upstream projects credited below.
 
 ---
 
@@ -267,7 +267,7 @@ SOFTWARE.
 - **License:** MIT License
 - **Copyright:** Copyright (c) Microsoft Corporation / .NET Foundation and Contributors
 
-`Ranvier.FSharp.Projects` and `Ranvier.AutoComplete` redistribute `FSharp.Compiler.Service.dll` and `FSharp.DependencyManager.Nuget.dll` built from `shayanhabibi/fickle-fsharp`, derived from `dotnet/fsharp` under the MIT License:
+`Ranvier.FSharp.Projects`, `Ranvier.AutoComplete`, and `Ranvier.FSharp.Agent` redistribute `FSharp.Compiler.Service.dll` and `FSharp.DependencyManager.Nuget.dll` built from `shayanhabibi/fickle-fsharp`, derived from `dotnet/fsharp` under the MIT License:
 
 ```text
 The MIT License (MIT)
@@ -291,4 +291,38 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+---
+
+## 5. `modelcontextprotocol/csharp-sdk` (`ModelContextProtocol.Core`)
+
+- **Upstream Repository:** https://github.com/modelcontextprotocol/csharp-sdk
+- **License:** MIT License
+- **Copyright:** Copyright (c) Model Context Protocol Contributors
+
+`Ranvier.FSharp.Agent` (`rfs`) bundles `ModelContextProtocol.Core` for the Model Context Protocol (`rfs mcp`) stdio transport under the MIT License:
+
+```text
+MIT License
+
+Copyright (c) Model Context Protocol Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

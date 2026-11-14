@@ -24,7 +24,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Rfs.Checker.Tests" />
     <InternalsVisibleTo Include="rfs-checkpoint" />
+    <InternalsVisibleTo Include="rfs" />
     <InternalsVisibleTo Include="Rfs.Server.Tests" />
+    <InternalsVisibleTo Include="Rfs.Agent.Tests" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Compiler.Service">

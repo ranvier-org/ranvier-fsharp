@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>rfs</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>rfs</ToolCommandName>
+    <PackageId>Ranvier.FSharp.Agent</PackageId>
+    <Version Condition="'$(AgentVersion)' != ''">$(AgentVersion)</Version>
+    <Description>Semantic F# code analysis CLI and Model Context Protocol (MCP) server (`rfs`) backed by a persistent declaration-incremental Ranvier workspace daemon with automatic stale-process reaping.</Description>
+    <PackageReleaseNotes>0.1.0 release of Ranvier.FSharp.Agent (`rfs`) semantic F# CLI and MCP server, built on Ranvier 0.2.0.</PackageReleaseNotes>
+    <PackageTags>fsharp;mcp;model-context-protocol;agent;cli;semantic-analysis;ranvier;fcs;dotnet-tool</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Protocol.fs" />
+    <Compile Include="ProcessRegistry.fs" />
+    <Compile Include="PositionResolver.fs" />
+    <Compile Include="SemanticEngine.fs" />
+    <Compile Include="Daemon.fs" />
+    <Compile Include="McpServer.fs" />
+    <Compile Include="Cli.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rfs.Agent.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.Core" />
+    <!-- StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rfs.Server\Rfs.Server.fsproj" />
+    <ProjectReference Include="..\Rfs.Lsp\Rfs.Lsp.fsproj" />
+  </ItemGroup>
+</Project>

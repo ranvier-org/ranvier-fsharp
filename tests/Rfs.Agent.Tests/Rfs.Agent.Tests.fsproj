@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="PositionResolverTests.fs" />
+    <Compile Include="SemanticEngineTests.fs" />
+    <Compile Include="McpServerTests.fs" />
+    <Compile Include="DaemonAndReaperTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Expecto" />
+    <PackageReference Include="ModelContextProtocol.Core" />
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="FSharp.Compiler.Service">
+      <HintPath>$(FickleFcsDir)FSharp.Compiler.Service.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Rfs.Harness\Rfs.Harness.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Server\Rfs.Server.fsproj" />
+    <ProjectReference Include="..\..\src\Rfs.Agent\Rfs.Agent.fsproj" />
+  </ItemGroup>
+</Project>

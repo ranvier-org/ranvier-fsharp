@@ -88,6 +88,7 @@ jobs:
           - checker-fuzz-5
           - checker-fuzz-6
           - server
+          - agent
     steps:
       - name: Checkout ranvier-fsharp
         uses: actions/checkout@v7
@@ -161,6 +162,13 @@ jobs:
           $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
           dotnet run --project tests/Rfs.Server.Tests/Rfs.Server.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
 
+      - name: Run Agent suite (CLI, MCP, Daemon & Reaper)
+        if: matrix.suite == 'agent'
+        shell: pwsh
+        run: |
+          $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '/'
+          dotnet run --project tests/Rfs.Agent.Tests/Rfs.Agent.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+
   windows:
     name: Windows Build & Tool Smoke
     needs: fork
@@ -183,13 +191,15 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Build solution & run Lifecycle + Lsp tests
+      - name: Build solution & run Lifecycle, Lsp, and Agent tests
         shell: pwsh
         run: |
           $fcs = [System.IO.Path]::GetFullPath('.fcs/net10.0') + '\'
           dotnet build RanvierFSharp.slnx -c Release "-p:FickleFcsDir=$fcs"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet run --project tests/Rfs.Lsp.Tests/Rfs.Lsp.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tests/Rfs.Agent.Tests/Rfs.Agent.Tests.fsproj -c Release --no-build "-p:FickleFcsDir=$fcs"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\tests\Rfs.Server.Tests\bin\Release\net10.0\Rfs.Server.Tests.exe --filter-test-list Lifecycle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -221,11 +231,13 @@ jobs:
         run: |
           ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
           Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
+          Compress-Archive -Path ./artifacts/publish-rfs/* -DestinationPath ./artifacts/rfs-portable-net10.0.zip -Force
           foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
             Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+            Compress-Archive -Path "./artifacts/publish-rfs-$rid/*" -DestinationPath "./artifacts/rfs-$rid-net10.0.zip" -Force
           }
 
-      - name: Verify all 7 NuGet packages & isolated consumer smoke tests
+      - name: Verify all 8 NuGet packages & isolated consumer smoke tests
         shell: pwsh
         run: ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg
 

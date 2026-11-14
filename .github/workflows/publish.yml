@@ -7,6 +7,7 @@ on:
     tags:
       - 'v*'
       - 'ranvierautocomplete-v*'
+      - 'rfs-v*'
   workflow_run:
     workflows: [CI]
     branches: [main, master]
@@ -19,6 +20,10 @@ on:
         default: true
       tool_only:
         description: 'Pack, verify, and publish only the Ranvier.AutoComplete CLI tool'
+        type: boolean
+        default: false
+      agent_only:
+        description: 'Pack, verify, and publish only the Ranvier.FSharp.Agent (rfs) CLI/MCP tool'
         type: boolean
         default: false
       version:
@@ -97,11 +102,16 @@ jobs:
         run: |
           $refName = '${{ github.ref_name }}'
           $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $isAgentTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('rfs-v')
           $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
+          $agentOnly = $isAgentTag -or ('${{ inputs.agent_only }}' -eq 'true')
+          if ($toolOnly -and $agentOnly) { throw "Cannot set both tool_only and agent_only." }
           $ver = '${{ inputs.version }}'
           if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
             if ($isToolTag) {
               $ver = $refName.Substring('ranvierautocomplete-v'.Length)
+            } elseif ($isAgentTag) {
+              $ver = $refName.Substring('rfs-v'.Length)
             } else {
               $ver = $refName.TrimStart('v')
             }
@@ -109,12 +119,22 @@ jobs:
           ./build/fork.ps1 -ForkDir ../fickle-fsharp
           if ($toolOnly) {
             ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -ToolOnly -ToolVersion $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
+          } elseif ($agentOnly) {
+            ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -AgentOnly -AgentVersion $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
           } else {
             ./build/pack.ps1 -Configuration Release -ForkDir ../fickle-fsharp -Version $ver -Runtimes @('win-x64', 'linux-x64', 'osx-arm64')
           }
-          Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
-          foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
-            Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+          if (-not $agentOnly) {
+            Compress-Archive -Path ./artifacts/publish/* -DestinationPath ./artifacts/ranvierautocomplete-portable-net10.0.zip -Force
+            foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+              Compress-Archive -Path "./artifacts/publish-$rid/*" -DestinationPath "./artifacts/ranvierautocomplete-$rid-net10.0.zip" -Force
+            }
+          }
+          if (-not $toolOnly) {
+            Compress-Archive -Path ./artifacts/publish-rfs/* -DestinationPath ./artifacts/rfs-portable-net10.0.zip -Force
+            foreach ($rid in 'win-x64', 'linux-x64', 'osx-arm64') {
+              Compress-Archive -Path "./artifacts/publish-rfs-$rid/*" -DestinationPath "./artifacts/rfs-$rid-net10.0.zip" -Force
+            }
           }
 
       - name: Verify NuGet packages & isolated consumer smoke tests
@@ -123,11 +143,16 @@ jobs:
         run: |
           $refName = '${{ github.ref_name }}'
           $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $isAgentTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('rfs-v')
           $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
+          $agentOnly = $isAgentTag -or ('${{ inputs.agent_only }}' -eq 'true')
+          if ($toolOnly -and $agentOnly) { throw "Cannot set both tool_only and agent_only." }
           $ver = '${{ inputs.version }}'
           if (-not $ver -and '${{ github.ref_type }}' -eq 'tag') {
             if ($isToolTag) {
               $ver = $refName.Substring('ranvierautocomplete-v'.Length)
+            } elseif ($isAgentTag) {
+              $ver = $refName.Substring('rfs-v'.Length)
             } else {
               $ver = $refName.TrimStart('v')
             }
@@ -137,6 +162,12 @@ jobs:
               ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -ToolOnly -ToolVersion $ver
             } else {
               ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -ToolOnly
+            }
+          } elseif ($agentOnly) {
+            if ($ver) {
+              ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -AgentOnly -AgentVersion $ver
+            } else {
+              ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -AgentOnly
             }
           } elseif ($ver) {
             ./build/verify-packages.ps1 -NupkgDir ./artifacts/nupkg -Version $ver
@@ -167,20 +198,23 @@ jobs:
         run: |
           $refName = '${{ github.ref_name }}'
           $isToolTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('ranvierautocomplete-v')
+          $isAgentTag = ('${{ github.ref_type }}' -eq 'tag') -and $refName.StartsWith('rfs-v')
           $toolOnly = $isToolTag -or ('${{ inputs.tool_only }}' -eq 'true')
-          $orderedIds = if ($toolOnly) {
-            @('Ranvier.AutoComplete')
+          $agentOnly = $isAgentTag -or ('${{ inputs.agent_only }}' -eq 'true')
+          $orderedIds = @(if ($toolOnly) {
+            'Ranvier.AutoComplete'
+          } elseif ($agentOnly) {
+            'Ranvier.FSharp.Agent'
           } else {
-            @(
-              'Ranvier.FSharp.Lsp',
-              'Ranvier.FSharp.Projects',
-              'Ranvier.FSharp.Checker',
-              'Ranvier.FSharp.Checker.Traced',
-              'Ranvier.FSharp.Server',
-              'Ranvier.FSharp.Server.Traced',
-              'Ranvier.AutoComplete'
-            )
-          }
+            'Ranvier.FSharp.Lsp'
+            'Ranvier.FSharp.Projects'
+            'Ranvier.FSharp.Checker'
+            'Ranvier.FSharp.Checker.Traced'
+            'Ranvier.FSharp.Server'
+            'Ranvier.FSharp.Server.Traced'
+            'Ranvier.AutoComplete'
+            'Ranvier.FSharp.Agent'
+          })
           $allNupkgs = @(Get-ChildItem ./artifacts/nupkg/*.nupkg)
           if ($allNupkgs.Count -ne $orderedIds.Count) {
             throw "Expected $($orderedIds.Count) .nupkg files in ./artifacts/nupkg, found $($allNupkgs.Count)"
@@ -203,6 +237,8 @@ jobs:
           $refName = '${{ github.ref_name }}'
           $title = if ($refName.StartsWith('ranvierautocomplete-v')) {
             "Ranvier.AutoComplete v$($refName.Substring('ranvierautocomplete-v'.Length))"
+          } elseif ($refName.StartsWith('rfs-v')) {
+            "Ranvier.FSharp.Agent (rfs) v$($refName.Substring('rfs-v'.Length))"
           } else {
             $refName
           }
