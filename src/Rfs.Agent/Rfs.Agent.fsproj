@@ -8,7 +8,7 @@
     <PackageId>Ranvier.FSharp.Agent</PackageId>
     <Version Condition="'$(AgentVersion)' != ''">$(AgentVersion)</Version>
     <Description>Semantic F# code analysis CLI and Model Context Protocol (MCP) server (`rfs`) backed by a persistent declaration-incremental Ranvier workspace daemon with automatic stale-process reaping.</Description>
-    <PackageReleaseNotes>0.1.0 release of Ranvier.FSharp.Agent (`rfs`) semantic F# CLI and MCP server, built on Ranvier 0.2.0.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.1: `rfs check` reports a project that failed to load as incomplete, with its cause on one line and exit code 1; a workspace without F# projects is an error; the daemon starts on a newer installed runtime when the workspace builds with a newer SDK, so net11.0 projects load; the summary line states the files covered and rechecked.</PackageReleaseNotes>
     <PackageTags>fsharp;mcp;model-context-protocol;agent;cli;semantic-analysis;ranvier;fcs;dotnet-tool</PackageTags>
   </PropertyGroup>
   <ItemGroup>
