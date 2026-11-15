@@ -5,7 +5,7 @@ open System.IO
 open System.Threading
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.EditorServices
 open Rfs.Lsp
 open Rfs.Projects
@@ -23,7 +23,7 @@ let private load () =
     }
 
 /// Checks every declaration in order, each in the environment the ones before it leave
-let private checkAll (start: FileStart) (env0: DeclEnv) (decls: ParsedDeclaration[]) =
+let private checkAll (start: FileStart) (env0: DeclarationEnvironment) (decls: ParsedDeclaration[]) =
     let mutable env = env0
 
     [| for d in decls do
@@ -148,7 +148,7 @@ let tests =
               let parse = DeclarationChecker.Parse(ctx, a, text)
               let start, env0 = DeclarationChecker.BeginFile(ctx, [], parse)
               let finished = DeclarationChecker.FinishFile(start, checkAll start env0 (DeclarationChecker.Split parse), parse)
-              let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+              let checker = FSharp.Compiler.CodeAnalysis.FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
               let reader (f: string) = (let t = (if f = a then text else File.ReadAllText f) in hash t, lazy t)
               let! _, full, _ = checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, reader, a)
 

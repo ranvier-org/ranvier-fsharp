@@ -2,7 +2,7 @@ namespace Rfs.Server
 
 open System.Threading
 open System.Threading.Tasks
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Ionide.LanguageServerProtocol.Types
 open Rfs.Checker
 

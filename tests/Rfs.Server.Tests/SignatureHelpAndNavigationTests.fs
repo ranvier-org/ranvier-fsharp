@@ -682,14 +682,14 @@ let featureTests =
                               let fsPath = libPath "Signed.fs"
                               let usePath = appPath "Use.fs"
 
-                              let isCheckResultsLatched (res: FSharp.Compiler.Declarations.FileResult) : bool =
+                              let isCheckResultsLatched (res: FSharp.Compiler.CodeAnalysis.Declarations.FileResult) : bool =
                                   let flags =
                                       System.Reflection.BindingFlags.Instance
                                       ||| System.Reflection.BindingFlags.NonPublic
                                       ||| System.Reflection.BindingFlags.Public
 
                                   let field =
-                                      typeof<FSharp.Compiler.Declarations.FileResult>.GetFields(flags)
+                                      typeof<FSharp.Compiler.CodeAnalysis.Declarations.FileResult>.GetFields(flags)
                                       |> Array.find (fun f ->
                                           f.FieldType = typeof<Lazy<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>>)
 

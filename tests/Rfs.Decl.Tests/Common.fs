@@ -5,10 +5,9 @@ open System.IO
 open System.Threading
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
-open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open Rfs.Lsp
@@ -35,7 +34,7 @@ let sources (spec: ProjectSpec) (overrides: Map<string, string>) =
 
 let oracle (spec: ProjectSpec) (texts: Map<string, string>) (file: string) =
     async {
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let sourceReader f = let t = texts[f] in hash t, lazy t
         let! _, checkResults, _ = checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, sourceReader, file)
         return checkResults.Diagnostics
@@ -44,7 +43,7 @@ let oracle (spec: ProjectSpec) (texts: Map<string, string>) (file: string) =
 type CheckedFile =
     { File: string
       Start: FileStart
-      Env0: DeclEnv
+      Env0: DeclarationEnvironment
       Declarations: ParsedDeclaration[]
       Results: DeclarationResult[]
       FileResult: FileResult }

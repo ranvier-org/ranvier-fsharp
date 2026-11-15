@@ -319,10 +319,10 @@ let tests =
           }
 
           test "a premise break's line has its place, key, kind and the first differing part" {
-              let key: FSharp.Compiler.Declarations.DeclarationKey =
+              let key: FSharp.Compiler.CodeAnalysis.Declarations.DeclarationKey =
                   { ModulePath = [ "Tiny"; "B" ]
                     Name = "moreThanOne"
-                    Kind = FSharp.Compiler.Declarations.DeclarationKind.Value
+                    Kind = FSharp.Compiler.CodeAnalysis.Declarations.DeclarationKind.Value
                     Ordinal = 0 }
 
               let projectDir = Path.Combine(fixturesDir, "Tiny")

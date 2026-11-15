@@ -473,7 +473,7 @@ let w = 1
 
 let private wait (t: Task<'a>) = t.WaitAsync(TimeSpan.FromSeconds 110.)
 
-/// Each token's hover against InteractiveChecker's tooltip for the same texts: the differences, and how many tokens
+/// Each token's hover against FSharpProjectChecker's tooltip for the same texts: the differences, and how many tokens
 let private compareFile (state: State) (graph: Rfs.Checker.ProjectGraph) (file: string) (reference: string -> Task<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>) =
     task {
         let! check = reference file

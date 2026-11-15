@@ -6,7 +6,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open Ranvier
 open Rfs.Projects

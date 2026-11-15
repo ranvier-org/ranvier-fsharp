@@ -6,8 +6,7 @@ open System.Threading
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Symbols
 open Rfs.Harness
 open Rfs.Lsp
@@ -41,7 +40,7 @@ let private load (overrides: (string * string) list) =
 
 /// Each declaration checked in the environment ExtendEnv folds from the results before it, unless `keep` gives the
 /// result to use for it.
-let private checkAll (start: FileStart) (env0: DeclEnv) (decls: ParsedDeclaration[]) (keep: int -> DeclarationResult option) =
+let private checkAll (start: FileStart) (env0: DeclarationEnvironment) (decls: ParsedDeclaration[]) (keep: int -> DeclarationResult option) =
     let results = ResizeArray<DeclarationResult>()
     let mutable env = env0
 
@@ -113,7 +112,7 @@ let private finishTwice (p: Project) (text: string) (edited: string) (recheck: P
 let private interactive (p: Project) (text: string) =
     async {
         let texts = p.Texts.Add(a, text)
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions p.Spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions p.Spec)
         let sourceReader f = let t = texts[f] in hash t, lazy t
         let! _, checkResults, _ = checker.ParseAndCheckFileInProject(p.Spec.ProjectFile, Array.ofList p.Spec.SourceFiles, sourceReader, a)
         return checkResults

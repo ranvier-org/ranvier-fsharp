@@ -6,7 +6,6 @@ open System.Threading
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.SourceCodeServices
 open Rfs.Checker
 open Rfs.Projects
 open Rfs.Server
@@ -58,7 +57,7 @@ let private grid (signature: string option) (texts: string list) =
                       | Some t -> yield sigPath, t
                       | None -> () ]
 
-            let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+            let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
             let reader (f: string) = (let t = map[f] in hash t, lazy t)
 
             let! parse, check, _ =
@@ -223,7 +222,7 @@ let private lastEditRuns (texts: string list) =
             graph.Promote path
             let! _ = graph.WhenPromoted(path, CancellationToken.None) |> wait
             let ran = System.Collections.Concurrent.ConcurrentQueue<string>()
-            use _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
+            use _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.CodeAnalysis.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
             let mutable shifted = 0L
 
             for t in texts do

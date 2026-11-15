@@ -22,7 +22,7 @@ module Checkpoint =
 Run it from the ranvier-fsharp repo root (R9). By default each engine runs in a child process of its own (--engine), so
 cold time, peak working set and allocations are its alone; a child that runs past --child-timeout-min (default 60) is
 killed. --in-process runs every engine in this process instead. --engine skips the corpus check, which the parent has
-already run. --log-cutoff sets FICKL_FCS_GRAPH_LOG for file-slim and writes its reused/kept/replaced counts per edit
+already run. --log-cutoff sets FCS_GRAPH_LOG for file-slim and writes its reused/kept/replaced counts per edit
 to <server>.<scenario>.cutoff.tsv; the logging runs inside the timed region, so it is off by default.
 
 Beside each <server>.<scenario>.json RunResult, extra/<server>.<scenario>.json holds what RunResult has no field for:
@@ -56,11 +56,11 @@ differs from its check's): file:line, key, kind, and the first differing part of
   decl: ProjectGraph.SetText, then AllDiagnostics; checks each file whole (file-level), set up from the files it
     depends on, after promoting the files the scenario edits (as didOpen would) and waiting until each is checked by
     declaration, outside the timed edits (promoteMs).
-  file-slim: the fork's InteractiveChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
+  file-slim: the fork's FSharpProjectChecker.ParseAndCheckProject in the project's own type-checking mode (graph unless
     the project sets --parallelcompilation-). The fork's signature cutoff exists only in graph mode, so this is its best
     file-level configuration: the baseline decl must beat.
   oracle: from-scratch check, sequential (R17), Strict: any mismatch fails the step.
-  cutoff log (FICKL_FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
+  cutoff log (FCS_GRAPH_LOG, inside file-slim's timed region): %s{if logCutoff then "ON" else "off"}
   ranvier: %s{if ranvierTraced () then "TRACED BUILD: its event log costs allocations and keeps every value alive, so these numbers are not comparable" else "untraced"}
   decl decls/edit counts adopted declaration checks (none for an edit that leaves only file-level files to check);
     extra/<server>.<scenario>.json also has its file checks, chain fallbacks, every run, finish time and share, and
@@ -101,7 +101,7 @@ LSP and publishing and re-checks only open files, so these latencies are not dir
         | Some v -> v.ToString("F1", CultureInfo.InvariantCulture)
         | None -> "-"
 
-    let private graphLogVariable = "FICKL_FCS_GRAPH_LOG"
+    let private graphLogVariable = "FCS_GRAPH_LOG"
 
     type private Settings =
         { Corpus: string

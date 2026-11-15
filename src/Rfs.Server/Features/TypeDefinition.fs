@@ -4,7 +4,7 @@ open System
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open Rfs.Checker

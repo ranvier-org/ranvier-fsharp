@@ -5,7 +5,7 @@ open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Rfs.Projects
 open Rfs.Decl.Tests.Common
 

@@ -5,10 +5,9 @@ open System.IO
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
-open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
@@ -211,9 +210,9 @@ let private checkBAfter (p: Project) (parseB: FSharpParseFileResults) (a: FileSi
 
     whole, DeclarationChecker.FinishFile(start, results, parseB)
 
-/// The fork's InteractiveChecker over the project's texts: the per-file check results a server builds today.
+/// The fork's FSharpProjectChecker over the project's texts: the per-file check results a server builds today.
 let private interactive (p: Project) =
-    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions p.Spec)
+    let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions p.Spec)
     let sourceReader f = let t = p.Texts[f] in hash t, lazy t
 
     fun (file: string) ->

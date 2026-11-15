@@ -2,7 +2,7 @@ module Rfs.Decl.Tests.FinishBugTests
 
 open System
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Rfs.Lsp
 open Rfs.Projects
 open Rfs.Decl.Tests.Common

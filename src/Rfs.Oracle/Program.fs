@@ -8,7 +8,6 @@ open System.Text
 open System.Text.Json.Nodes
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Diagnostics
-open FSharp.Compiler.SourceCodeServices
 open Rfs.Lsp
 open Rfs.Projects
 
@@ -109,7 +108,7 @@ let rec private checkWith (temp: string) (visited: System.Collections.Generic.Di
         hash text, lazy text
 
     // Fresh checker per request: nothing is carried over, so no incremental path is involved.
-    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+    let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
     let files = Array.ofList spec.SourceFiles
 
     let results =
@@ -177,7 +176,7 @@ let private respond (request: JsonNode) =
 [<EntryPoint>]
 let main _ =
     // Read when the checker module initialises, so it has to be set before the first checker exists.
-    Environment.SetEnvironmentVariable("FICKL_FCS_SIGNATURE_CUTOFF", "0")
+    Environment.SetEnvironmentVariable("FCS_SIGNATURE_CUTOFF", "0")
 
     // stdout carries the protocol only; anything the compiler prints goes to stderr.
     let utf8 = UTF8Encoding false

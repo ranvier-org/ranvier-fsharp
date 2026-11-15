@@ -7,9 +7,8 @@ open System.IO
 open System.Threading
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.EditorServices
-open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.Text
 open Rfs.Decl.Tests.Common
 open Rfs.Projects
@@ -54,7 +53,7 @@ let tests =
     testSequenced
     <| testList
         "SemanticClassification"
-        [ testCase "CheckFile and FinishFile match InteractiveChecker for printf, interpolated format specifiers, and sub-ranges"
+        [ testCase "CheckFile and FinishFile match FSharpProjectChecker for printf, interpolated format specifiers, and sub-ranges"
           <| fun () ->
               let spec = ProjectSpec.load depsProject |> Async.AwaitTask |> Async.RunSynchronously |> ProjectSpec.sequential
               let a = spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "A.fs")
@@ -96,15 +95,15 @@ let formatted (name: string) (score: float) =
               let actualWhole2 = wholeResult.GetSemanticClassification(subRange) |> normalize
               Expect.equal ctxWhole.CheckResultsBuilt 2 "second GetSemanticClassification builds transiently without retaining CheckResults"
 
-              Expect.equal actualWhole1 expectedAll "CheckFile full semantic classification matches InteractiveChecker"
-              Expect.equal actualWhole2 expectedSub "CheckFile ranged semantic classification matches InteractiveChecker"
+              Expect.equal actualWhole1 expectedAll "CheckFile full semantic classification matches FSharpProjectChecker"
+              Expect.equal actualWhole2 expectedSub "CheckFile ranged semantic classification matches FSharpProjectChecker"
 
               // Once CheckResults is explicitly forced, GetSemanticClassification reuses it without rebuilding
               let _ = wholeResult.CheckResults
               Expect.equal ctxWhole.CheckResultsBuilt 3 "reading CheckResults builds once"
               let actualWhole3 = wholeResult.GetSemanticClassification() |> normalize
               Expect.equal ctxWhole.CheckResultsBuilt 3 "GetSemanticClassification reuses already-created CheckResults"
-              Expect.equal actualWhole3 expectedAll "classification after CheckResults matches InteractiveChecker"
+              Expect.equal actualWhole3 expectedAll "classification after CheckResults matches FSharpProjectChecker"
 
               // 2. Initial declaration-by-declaration FinishFile parity + lock guard
               let ctxDecl =
@@ -117,8 +116,8 @@ let formatted (name: string) (score: float) =
               let actualFinishSub = checkedA.FileResult.GetSemanticClassification(subRange) |> normalize
 
               Expect.equal ctxDecl.CheckResultsBuilt 0 "FinishFile GetSemanticClassification never calls buildCheckResults"
-              Expect.equal actualFinish expectedAll "FinishFile full semantic classification matches InteractiveChecker"
-              Expect.equal actualFinishSub expectedSub "FinishFile ranged semantic classification matches InteractiveChecker"
+              Expect.equal actualFinish expectedAll "FinishFile full semantic classification matches FSharpProjectChecker"
+              Expect.equal actualFinishSub expectedSub "FinishFile ranged semantic classification matches FSharpProjectChecker"
 
               Expect.throwsT<InvalidOperationException>
                   (fun () ->
@@ -200,10 +199,10 @@ let tailFormatted (y: string) =
                   items |> Array.filter (fun (_, _, _, _, ty) -> ty = SemanticClassificationType.Printf)
 
               Expect.isNonEmpty (printfRanges expectedEdited) "oracle has printf classifications in edited file"
-              Expect.equal (printfRanges actualEdited) (printfRanges expectedEdited) "edited + shifted printf ranges match InteractiveChecker"
-              Expect.equal actualEdited expectedEdited "full classification after edit + shift matches InteractiveChecker"
+              Expect.equal (printfRanges actualEdited) (printfRanges expectedEdited) "edited + shifted printf ranges match FSharpProjectChecker"
+              Expect.equal actualEdited expectedEdited "full classification after edit + shift matches FSharpProjectChecker"
 
-          testCase "FinishFile tail sink classifications (defaulted SRTP trait constraints) match InteractiveChecker"
+          testCase "FinishFile tail sink classifications (defaulted SRTP trait constraints) match FSharpProjectChecker"
           <| fun () ->
               let spec = ProjectSpec.load depsProject |> Async.AwaitTask |> Async.RunSynchronously |> ProjectSpec.sequential
               let a = spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "A.fs")
@@ -242,9 +241,9 @@ let invoked = callTrait (Runner())
                   (expected |> Array.exists (fun (sl, _, _, _, ty) -> sl = 6 && ty = SemanticClassificationType.Operator))
                   "oracle classifies defaulted `+` on line 6 as Operator"
 
-              Expect.equal actual expected "FinishFile includes tail sink classifications matching InteractiveChecker"
+              Expect.equal actual expected "FinishFile includes tail sink classifications matching FSharpProjectChecker"
 
-          testCase "signature file FileSignature.SemanticClassification matches InteractiveChecker and impl signature stays empty"
+          testCase "signature file FileSignature.SemanticClassification matches FSharpProjectChecker and impl signature stays empty"
           <| fun () ->
               let spec = ProjectSpec.load depsProject |> Async.AwaitTask |> Async.RunSynchronously |> ProjectSpec.sequential
               let eSig = spec.SourceFiles |> List.find (fun f -> Path.GetFileName f = "E.fsi")
@@ -303,7 +302,7 @@ let unrelated = 7
               Expect.equal
                   (actualSig.Value.SemanticClassification |> normalize)
                   expectedSig
-                  "FileSignature.SemanticClassification matches InteractiveChecker on .fsi"
+                  "FileSignature.SemanticClassification matches FSharpProjectChecker on .fsi"
 
               Expect.isEmpty
                   actualImplSig.Value.SemanticClassification

@@ -7,7 +7,7 @@ open System.Threading
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.EditorServices
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
 open Rfs.Harness
 open Rfs.Lsp
 open Rfs.Projects
@@ -84,7 +84,7 @@ let private fcsOf (s: Session) (project: string) : Task<string -> int * int -> A
                 File.ReadAllText f
 
         let texts = spec.SourceFiles |> List.map (fun f -> f, text f) |> Map.ofList
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let reader (f: string) = (let t = texts[f] in hash t, lazy t)
         let checks = System.Collections.Generic.Dictionary<string, _>()
 
@@ -465,7 +465,7 @@ let tests =
                           let lineText = lines[line].TrimEnd '\r'
 
                           v.Result.CheckResults.GetSymbolUseAtLocation(line + 1, character + 3, lineText, [ "Pick" ])
-                          |> Option.bind (fun u -> FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol)
+                          |> Option.bind (fun u -> FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol)
                           |> Option.get),
                       CancellationToken.None
                   )

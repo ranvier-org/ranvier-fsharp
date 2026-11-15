@@ -5,7 +5,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Symbols
 open Rfs.Lsp
 open Rfs.Projects
@@ -129,7 +129,7 @@ let private checkTiny (cText: string) =
               C = files |> List.find (fun f -> f.File.EndsWith "C.fs") }
     }
 
-let private check (c: CheckedFile) (envBefore: DeclEnv) (decl: ParsedDeclaration) =
+let private check (c: CheckedFile) (envBefore: DeclarationEnvironment) (decl: ParsedDeclaration) =
     DeclarationChecker.CheckDeclaration(c.Start, envBefore, decl, CancellationToken.None)
 
 let private diagnosticTexts (diagnostics: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =

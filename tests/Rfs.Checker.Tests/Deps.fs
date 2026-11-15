@@ -8,7 +8,7 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open Rfs.Checker
 open Rfs.Harness
@@ -278,7 +278,7 @@ let private locationsOf (ties: Set<string>) (signatureOf: FSharp.Compiler.CodeAn
             not (String.Equals(m.FileName, file, StringComparison.OrdinalIgnoreCase))
 
         let elsewhere = u.Symbol.DeclarationLocation |> Option.exists inOtherFile
-        let key = FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol
+        let key = FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol
 
         match u.Symbol with
         | :? FSharp.Compiler.Symbols.FSharpEntity as e when e.IsNamespace -> $"%A{u.Range} %s{u.Symbol.FullName}: a namespace"
@@ -296,7 +296,7 @@ let private tiesIn (results: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults
     if results.Diagnostics |> Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error) then
         results.GetAllUsesOfAllSymbolsInFile()
         |> Seq.filter _.IsFromDefinition
-        |> Seq.choose (fun u -> FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol |> Option.map (fun k -> k, u.Symbol.SignatureLocation))
+        |> Seq.choose (fun u -> FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol |> Option.map (fun k -> k, u.Symbol.SignatureLocation))
         |> Seq.distinct
         |> Seq.countBy fst
         |> Seq.filter (fun (_, n) -> n > 1)
@@ -315,7 +315,7 @@ let private currentSignatures (s: Session) (file: string) (results: FSharp.Compi
             u.IsFromDefinition && not (landed.FileName.EndsWith ".fsi")
 
         for u in results.GetAllUsesOfAllSymbolsInFile() do
-            match u.Symbol, FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
+            match u.Symbol, FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
             | :? FSharp.Compiler.Symbols.FSharpEntity as e, _, _ when e.IsNamespace -> ()
             | _, Some key, Some landed when
                 not (ownDefinition u landed)
@@ -328,7 +328,7 @@ let private currentSignatures (s: Session) (file: string) (results: FSharp.Compi
 
         return
             fun (u: FSharp.Compiler.CodeAnalysis.FSharpSymbolUse) ->
-                match FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
+                match FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol, u.Symbol.SignatureLocation with
                 | Some key, Some landed when not (ownDefinition u landed) && answers.ContainsKey(key, landed.FileName) -> answers[(key, landed.FileName)]
                 | _, own -> own
     }
@@ -339,7 +339,7 @@ let private currentSignatures (s: Session) (file: string) (results: FSharp.Compi
 let locationDiffs (s: Session) (files: string list) : Task<string list> =
     task {
         let! graph = s.Graph.AllFileResults() |> settle
-        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
+        let checker = FSharp.Compiler.CodeAnalysis.FSharpProjectChecker.Create(ProjectSpec.toFcsOptions (ProjectSpec.sequential s.Spec))
         let texts = Dictionary<string, string>(s.Texts, StringComparer.OrdinalIgnoreCase)
         let sourceReader (f: string) = let t = texts[f] in hash t, lazy t
         let differences = ResizeArray<string>()

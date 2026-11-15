@@ -7,12 +7,12 @@ open System.Text
 open System.Text.RegularExpressions
 open System.Threading.Tasks
 open FSharp.Compiler.Diagnostics
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
 open Rfs.Checker
 open Rfs.Lsp
 open Rfs.Projects
 
-/// How the fork's graph check obtained each file's result (FICKL_FCS_GRAPH_LOG).
+/// How the fork's graph check obtained each file's result (FCS_GRAPH_LOG).
 type GraphCheckCounts = { Reused: int; Kept: int; Replaced: int }
 
 /// The whole project's diagnostics after a check.
@@ -20,7 +20,7 @@ type EngineResult =
     { Diagnostics: Diagnostic list
       /// Declaration checks this call adopted (published); None for an engine that does not check by declaration.
       DeclsChecked: int option
-      /// The fork's graph-check line for this call, when FICKL_FCS_GRAPH_LOG is set and the project checks in graph mode.
+      /// The fork's graph-check line for this call, when FCS_GRAPH_LOG is set and the project checks in graph mode.
       GraphCheck: GraphCheckCounts option }
 
 /// ProjectGraph's running totals, read between edits.
@@ -195,7 +195,7 @@ type private GraphCheckLog(inner: TextWriter) =
 /// one on is checked again.
 [<Sealed>]
 type private FileSlimEngine(spec: ProjectSpec) =
-    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+    let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
     let files = Array.ofList spec.SourceFiles
 
     // Hashed once per text, not on every read: the reader is called for every file on every check.
@@ -212,7 +212,7 @@ type private FileSlimEngine(spec: ProjectSpec) =
 
     // The fork reads the variable on every graph check.
     let log =
-        if isNull (Environment.GetEnvironmentVariable "FICKL_FCS_GRAPH_LOG") then
+        if isNull (Environment.GetEnvironmentVariable "FCS_GRAPH_LOG") then
             None
         else
             Some(GraphCheckLog.Install())
@@ -277,15 +277,15 @@ module Engines =
         { Name = "declarations"
           Create = graphEngine true (fun host spec -> ProjectGraph.CreateWithMode(host, spec, Rfs.Checker.FileMode.Declarations)) }
 
-    /// The fork's InteractiveChecker with its file-level signature cutoff, in the project's own type-checking mode: the
+    /// The fork's FSharpProjectChecker with its file-level signature cutoff, in the project's own type-checking mode: the
     /// cutoff exists only in graph mode, so the project is not forced sequential as the oracle is.
     let fileSlim: EngineFactory =
         { Name = "file-slim"
           Create =
             fun spec ->
                 // The fork reads the variable once, when its checker module initialises.
-                if Environment.GetEnvironmentVariable "FICKL_FCS_SIGNATURE_CUTOFF" = "0" then
-                    failwith "file-slim measures the fork's signature cutoff, which FICKL_FCS_SIGNATURE_CUTOFF=0 turns off; unset it"
+                if Environment.GetEnvironmentVariable "FCS_SIGNATURE_CUTOFF" = "0" then
+                    failwith "file-slim measures the fork's signature cutoff, which FCS_SIGNATURE_CUTOFF=0 turns off; unset it"
 
                 Task.FromResult(new FileSlimEngine(spec) :> IEngine) }
 

@@ -3,7 +3,7 @@ namespace Rfs.Checker
 open System
 open System.Collections.Generic
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Tokenization
 

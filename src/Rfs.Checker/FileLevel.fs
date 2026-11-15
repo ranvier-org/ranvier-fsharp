@@ -4,7 +4,7 @@ open System
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.Syntax
 open Ranvier

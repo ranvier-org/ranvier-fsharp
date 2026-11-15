@@ -7,7 +7,7 @@ open System.Text.Json.Nodes
 open System.Threading
 open System.Threading.Tasks
 open Expecto
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
 open Rfs.Harness
 open Rfs.Lsp
 open Rfs.Projects
@@ -84,7 +84,7 @@ let private fcsUses (s: Session) (project: string) (path: string) (at: int * int
                 File.ReadAllText f
 
         let texts = spec.SourceFiles |> List.map (fun f -> f, text f) |> Map.ofList
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let reader (f: string) = (let t = texts[f] in hash t, lazy t)
 
         let check (f: string) =
@@ -889,7 +889,7 @@ let tests =
 
               graph.OnFlight(fun kind path _ ->
                   if kind = "uses" && path.EndsWith "D.fs" && Interlocked.Decrement refusals >= 0 then
-                      raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives"))
+                      raise (FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException "stale directives"))
 
               let at = position (s.Lsp.Text aFile) "baseValue" 0 1
               let! (answer: Answer) = (references s aFile at true).WaitAsync(TimeSpan.FromSeconds 30.)

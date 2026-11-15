@@ -672,7 +672,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
                 Array.concat [ before; [| failingDefault |]; after ]
 
 
-        let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.Declarations.DeclarationKey>()
+        let premise = Collections.Concurrent.ConcurrentQueue<FSharp.Compiler.CodeAnalysis.Declarations.DeclarationKey>()
         use _ = s.Graph.PremiseBroken |> Observable.subscribe (fun b -> premise.Enqueue b.Key)
 
         let mutable withErrors = 0
@@ -823,7 +823,7 @@ let private runIn (beforeReading: Session -> unit -> Task) (refuse: bool) (proje
             Expect.isGreaterThanOrEqual (steps - withErrors) 40 $"%A{mode} seed %d{seed}: the run checks correct code for a while. The first error: %s{firstError}"
 
         Expect.equal
-            FSharp.Compiler.Declarations.ProjectContext.ShiftFinishMisses
+            FSharp.Compiler.CodeAnalysis.Declarations.ProjectContext.ShiftFinishMisses
             0L
             "no check the finish ran for a shifted result reported at a range it could not move"
 

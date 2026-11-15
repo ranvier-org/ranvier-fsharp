@@ -821,7 +821,7 @@ let private readClassified
                                 struct (view.Text, paramRanges, nullRanges, items)),
                             ct
                         )
-                with :? FSharp.Compiler.Declarations.SupersededLineDirectivesException when deadline.ElapsedMilliseconds < 250L ->
+                with :? FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException when deadline.ElapsedMilliseconds < 250L ->
                     do! Task.Delay(10, ct)
                     return! loop ()
             }

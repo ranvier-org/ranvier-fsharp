@@ -2,7 +2,7 @@ namespace Rfs.Checker
 
 open System
 open System.Collections.Generic
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 
 /// Every key of a file, in declaration order.
 [<Sealed>]

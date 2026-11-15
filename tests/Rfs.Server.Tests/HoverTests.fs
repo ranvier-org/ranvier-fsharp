@@ -8,7 +8,7 @@ open System.Threading.Tasks
 open Expecto
 open Ionide.LanguageServerProtocol
 open Ionide.LanguageServerProtocol.Types
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
 open Rfs.Lsp
 open Rfs.Projects
 open Rfs.Server
@@ -53,7 +53,7 @@ let private hoverText (s: Session) (path: string) (at: int * int) : Task<string 
 let private expected (s: Session) (texts: Map<string, string>) (path: string) ((line, character): int * int) : Task<string option> =
     task {
         let! spec = ProjectSpec.load s.Project
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let sourceReader (f: string) = (let t = texts[f] in hash t, lazy t)
 
         let! _, check, _ =
@@ -135,7 +135,7 @@ let tests =
               do! promoted s a
               let graph = (s.Server.Workspace.ProjectOf a).Value
               let ran = System.Collections.Concurrent.ConcurrentQueue<_>()
-              let _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
+              let _sub = graph.Ran |> Observable.subscribe (fun (k: FSharp.Compiler.CodeAnalysis.Declarations.DeclarationKey, _) -> ran.Enqueue k.Name)
               let! before = hoverText s a (position (s.Lsp.Text a) "scale" 1 1)
               Expect.isSome before "a tooltip before"
               do! s.Lsp.DidChange(a, 1, replace s a "x * 2" "x * 3")
@@ -282,7 +282,7 @@ let tests =
                   line, character, lineText, needle.Length + lineText.IndexOf needle
 
               let! spec = ProjectSpec.load s.Project
-              let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+              let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
               let sourceReader (f: string) = (let t = texts[f] in hash t, lazy t)
 
               let! _, (check: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults), _ =

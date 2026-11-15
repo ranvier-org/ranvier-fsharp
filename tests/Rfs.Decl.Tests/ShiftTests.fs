@@ -5,8 +5,7 @@ open System.IO
 open System.Threading
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Rfs.Harness
 open Rfs.Lsp
 open Rfs.Projects
@@ -36,7 +35,7 @@ let private load (overrides: (string * string) list) =
               Texts = sources spec (Map.ofList overrides) }
     }
 
-let private checkAll (start: FileStart) (env0: DeclEnv) (decls: ParsedDeclaration[]) =
+let private checkAll (start: FileStart) (env0: DeclarationEnvironment) (decls: ParsedDeclaration[]) =
     decls
     |> Array.mapFold
         (fun env decl ->
@@ -155,7 +154,7 @@ let private printsOf (r: FileResult) =
 let private interactive (p: Project) (file: string) (text: string) =
     async {
         let texts = p.Texts.Add(file, text)
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions p.Spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions p.Spec)
         let sourceReader f = let t = texts[f] in hash t, lazy t
         let! _, checkResults, _ = checker.ParseAndCheckFileInProject(p.Spec.ProjectFile, Array.ofList p.Spec.SourceFiles, sourceReader, file)
         return checkResults

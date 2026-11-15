@@ -4,7 +4,7 @@ open System
 open System.IO
 open System.Threading
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Rfs.Lsp
 open Rfs.Projects
 open Rfs.Decl.Tests.Common

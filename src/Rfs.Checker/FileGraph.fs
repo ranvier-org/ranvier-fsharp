@@ -6,7 +6,7 @@ open System.Text
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open Ranvier
 
@@ -84,7 +84,7 @@ type internal AsyncReaderWriterLock() =
 /// The environment after a declaration, assembled from the one before it and the declaration's result (R14). A
 /// declaration checked in it holds it, so it knows the result of every earlier declaration it was checked against.
 [<Sealed; AllowNullLiteral>]
-type internal EnvNode(previous: EnvNode, check: RowCheck, env: DeclEnv) =
+type internal EnvNode(previous: EnvNode, check: RowCheck, env: DeclarationEnvironment) =
     member _.Previous = previous
     /// Null for the environment BeginFile gave
     member _.Check = check
@@ -186,7 +186,7 @@ and [<Sealed; AllowNullLiteral>] internal RowCheck
             c
 
 /// A file set up for checking: one per file while its setup from its dependencies and its header are unchanged.
-and [<Sealed; AllowNullLiteral>] internal StartInfo(start: FileStart, env0: DeclEnv, setup: DeclSetup) =
+and [<Sealed; AllowNullLiteral>] internal StartInfo(start: FileStart, env0: DeclarationEnvironment, setup: DeclSetup) =
     let root = EnvNode(null, null, env0)
     let lock = AsyncReaderWriterLock()
 

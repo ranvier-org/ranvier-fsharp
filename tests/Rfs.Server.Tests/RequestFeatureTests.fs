@@ -261,7 +261,7 @@ let tests =
               let clock = Diagnostics.Stopwatch.StartNew()
 
               let read =
-                  graph.ReadFile(a, (fun _ -> raise (FSharp.Compiler.Declarations.SupersededLineDirectivesException "stale directives")), CancellationToken.None)
+                  graph.ReadFile(a, (fun _ -> raise (FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException "stale directives")), CancellationToken.None)
 
               let! (failed: exn option) =
                   task {
@@ -274,7 +274,7 @@ let tests =
 
               Expect.isTrue
                   (match failed with
-                   | Some e -> e :? FSharp.Compiler.Declarations.SupersededLineDirectivesException
+                   | Some e -> e :? FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException
                    | None -> false)
                   $"the request fails with it: %A{failed}"
 
@@ -360,7 +360,7 @@ let tests =
                               v.Result.CheckResults.GetAllUsesOfAllSymbolsInFile()
                               |> Seq.find (fun u -> u.IsFromDefinition && u.Symbol.DisplayName = "compute")
 
-                          (FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
+                          (FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
                       CancellationToken.None
                   )
                   |> within
@@ -413,7 +413,7 @@ let tests =
                               v.Result.CheckResults.GetAllUsesOfAllSymbolsInFile()
                               |> Seq.find (fun u -> u.IsFromDefinition && u.Symbol.DisplayName = name)
 
-                          (FSharp.Compiler.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
+                          (FSharp.Compiler.CodeAnalysis.Declarations.DeclarationChecker.SymbolKey u.Symbol).Value),
                       CancellationToken.None
                   )
                   |> within

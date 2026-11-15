@@ -5,10 +5,9 @@ open System.IO
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
-open FSharp.Compiler.SourceCodeServices
 open FSharp.Compiler.Tokenization
 open Rfs.Checker
 open Rfs.Checker.Tests.Deps
@@ -117,7 +116,7 @@ let private startPair (mode: FileMode) (lib: string) (usage: string) : Task<Pair
 /// A check from scratch of `file`, as the project's current texts stand
 let private oracleOf (p: Pair) (spec: ProjectSpec) (file: string) =
     task {
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let reader (f: string) = let t = p.Texts[f] in hash t, lazy t
         let! _, check, _ = checker.ParseAndCheckFileInProject(spec.ProjectFile, Array.ofList spec.SourceFiles, reader, file) |> Async.StartAsTask
         return check

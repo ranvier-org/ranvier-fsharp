@@ -829,7 +829,7 @@ module IonideEndpoints =
                                         with ex ->
                                             match unwrapExn ex with
                                             | :? ObjectDisposedException -> return None
-                                            | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> return None
+                                            | :? FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException -> return None
                                             | :? OperationCanceledException when not ct.IsCancellationRequested -> return None
                                             | _ -> return raise ex
                                     }

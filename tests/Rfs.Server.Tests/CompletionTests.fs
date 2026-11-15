@@ -7,8 +7,7 @@ open System.Threading
 open System.Threading.Tasks
 open Expecto
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Declarations
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Ionide.LanguageServerProtocol
 open Ionide.LanguageServerProtocol.Types
 open Rfs.Harness
@@ -69,7 +68,7 @@ let private resolved (s: Session) (item: JsonObject) : Task<JsonObject> =
 let private expected (s: Session) (texts: Map<string, string>) (path: string) ((line, character): int * int) : Task<Set<string>> =
     task {
         let! spec = ProjectSpec.load s.Project
-        let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+        let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
         let sourceReader (f: string) = (let t = texts[f] in hash t, lazy t)
 
         let! parse, check, _ =

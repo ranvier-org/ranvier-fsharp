@@ -162,7 +162,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         | :? OperationCanceledException
         | :? ObjectDisposedException
         // The file's #line directives stayed another parse's for as long as a check waits for them
-        | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException -> Ok none
+        | :? FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException -> Ok none
         | e ->
             eprintfn "[ranvierautocomplete] %s failed: %O" what e
             internalError e.Message

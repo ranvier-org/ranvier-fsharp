@@ -5,7 +5,7 @@ open System.Collections.Generic
 open System.IO
 open System.Threading
 open System.Threading.Tasks
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open Ionide.LanguageServerProtocol.Types
@@ -734,7 +734,7 @@ let outgoing
                                         with
                                         | :? OperationCanceledException when not ct.IsCancellationRequested ->
                                             return ValueNone
-                                        | :? FSharp.Compiler.Declarations.SupersededLineDirectivesException when not ct.IsCancellationRequested ->
+                                        | :? FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException when not ct.IsCancellationRequested ->
                                             return ValueNone
                                         | :? ObjectDisposedException ->
                                             return ValueNone

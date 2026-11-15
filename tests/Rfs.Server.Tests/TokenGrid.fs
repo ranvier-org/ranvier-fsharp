@@ -6,7 +6,6 @@ open System.IO
 open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.SourceCodeServices
 open Rfs.Checker
 open Rfs.Projects
 open Rfs.Server
@@ -129,10 +128,10 @@ let runReferencing (lib: Scenario) (appText: string) (atState: State -> ProjectG
 
                     let! _ = appGraph.WhenPromoted(appFile, CancellationToken.None) |> wait
                     let current = texts
-                    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions libSpec)
+                    let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions libSpec)
                     let reader (f: string) = (let t = current[f] in hash t, lazy t)
                     let combinedFiles = files @ [ appFile ]
-                    let combinedChecker = InteractiveChecker.Create(ProjectSpec.toFcsOptions { libSpec with SourceFiles = combinedFiles })
+                    let combinedChecker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions { libSpec with SourceFiles = combinedFiles })
                     let combinedReader (f: string) = (let t = (if f = appFile then appText else current[f]) in hash t, lazy t)
                     let combinedChecks = Dictionary<string, FSharpCheckFileResults>()
 
@@ -241,7 +240,7 @@ let run (promote: bool) (scenario: Scenario) (atState: State -> Task<'T list>) :
             let compareAt (step: string) =
                 task {
                     let current = texts
-                    let checker = InteractiveChecker.Create(ProjectSpec.toFcsOptions spec)
+                    let checker = FSharpProjectChecker.Create(ProjectSpec.toFcsOptions spec)
                     let reader (f: string) = (let t = current[f] in hash t, lazy t)
                     let checks = Dictionary<string, FSharpCheckFileResults>()
 

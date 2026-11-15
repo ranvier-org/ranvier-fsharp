@@ -3,7 +3,7 @@ module Rfs.Decl.Tests.D1Tests
 open System
 open System.IO
 open Expecto
-open FSharp.Compiler.Declarations
+open FSharp.Compiler.CodeAnalysis.Declarations
 open Rfs.Lsp
 open Rfs.Projects
 open Rfs.Decl.Tests.Common
@@ -214,10 +214,10 @@ let private conformsWith (seen: bool) (name: string) (fsi: string) (fs: string) 
 
 let private conforms = conformsWith true
 
-/// What InteractiveChecker's check of the file gives, for its queries.
+/// What FSharpProjectChecker's check of the file gives, for its queries.
 let private referenceResults (c: Checked) (file: string) =
     async {
-        let checker = FSharp.Compiler.SourceCodeServices.InteractiveChecker.Create(ProjectSpec.toFcsOptions c.Spec)
+        let checker = FSharp.Compiler.CodeAnalysis.FSharpProjectChecker.Create(ProjectSpec.toFcsOptions c.Spec)
         let sourceReader f = let t = c.Texts[f] in hash t, lazy t
         let path = (c.File file).File
         let! _, results, _ = checker.ParseAndCheckFileInProject(c.Spec.ProjectFile, Array.ofList c.Spec.SourceFiles, sourceReader, path)

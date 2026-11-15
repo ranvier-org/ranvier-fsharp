@@ -1423,7 +1423,7 @@ let ionideAndProtocolTests =
 
               // Item 5: Verify AggregateException unwrapping & SupersededLineDirectivesException / cancellation handling in Server.fs
               let supersededExn =
-                  let t = typeof<FSharp.Compiler.Declarations.SupersededLineDirectivesException>
+                  let t = typeof<FSharp.Compiler.CodeAnalysis.Declarations.SupersededLineDirectivesException>
                   System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(t) :?> exn
 
               Expect.equal
