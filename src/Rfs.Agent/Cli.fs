@@ -142,10 +142,10 @@ module internal Cli =
                     if not (String.IsNullOrEmpty text) then
                         Console.Out.WriteLine text
 
-                    if failOnErrorCount && not (text.StartsWith("0 errors,", StringComparison.Ordinal) || text.Contains("\n0 errors,", StringComparison.Ordinal)) then
-                        return 1
-                    else
-                        return 0
+                    // Only `check` answers with counts; the other operations succeed when the daemon says ok.
+                    let errors = JsonUtil.intOpt resp "errors" |> Option.defaultValue 0
+                    let failedProjects = JsonUtil.intOpt resp "failedProjects" |> Option.defaultValue 0
+                    return CheckSummary.exitCode failOnErrorCount errors failedProjects
                 else
                     let err = JsonUtil.strRaw resp "error" |> Option.defaultValue "Unknown error."
                     Console.Error.WriteLine err

@@ -19,7 +19,7 @@
 
 | Task | MCP Tool & Args | CLI Equivalent | Notes / Defaults |
 | :--- | :--- | :--- | :--- |
-| Type-check after edits | `rfs_check(file?, project?, severity?, downstream?)` | `rfs check [<file\|proj>] [--errors-only\|--all] [--no-downstream] [--fail-on-error]` | Default `severity="warning"`, `downstream=true`. CLI exits `1` on errors only with `--fail-on-error`. |
+| Type-check after edits | `rfs_check(file?, project?, severity?, downstream?)` | `rfs check [<file\|proj>] [--errors-only\|--all] [--no-downstream] [--fail-on-error]` | Default `severity="warning"`, `downstream=true`. CLI exits `1` on errors only with `--fail-on-error`, and always when a project failed to load. |
 | Type signature & definition | `rfs_symbol(file, line, symbol?, column?)` | `rfs symbol <file> <line> [--symbol <name>] [--col <n>]` | Returns inferred type, XML doc, definition, type definition, implementations. |
 | References & callers | `rfs_references(file, line, symbol?, column?, mode?, maxResults?)` | `rfs refs <file> <line> [--symbol <name>] [--uses-only\|--incoming\|--outgoing] [--max <n>]` | `mode` ∈ `all` (default), `uses`, `incoming`, `outgoing`. Run after `check` has 0 upstream errors. |
 | Outline or workspace search | `rfs_search(query?, file?, maxResults?)` | `rfs search [<query>] [--file <f>] [--max <n>]` | Set `file` for syntax outline; omit `file` to search all loaded projects. |
@@ -29,6 +29,7 @@
 
 ## Mandatory Guardrails
 
+- **Read the last line of `check`**: `N errors, M warnings (…)` covers every project. `incomplete: K project(s) failed to load; …` means the diagnostics cover only the projects that loaded: read the `project-load-failed <project>: <cause>` lines above it, fix the cause, then `rfs_status(reload=true)`. A workspace without F# projects is an error.
 - **Check before `references`/`rename`**: Upstream parse or type errors can suppress symbol resolution and yield incomplete reference sets. Fix errors shown by `check` first.
 - **Fresh checkout with `failed > 0`**: If `status` reports failed project loads (missing `project.assets.json`), run `dotnet restore` (or one `dotnet build`) and then `rfs_status(reload=true)`.
 - **Git worktrees**: Each git worktree is an isolated daemon boundary. Pass file paths inside the active worktree (or `--workspace <worktree-root>`).

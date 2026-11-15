@@ -13,6 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Protocol.fs" />
+    <Compile Include="CheckReport.fs" />
     <Compile Include="ProcessRegistry.fs" />
     <Compile Include="PositionResolver.fs" />
     <Compile Include="SemanticEngine.fs" />

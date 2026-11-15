@@ -318,7 +318,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
         | "all" -> 3
         | _ -> 1 // error + warning
 
-    let formatDiagnostics (diags: FSharpDiagnostic seq) (maxSevRank: int) (checkedProjectsCount: int) (elapsedMs: int64) (declChecks: int64) (fileChecks: int64) =
+    let formatDiagnostics (diags: FSharpDiagnostic seq) (maxSevRank: int) (checkedProjectsCount: int) (fileCount: int) (elapsedMs: int64) (declChecks: int64) (fileChecks: int64) : CheckOutcome =
         let filtered =
             diags
             |> Seq.distinctBy (fun d ->
@@ -352,12 +352,16 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
 
         if not failedProjects.IsEmpty then
             for fp in failedProjects do
-                sb.AppendLine($"project-load-failed %s{relPath fp.Project}: %s{singleLineMessage fp.Reason}") |> ignore
+                sb.AppendLine($"project-load-failed %s{relPath fp.Project}: %s{LoadFailure.summarize fp.Reason}") |> ignore
 
-        sb.Append($"%d{errors} errors, %d{warnings} warnings (checked %d{checkedProjectsCount} project(s) in %d{elapsedMs}ms, declChecks=%d{declChecks}, fileChecks=%d{fileChecks})")
+        sb.Append(CheckSummary.line errors warnings checkedProjectsCount fileCount elapsedMs declChecks fileChecks failedProjects.Length)
         |> ignore
 
-        sb.ToString()
+        { Text = sb.ToString()
+          Errors = errors
+          Warnings = warnings
+          CheckedProjects = checkedProjectsCount
+          FailedProjects = failedProjects.Length }
 
     let totals () =
         let graphs = workspace.Projects
@@ -515,12 +519,25 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
             if not failedProjects.IsEmpty then
                 sb.AppendLine() |> ignore
                 for fp in failedProjects do
-                    sb.AppendLine($"failed %s{relPath fp.Project}: %s{singleLineMessage fp.Reason}") |> ignore
+                    sb.AppendLine($"failed %s{relPath fp.Project}: %s{LoadFailure.summarize fp.Reason}") |> ignore
+
+                sb.Append("full load log: rfs status --json (failedProjects[].reason)") |> ignore
 
             return sb.ToString()
         }
 
-    member _.CheckAsync(fileOpt: string option, projectOpt: string option, severity: string, downstream: bool, ct: CancellationToken) : Task<Result<string, string>> =
+    /// The text of `CheckDetailedAsync`.
+    member this.CheckAsync(fileOpt: string option, projectOpt: string option, severity: string, downstream: bool, ct: CancellationToken) : Task<Result<string, string>> =
+        task {
+            let! outcome = this.CheckDetailedAsync(fileOpt, projectOpt, severity, downstream, ct)
+            return outcome |> Result.map (fun o -> o.Text)
+        }
+
+    /// Diagnostics of a file, a project or the workspace. `Error` when the target cannot be checked at all: an unknown
+    /// file or project, or a workspace without projects.
+    member _.CheckDetailedAsync(fileOpt: string option, projectOpt: string option, severity: string, downstream: bool, ct: CancellationToken) : Task<Result<CheckOutcome, string>> =
+        let filesIn (graphs: ProjectGraph list) = graphs |> List.sumBy (fun g -> g.FilesOf.Length)
+
         withLock (fun () ->
             task {
                 let targetPathOpt = fileOpt |> Option.map resolveInputPath
@@ -550,7 +567,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                                     let all = dicts |> Array.collect (fun d -> d.Values |> Array.concat)
                                     sw.Stop()
                                     let struct (_, _, declAfter, _, fileAfter, _) = totals ()
-                                    return Ok(formatDiagnostics all maxSev targets.Length sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
+                                    return Ok(formatDiagnostics all maxSev targets.Length (filesIn targets) sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
                             else
                                 return Error $"File does not belong to any loaded F# project: %s{relPath fullPath}"
                         | owners ->
@@ -559,7 +576,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                                 let! fileDiags = g.Diagnostics fullPath
                                 sw.Stop()
                                 let struct (_, _, declAfter, _, fileAfter, _) = totals ()
-                                return Ok(formatDiagnostics fileDiags maxSev 1 sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
+                                return Ok(formatDiagnostics fileDiags maxSev 1 1 sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
                             else
                                 let related =
                                     if downstream then
@@ -572,7 +589,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                                 let all = dicts |> Array.collect (fun d -> d.Values |> Array.concat)
                                 sw.Stop()
                                 let struct (_, _, declAfter, _, fileAfter, _) = totals ()
-                                return Ok(formatDiagnostics all maxSev related.Length sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
+                                return Ok(formatDiagnostics all maxSev related.Length (filesIn related) sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
 
                 | None, Some projQuery ->
                     let resolvedProj = resolveInputPath projQuery
@@ -593,15 +610,19 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                         let all = dicts |> Array.collect (fun d -> d.Values |> Array.concat)
                         sw.Stop()
                         let struct (_, _, declAfter, _, fileAfter, _) = totals ()
-                        return Ok(formatDiagnostics all maxSev targets.Length sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
+                        return Ok(formatDiagnostics all maxSev targets.Length (filesIn targets) sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
 
                 | None, None ->
                     let graphs = workspace.Projects
-                    let! dicts = Task.WhenAll(graphs |> List.map (fun g -> g.AllDiagnostics()))
-                    let all = dicts |> Array.collect (fun d -> d.Values |> Array.concat)
-                    sw.Stop()
-                    let struct (_, _, declAfter, _, fileAfter, _) = totals ()
-                    return Ok(formatDiagnostics all maxSev graphs.Length sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
+
+                    if graphs.IsEmpty && failedProjects.IsEmpty then
+                        return Error $"No F# project was found under %s{workspaceRoot}. Pass --workspace <dir>, or name the projects in RFS_PROJECTS."
+                    else
+                        let! dicts = Task.WhenAll(graphs |> List.map (fun g -> g.AllDiagnostics()))
+                        let all = dicts |> Array.collect (fun d -> d.Values |> Array.concat)
+                        sw.Stop()
+                        let struct (_, _, declAfter, _, fileAfter, _) = totals ()
+                        return Ok(formatDiagnostics all maxSev graphs.Length (filesIn graphs) sw.ElapsedMilliseconds (declAfter - declBefore) (fileAfter - fileBefore))
             })
 
     member _.SymbolAsync(rawFile: string, line1Based: int, col1BasedOpt: int option, symbolOpt: string option, ct: CancellationToken) : Task<Result<string, string>> =
