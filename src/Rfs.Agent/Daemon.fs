@@ -46,12 +46,14 @@ module internal DaemonDispatch =
                     let projOpt = JsonUtil.str req "project"
                     let sev = JsonUtil.str req "severity" |> Option.defaultValue "warning"
                     let downstream = JsonUtil.boolOpt req "downstream" |> Option.defaultValue true
-                    let! res = engine.CheckAsync(fileOpt, projOpt, sev, downstream, ct)
+                    let! res = engine.CheckDetailedAsync(fileOpt, projOpt, sev, downstream, ct)
 
                     match res with
-                    | Ok txt ->
+                    | Ok outcome ->
                         resp["ok"] <- JsonValue.Create true
-                        resp["text"] <- JsonValue.Create txt
+                        resp["text"] <- JsonValue.Create outcome.Text
+                        resp["errors"] <- JsonValue.Create outcome.Errors
+                        resp["failedProjects"] <- JsonValue.Create outcome.FailedProjects
                     | Error msg ->
                         resp["ok"] <- JsonValue.Create false
                         resp["error"] <- JsonValue.Create msg
@@ -478,6 +480,81 @@ module internal Win32Spawn =
         finally
             Marshal.FreeHGlobal cmdPtr
 
+/// The .NET runtime a new daemon starts on. The daemon reads projects in process with the MSBuild of an SDK of its own
+/// runtime's major version, so a workspace that builds with a newer SDK is readable only from a newer runtime.
+module internal DaemonRuntime =
+
+    let private majorOf (version: string) : int option =
+        match Int32.TryParse(version.Trim().Split([| '.'; '-' |]).[0]) with
+        | true, major -> Some major
+        | _ -> None
+
+    /// Environment variables to start the daemon with. Empty keeps the daemon on the runtime of this process. When the
+    /// SDK of the workspace is of a newer major version and a runtime of that version or later is installed, the daemon
+    /// is rolled forward to the newest installed runtime. A `DOTNET_ROLL_FORWARD` the user set is left to decide.
+    let rollForward
+        (currentMajor: int)
+        (workspaceSdk: string option)
+        (installedRuntimes: unit -> string list)
+        (userSetting: string option)
+        : (string * string) list =
+        match userSetting, workspaceSdk |> Option.bind majorOf with
+        | None, Some sdkMajor when sdkMajor > currentMajor ->
+            match installedRuntimes () |> List.filter (fun v -> majorOf v |> Option.exists (fun m -> m >= sdkMajor)) with
+            | [] -> []
+            | usable ->
+                [ "DOTNET_ROLL_FORWARD", "LatestMajor"
+                  if usable |> List.forall (fun v -> v.Contains '-') then
+                      "DOTNET_ROLL_FORWARD_TO_PRERELEASE", "1" ]
+        | _ -> []
+
+    let private dotnetOutput (arguments: string) (workingDirectory: string) : string option =
+        try
+            let psi = ProcessStartInfo("dotnet", arguments)
+            psi.WorkingDirectory <- workingDirectory
+            psi.UseShellExecute <- false
+            psi.CreateNoWindow <- true
+            psi.RedirectStandardOutput <- true
+            psi.RedirectStandardError <- true
+            use p = Process.Start psi
+            let stdout = p.StandardOutput.ReadToEndAsync()
+            let stderr = p.StandardError.ReadToEndAsync()
+
+            if p.WaitForExit 15000 && p.ExitCode = 0 then
+                stderr.Wait 2000 |> ignore
+                Some stdout.Result
+            else
+                (try p.Kill true with _ -> ())
+                None
+        with _ ->
+            None
+
+    /// The SDK version `dotnet` selects in `workspaceRoot`, which honours a global.json there. None when it selects none.
+    let workspaceSdk (workspaceRoot: string) : string option =
+        dotnetOutput "--version" workspaceRoot
+        |> Option.map (fun s -> s.Trim())
+        |> Option.filter (fun s -> s <> "")
+
+    /// The versions of the installed Microsoft.NETCore.App runtimes.
+    let installedRuntimes () : string list =
+        match dotnetOutput "--list-runtimes" (Path.GetTempPath()) with
+        | None -> []
+        | Some listing ->
+            [ for line in listing.Split('\n', StringSplitOptions.RemoveEmptyEntries) do
+                  match line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries) with
+                  | parts when parts.Length >= 2 && parts[0] = "Microsoft.NETCore.App" -> parts[1]
+                  | _ -> () ]
+
+    /// The variables for a daemon of `workspaceRoot`, from this machine.
+    let environmentFor (workspaceRoot: string) : (string * string) list =
+        let userSetting =
+            match Environment.GetEnvironmentVariable "DOTNET_ROLL_FORWARD" with
+            | null -> None
+            | value when String.IsNullOrWhiteSpace value -> None
+            | value -> Some value
+
+        rollForward Environment.Version.Major (workspaceSdk workspaceRoot) installedRuntimes userSetting
+
 module internal DaemonClient =
 
     let private throttledAutoReapAsync (forceCheck: bool) =
@@ -532,13 +609,28 @@ module internal DaemonClient =
             baseArgs
             @ [ "--workspace"; workspaceRoot; "--idle-timeout"; string idleTimeoutSec ]
 
+        let runtimeEnvironment = DaemonRuntime.environmentFor workspaceRoot
+
         if OperatingSystem.IsWindows() then
-            Win32Spawn.startDetached fileName allArgs workspaceRoot
+            // CreateProcessW passes this process's environment on, so the variables are set here for the call only.
+            let saved = runtimeEnvironment |> List.map (fun (name, _) -> name, Environment.GetEnvironmentVariable name)
+
+            try
+                for name, value in runtimeEnvironment do
+                    Environment.SetEnvironmentVariable(name, value)
+
+                Win32Spawn.startDetached fileName allArgs workspaceRoot
+            finally
+                for name, value in saved do
+                    Environment.SetEnvironmentVariable(name, value)
         else
             let psi = ProcessStartInfo(fileName)
 
             for a in allArgs do
                 psi.ArgumentList.Add a
+
+            for name, value in runtimeEnvironment do
+                psi.Environment[name] <- value
 
             psi.WorkingDirectory <- workspaceRoot
             psi.UseShellExecute <- false

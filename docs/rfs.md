@@ -23,7 +23,7 @@
 
 ### Prerequisites
 
-- **`.NET 10.0` SDK (`10.0.x`)**: `rfs` hosts MSBuild in-process via `MSBuildLocator` to evaluate `.fsproj` and `.slnx`/`.sln` graphs. Verify:
+- **`.NET 10.0` SDK (`10.0.x`)**: `rfs` hosts MSBuild in-process via `MSBuildLocator` to evaluate `.fsproj` and `.slnx`/`.sln` graphs, with an SDK of the daemon's own runtime major version. When `dotnet --version` in the workspace selects an SDK of a newer major version and that runtime is installed, the daemon starts on the newest installed runtime (`DOTNET_ROLL_FORWARD=LatestMajor`), so a `net11.0` project loads with the 11.x SDK. A `DOTNET_ROLL_FORWARD` you set yourself is left to decide. Verify:
   ```bash
   dotnet --list-sdks
   ```
@@ -157,7 +157,7 @@ All file line/column arguments are **1-based** and can be written either as `<fi
 
 | Command | Syntax & Flags | Behavior |
 | :--- | :--- | :--- |
-| `check` | `rfs check [<file-or-project>] [--file <f>] [--project <name>] [--errors-only \| --all] [--no-downstream] [--fail-on-error]` | Incremental compiler diagnostics from disk; checks referencing projects unless `--no-downstream` is passed. Default severity is `warning` (`error` + `warning`). Exits `1` on diagnostics when `--fail-on-error` is passed. |
+| `check` | `rfs check [<file-or-project>] [--file <f>] [--project <name>] [--errors-only \| --all] [--no-downstream] [--fail-on-error]` | Incremental compiler diagnostics from disk; checks referencing projects unless `--no-downstream` is passed. Default severity is `warning` (`error` + `warning`). Exits `1` on errors when `--fail-on-error` is passed, and `1` with or without it when a project of the workspace failed to load or the workspace has no F# project. |
 | `symbol` | `rfs symbol <file>[:<line>[:<col>]] [<line>] [<symbol-or-col>] [--symbol <name>] [--col <n>]` | Returns qualified symbol name, resolved 1-based location, inferred type signature, XML doc summary, definition, type definition, and implementations. |
 | `refs` | `rfs refs <file>[:<line>[:<col>]] [<line>] [<symbol-or-col>] [--symbol <name>] [--col <n>] [--uses-only \| --incoming \| --outgoing] [--max <n>]` | Alias: `references`. Workspace-wide uses and/or call hierarchy (`mode`: `all`, `uses`, `incoming`, `outgoing`; default `max` = `100`). |
 | `search` | `rfs search [<query>] [--file <file>] [--max <n>]` | With `--file`, returns hierarchical file outline (optionally filtered by `query`); otherwise searches workspace symbols across loaded projects (`max` = `50`). |
@@ -175,7 +175,7 @@ All 6 MCP tools auto-sync changed files from disk and reuse the persistent works
 
 | MCP Tool | Required Params | Optional Params & Defaults | Output |
 | :--- | :--- | :--- | :--- |
-| `rfs_check` | *(none)* | `file`, `project`, `severity` (`"warning"`, or `"error"` / `"all"`), `downstream` (`true`) | Sorted diagnostics `relPath:line:col severity code: message` + summary line (`N errors, M warnings (...)`). |
+| `rfs_check` | *(none)* | `file`, `project`, `severity` (`"warning"`, or `"error"` / `"all"`), `downstream` (`true`) | Sorted diagnostics `relPath:line:col severity code: message` + summary line: `N errors, M warnings (checked P project(s), F file(s) in Tms; rechecked D declaration(s) and K file(s), the rest unchanged)`. When a project failed to load, a `project-load-failed <project>: <cause>` line per project and the summary `incomplete: K project(s) failed to load; N errors, M warnings in the rest (...)`. |
 | `rfs_symbol` | `file`, `line` | `column` (1-based), `symbol` (identifier/operator name; scans ±5 lines, disambiguates ties by closest `column` or first match) | `symbol`, `type`, optional `doc`, `definition`, `typeDefinition`, `implementations`. |
 | `rfs_references` | `file`, `line` | `column`, `symbol`, `mode` (`"all"`, `"uses"`, `"incoming"`, `"outgoing"`), `maxResults` (`100`, max `500`) | Grouped cross-project uses and/or incoming/outgoing calls with line snippets. |
 | `rfs_search` | *(none)* | `query`, `file`, `maxResults` (`50`, max `500`) | Hierarchical syntax outline (if `file` is given) or workspace-wide symbol search. |

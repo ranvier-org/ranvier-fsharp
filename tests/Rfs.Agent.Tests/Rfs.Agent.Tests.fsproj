@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="PositionResolverTests.fs" />
+    <Compile Include="CheckReportTests.fs" />
     <Compile Include="SemanticEngineTests.fs" />
     <Compile Include="McpServerTests.fs" />
     <Compile Include="DaemonAndReaperTests.fs" />

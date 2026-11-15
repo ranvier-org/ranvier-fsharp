@@ -41,6 +41,35 @@ let private copyMultiTemp () =
 
     tempRoot
 
+/// A workspace whose only project targets a framework no installed SDK supports, so it fails to load on every machine.
+let private unloadableWorkspace () =
+    let tempRoot = Path.Combine(Path.GetTempPath(), "rfs-agent-bad-" + Guid.NewGuid().ToString("N").Substring(0, 8))
+    Directory.CreateDirectory tempRoot |> ignore
+    Directory.CreateDirectory(Path.Combine(tempRoot, ".git")) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(tempRoot, "Bad.fsproj"),
+        """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net99.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+</Project>
+"""
+    )
+
+    File.WriteAllText(Path.Combine(tempRoot, "Program.fs"), "let x: int = \"not an int\"\nprintfn \"%d\" x\n")
+    tempRoot
+
+let private emptyWorkspace () =
+    let tempRoot = Path.Combine(Path.GetTempPath(), "rfs-agent-empty-" + Guid.NewGuid().ToString("N").Substring(0, 8))
+    Directory.CreateDirectory tempRoot |> ignore
+    Directory.CreateDirectory(Path.Combine(tempRoot, ".git")) |> ignore
+    tempRoot
+
 let private deleteTemp (dir: string) =
     try
         if Directory.Exists dir then
@@ -69,7 +98,9 @@ let tests =
                         // 1. Clean baseline check
                         match! engine.CheckAsync(None, None, "warning", true, CancellationToken.None) with
                         | Error e -> failtest $"Expected clean check, got Error: {e}"
-                        | Ok txt -> Expect.stringStarts txt "0 errors, 0 warnings" "clean baseline"
+                        | Ok txt ->
+                            Expect.stringStarts txt "0 errors, 0 warnings (checked 2 project(s), " "clean baseline"
+                            Expect.stringContains txt "file(s), the rest unchanged)" "says what was rechecked"
 
                         // 2. Break Lib.f signature on disk -> downstream App/Use.fs error surfaced immediately
                         let origLib = File.ReadAllText libFs
@@ -137,6 +168,46 @@ let tests =
                             Expect.stringContains txt "0 compiler error(s)" "rename leaves 0 errors"
                             Expect.stringContains (File.ReadAllText libFs) "makeShape" "Lib.fs updated"
                             Expect.stringContains (File.ReadAllText useFs) "makeShape" "Use.fs updated"
+                    finally
+                        (engine :> IDisposable).Dispose()
+                finally
+                    deleteTemp root
+            }
+
+            testTask "a project that fails to load makes check incomplete, never a pass" {
+                let root = unloadableWorkspace ()
+
+                try
+                    let engine = new SemanticEngine(root)
+
+                    try
+                        match! engine.CheckAsync(None, None, "warning", true, CancellationToken.None) with
+                        | Error e -> failtest $"Expected an incomplete report, got Error: {e}"
+                        | Ok(txt: string) ->
+                            let lines: string[] = txt.Replace("\r\n", "\n").Split('\n')
+                            let summary: string = Array.last lines
+                            Expect.isFalse (summary.StartsWith "0 errors") $"summary must not read as a pass: {summary}"
+                            Expect.stringStarts summary "incomplete: 1 project(s) failed to load" "summary leads with the failure"
+                            Expect.stringContains txt "project-load-failed Bad.fsproj" "names the project"
+
+                            for line in lines do
+                                Expect.isLessThan line.Length 700 "every line stays readable"
+                    finally
+                        (engine :> IDisposable).Dispose()
+                finally
+                    deleteTemp root
+            }
+
+            testTask "a workspace without projects is an error, not a pass" {
+                let root = emptyWorkspace ()
+
+                try
+                    let engine = new SemanticEngine(root)
+
+                    try
+                        match! engine.CheckAsync(None, None, "warning", true, CancellationToken.None) with
+                        | Ok txt -> failtest $"Expected an error for an empty workspace, got: {txt}"
+                        | Error e -> Expect.stringContains e "No F# project" "says what is missing"
                     finally
                         (engine :> IDisposable).Dispose()
                 finally
