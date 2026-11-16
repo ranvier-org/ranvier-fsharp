@@ -657,16 +657,36 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                                                                     analyzed.Value <- struct (targetKey, plainDiags)
                                                                 | _ -> ())
                                             with ex ->
-                                                match ex with
-                                                | :? OperationCanceledException
-                                                | :? ObjectDisposedException -> ()
-                                                | _ -> log $"analyzing read %s{path} failed: %O{ex}"
+                                                let failed =
+                                                    match ex with
+                                                    | :? OperationCanceledException
+                                                    | :? ObjectDisposedException -> false
+                                                    | _ ->
+                                                        log $"analyzing read %s{path} failed: %O{ex}"
+                                                        true
 
                                                 if Volatile.Read &disposed = 0 then
                                                     post (fun () ->
                                                         if obj.ReferenceEquals(rowCts, cts) then
                                                             rowCts <- null
-                                                            inFlight <- ValueNone)
+                                                            inFlight <- ValueNone
+
+                                                            // An analysis that failed for the row as it is now replaces
+                                                            // the last one with nothing: what that one found would
+                                                            // otherwise stay published with no analysis to replace it
+                                                            if failed then
+                                                                let nowFound = untrack (fun () -> own.Value)
+
+                                                                match rowOf path with
+                                                                | Some now when
+                                                                    now.Open
+                                                                    && now.Epoch = targetKey.Epoch
+                                                                    && analyzerFlags.Value = targetKey.Flags
+                                                                    && nowFound.Current
+                                                                    && nowFound.Stamp = targetKey.Stamp
+                                                                    ->
+                                                                    analyzed.Value <- struct (targetKey, [])
+                                                                | _ -> ())
                                         finally
                                             releaseCompletedCts cts
                                     })
@@ -697,13 +717,11 @@ type Publisher(host: GraphHost, workspace: Workspace, client: RanvierClient, doc
                             if not flags.Any || r.Path.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase) then
                                 []
                             else
-                                let expectedKey =
-                                    { Epoch = r.Epoch
-                                      Stamp = found.Stamp
-                                      Flags = flags }
-
+                                // The row settles again with its text unchanged (a file before it changed, a build by
+                                // declaration landed), and each settle is analyzed anew. What the last analysis of this
+                                // text found stands until that one replaces it: a list sent in between would drop it
                                 let struct (ak, adiags) = analyzed.Value
-                                if ak = expectedKey then adiags else []
+                                if ak.Epoch = r.Epoch && ak.Flags = flags then adiags else []
 
                         let fresh = r.Epoch <> sent
                         sent <- r.Epoch
