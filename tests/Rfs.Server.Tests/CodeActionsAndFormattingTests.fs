@@ -442,22 +442,27 @@ let run (unusedArg: int) =
                       |> Array.tryFindBack (fun p -> sameFile (Paths.ofUri (p["uri"].GetValue<string>())) srcFile)
                       |> Option.map (fun p -> p["diagnostics"].AsArray())
 
+                  // Gives the list the predicate held for: a later one may have arrived by the time the caller reads again
                   let waitForPublish (desc: string) (pred: JsonArray -> bool) =
                       task {
                           let deadline = DateTime.UtcNow.AddSeconds 30.
+                          let mutable matched = None
 
-                          while not (latestDiags () |> Option.exists pred) do
-                              if DateTime.UtcNow > deadline then
-                                  let dump =
-                                      latestDiags ()
-                                      |> Option.map (fun a -> a.ToJsonString())
-                                      |> Option.defaultValue "<none>"
+                          while matched.IsNone do
+                              match latestDiags () with
+                              | Some arr when pred arr -> matched <- Some arr
+                              | latest ->
+                                  if DateTime.UtcNow > deadline then
+                                      let dump =
+                                          latest
+                                          |> Option.map (fun a -> a.ToJsonString())
+                                          |> Option.defaultValue "<none>"
 
-                                  failtest $"Timed out waiting for %s{desc}. Latest diagnostics: %s{dump}"
+                                      failtest $"Timed out waiting for %s{desc}. Latest diagnostics: %s{dump}"
 
-                              do! Task.Delay 25
+                                  do! Task.Delay 25
 
-                          return (latestDiags ()).Value
+                          return matched.Value
                       }
 
                   let! initialDiags =
@@ -1923,18 +1928,23 @@ let thirdMut () =
 
                   let latestB () = bPublishes.ToArray() |> Array.tryLast
 
+                  // Gives the list the predicate held for: a later one may have arrived by the time the caller reads again
                   let waitForB (desc: string) (pred: JsonArray -> bool) =
                       task {
                           let deadline = DateTime.UtcNow.AddSeconds 15.
+                          let mutable matched = None
 
-                          while not (latestB () |> Option.exists pred) do
-                              if DateTime.UtcNow > deadline then
-                                  let dump = latestB () |> Option.map _.ToJsonString() |> Option.defaultValue "<none>"
-                                  failtest $"Timed out waiting for B.fs %s{desc}. Latest: %s{dump}"
+                          while matched.IsNone do
+                              match latestB () with
+                              | Some arr when pred arr -> matched <- Some arr
+                              | latest ->
+                                  if DateTime.UtcNow > deadline then
+                                      let dump = latest |> Option.map _.ToJsonString() |> Option.defaultValue "<none>"
+                                      failtest $"Timed out waiting for B.fs %s{desc}. Latest: %s{dump}"
 
-                              do! Task.Delay 25
+                                  do! Task.Delay 25
 
-                          return (latestB ()).Value
+                          return matched.Value
                       }
 
                   let hasFsac1 (arr: JsonArray) =
@@ -1953,15 +1963,64 @@ let thirdMut () =
                             End = { Line = lastIdx; Character = lastLen } }
                         Text = newText }
 
+                  let publishedBeforeEdits = bPublishes.Count
+
                   // Edit ONLY A.fs (B.fs is NOT edited; B.fs Epoch stays unchanged!)
                   do! lsp.DidChange(aFile, 2, replaceAllEdit aSrc1 aSrc2)
                   let! staleCheckB = waitForB "FSAC0001 after upstream A.fs moved valA to [<AutoOpen>]" hasFsac1
                   Expect.isTrue (hasFsac1 staleCheckB) "B.fs publishes FSAC0001 when upstream A.fs makes open Upstream.ModA unused"
 
+                  // More edits of A.fs that leave the open unused. B.fs settles again after each, and once more when a
+                  // build by declaration lands, with its own text unchanged, and each settle is analyzed anew.
+                  let graph = running.Workspace.OwnersOf bFile |> List.head
+
+                  // The server has A.fs at `version`, B.fs is settled on it with the builds by declaration landed, and
+                  // the lists queued by then are sent
+                  let settledOn (version: int) =
+                      task {
+                          let deadline = DateTime.UtcNow.AddSeconds 15.
+
+                          while (running.Documents.TryFind aFile |> Option.map _.LspVersion) <> Some version do
+                              if DateTime.UtcNow > deadline then
+                                  failtest $"Timed out waiting for the server to take A.fs at version %d{version}"
+
+                              do! Task.Delay 5
+
+                          do! running.Publisher.Barrier() |> withinUnit
+                          let! _ = graph.SettledDiagnostics bFile |> within
+                          let! _ = graph.WhenPromoted(aFile, CancellationToken.None) |> within
+                          let! _ = graph.WhenPromoted(bFile, CancellationToken.None) |> within
+                          do! running.Publisher.Flushed() |> withinUnit
+                      }
+
+                  let mutable aNow = aSrc2
+                  let mutable aVersion = 2
+
+                  for n in 1..6 do
+                      let next = aSrc2.Replace("let otherVal = 1", $"let otherVal = 1\n    let extra%d{n} = %d{n}")
+                      aVersion <- aVersion + 1
+                      do! lsp.DidChange(aFile, aVersion, replaceAllEdit aNow next)
+                      aNow <- next
+                      do! settledOn aVersion
+                      let! _ = waitForB $"FSAC0001 after upstream edit %d{n} left the open unused" hasFsac1
+                      ()
+
                   // Edit ONLY A.fs back -> FSAC0001 on B.fs must clear without editing B.fs!
-                  do! lsp.DidChange(aFile, 3, replaceAllEdit aSrc2 aSrc1)
+                  do! lsp.DidChange(aFile, aVersion + 1, replaceAllEdit aNow aSrc1)
                   let! restoredB = waitForB "FSAC0001 cleared after upstream A.fs restored valA" (fun arr -> not (hasFsac1 arr))
                   Expect.isFalse (hasFsac1 restoredB) "B.fs clears stale FSAC0001 when upstream A.fs restores ModA.valA"
+
+                  // From the first list with FSAC0001 to the one that cleared it, every list kept it: none was sent
+                  // between a settle and its analysis without what the last analysis found
+                  let withFsac1 =
+                      bPublishes.ToArray()
+                      |> Array.skip publishedBeforeEdits
+                      |> Array.map hasFsac1
+                      |> Array.skipWhile not
+
+                  Expect.isFalse
+                      (withFsac1 |> Array.skipWhile id |> Array.exists id)
+                      $"B.fs keeps FSAC0001 published while upstream edits leave the open unused. Whether each list since the first with it has it: %A{withFsac1}"
 
                   do!
                       running.Host.Read(fun () -> assertNoCompilerRetention "Publisher" running.Publisher)
