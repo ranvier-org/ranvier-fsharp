@@ -5,6 +5,14 @@
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Link="THIRD-PARTY-NOTICES.md" Visible="false" />
   </ItemGroup>
 
+  <!--
+    A packed library's minimum FSharp.Core: the version in the first .NET 10 SDK. Tools and tests take the central
+    version in Directory.Packages.props.
+  -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true' and '$(PackAsTool)' != 'true'">
+    <PackageReference Update="FSharp.Core" VersionOverride="10.0.100" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(RanvierTrace)' == 'true' and '$(RanvierTracedPackage)' == 'true'">
     <AssemblyMetadata Include="RanvierTrace" Value="true" />
   </ItemGroup>
