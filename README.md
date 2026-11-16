@@ -362,11 +362,11 @@ On large multi-project edit loops (`ranvier-fsharp`, 14 projects), `rfs mcp` cut
 
 ### Repository Layout
 
-`ranvier-fsharp` builds against the sibling [`fickle-fsharp`](https://github.com/shayanhabibi/fickle-fsharp) fork (`fickle_decl` branch), which exposes declaration-level checking and non-retaining semantic classification in `FSharp.Compiler.Service.dll` + `FSharp.Core.dll`.
+`ranvier-fsharp` builds against the sibling [`fickle-fsharp`](https://github.com/shayanhabibi/fickle-fsharp) fork (`ranvier_decl` branch), which exposes declaration-level checking and non-retaining semantic classification in `FSharp.Compiler.Service.dll` + `FSharp.Core.dll`.
 
 ```text
 parent-dir/
-├── fickle-fsharp/    # https://github.com/shayanhabibi/fickle-fsharp (branch: fickle_decl)
+├── fickle-fsharp/    # https://github.com/shayanhabibi/fickle-fsharp (branch: ranvier_decl)
 └── ranvier-fsharp/   # https://github.com/ranvier-org/ranvier-fsharp (branch: main)
 ```
 
@@ -375,7 +375,7 @@ parent-dir/
 ### 1. Clone and Build the FCS Fork
 
 ```bash
-git clone -b fickle_decl https://github.com/shayanhabibi/fickle-fsharp.git
+git clone -b ranvier_decl https://github.com/shayanhabibi/fickle-fsharp.git
 git clone https://github.com/ranvier-org/ranvier-fsharp.git
 cd ranvier-fsharp
 
@@ -418,9 +418,9 @@ This outputs all 8 `.nupkg` archives in `artifacts/nupkg/` (`Ranvier.FSharp.{Lsp
 
 ## Publishing & Releases
 
-1. Ensure `shayanhabibi/fickle-fsharp` has the latest `fickle_decl` branch pushed:
+1. Ensure `shayanhabibi/fickle-fsharp` has the latest `ranvier_decl` branch pushed:
    ```bash
-   git -C ../fickle-fsharp push origin fickle_decl
+   git -C ../fickle-fsharp push origin ranvier_decl
    ```
 2. Push `main` and tag either a standalone `Ranvier.AutoComplete` release (`ranvierautocomplete-v0.1.1`), a standalone `Ranvier.FSharp.Agent` release (`rfs-v0.1.0`), or a full workspace suite release (`v0.1.0`):
    ```bash

@@ -263,7 +263,7 @@ SOFTWARE.
 ## 4. `dotnet/fsharp` (`FSharp.Compiler.Service` / `fickle-fsharp`)
 
 - **Upstream Repository:** https://github.com/dotnet/fsharp
-- **Declaration-Incremental Fork:** https://github.com/shayanhabibi/fickle-fsharp (`fickle_decl`)
+- **Declaration-Incremental Fork:** https://github.com/shayanhabibi/fickle-fsharp (`ranvier_decl`)
 - **License:** MIT License
 - **Copyright:** Copyright (c) Microsoft Corporation / .NET Foundation and Contributors
 

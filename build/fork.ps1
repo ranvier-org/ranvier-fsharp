@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $ForkDir = [System.IO.Path]::GetFullPath($ForkDir)
 if (-not (Test-Path $ForkDir)) {
-    throw "FCS fork directory not found at '$ForkDir'. Clone https://github.com/shayanhabibi/fickle-fsharp (branch fickle_decl) alongside ranvier-fsharp or pass -ForkDir <path>."
+    throw "FCS fork directory not found at '$ForkDir'. Clone https://github.com/shayanhabibi/fickle-fsharp (branch ranvier_decl) alongside ranvier-fsharp or pass -ForkDir <path>."
 }
 
 # The fork's props only take the plain-dotnet (non-Arcade) path with this set.

@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: shayanhabibi/fickle-fsharp
-          ref: fickle_decl
+          ref: ranvier_decl
           path: fickle-fsharp
           persist-credentials: false
 
