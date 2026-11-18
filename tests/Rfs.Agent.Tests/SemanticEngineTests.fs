@@ -174,6 +174,78 @@ let tests =
                     deleteTemp root
             }
 
+            testTask "explicit reload resolves a newly restored dependency in a loaded project" {
+                let root = copyMultiTemp ()
+                try
+                    let project = Path.Combine(root, "App", "App.fsproj")
+                    let xml = File.ReadAllText project
+                    Fixtures.build project
+                    File.WriteAllText(project, xml.Replace("""<ProjectReference Include="..\Lib\Lib.fsproj" />""", ""))
+                    let engine = new SemanticEngine(root)
+                    try
+                        match! engine.CheckAsync(None, None, "error", true, CancellationToken.None) with
+                        | Ok report -> Expect.stringContains report "error FS0039" "missing library is diagnosed"
+                        | Error e -> failtest e
+
+                        File.WriteAllText(project, xml)
+                        Fixtures.build project
+                        let! _ = engine.StatusJson(true, 1234)
+                        match! engine.CheckAsync(None, None, "warning", true, CancellationToken.None) with
+                        | Ok report -> Expect.stringStarts report "0 errors, 0 warnings (checked 2 project(s)" "reload acquired the reference"
+                        | Error e -> failtest e
+                    finally
+                        (engine :> IDisposable).Dispose()
+                finally
+                    deleteTemp root
+            }
+
+            testTask "ordinary checks follow solution membership and wildcard source additions" {
+                let root = copyMultiTemp ()
+                try
+                    let solution = Path.Combine(root, "Example.slnx")
+                    let project = Path.Combine(root, "App", "App.fsproj")
+                    let writeSolution projects = File.WriteAllText(solution, "<Solution>" + projects + "</Solution>")
+                    let lib = """<Project Path="Lib/Lib.fsproj" />"""
+                    let app = """<Project Path="App/App.fsproj" />"""
+                    let xml = File.ReadAllText project
+                    let includeUse = """<Compile Include="Use.fs" />"""
+                    let includePages = """<Compile Include="Pages/**/*.fs" />"""
+                    File.WriteAllText(project, xml.Replace(includeUse, includeUse + includePages))
+                    Fixtures.build project
+                    writeSolution lib
+                    let engine = new SemanticEngine(root)
+                    let expect text =
+                        task {
+                            match! engine.CheckAsync(None, None, "warning", true, CancellationToken.None) with
+                            | Ok report -> Expect.stringContains report text "disk membership reflected by a workspace check"
+                            | Error e -> failtest e
+                        }
+                    try
+                        do! expect "0 errors, 0 warnings (checked 1 project(s)"
+                        writeSolution (lib + app)
+                        do! expect "0 errors, 0 warnings (checked 2 project(s)"
+                        let pages = Directory.CreateDirectory(Path.Combine(root, "App", "Pages", "Nested"))
+                        let source = Path.Combine(pages.FullName, "New.fs")
+                        File.WriteAllText(source, "module App.New\nlet n: int = false\n")
+                        do! expect "error FS0001"
+                        File.WriteAllText(source, "module App.New\nlet n: int = 1\n")
+                        do! expect "0 errors, 0 warnings (checked 2 project(s)"
+                        File.Delete source
+                        do! expect "0 errors, 0 warnings (checked 2 project(s)"
+                        let explicitSource = Path.Combine(root, "App", "Explicit.fs")
+                        File.WriteAllText(explicitSource, "module App.Explicit\nlet value: int = false\n")
+                        do! expect "0 errors, 0 warnings (checked 2 project(s)"
+                        let withExplicit = File.ReadAllText(project).Replace(includePages, """<Compile Include="Explicit.fs" />""")
+                        File.WriteAllText(project, withExplicit)
+                        do! expect "error FS0001"
+                        writeSolution lib
+                        do! expect "0 errors, 0 warnings (checked 1 project(s)"
+                    finally
+                        (engine :> IDisposable).Dispose()
+                finally
+                    deleteTemp root
+            }
+
             testTask "a project that fails to load makes check incomplete, never a pass" {
                 let root = unloadableWorkspace ()
 

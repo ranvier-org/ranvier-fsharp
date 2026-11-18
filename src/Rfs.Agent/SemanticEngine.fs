@@ -50,6 +50,12 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
     let mutable loaded = false
     let mutable coldLoadMs = 0L
     let mutable failedProjects: FailedProject list = []
+    let membership = WorkspaceFiles.Index()
+    let mutable projectRoots: string list = []
+    let mutable projectDirectories: string list = []
+
+    let scanMembership () =
+        membership.Scan(workspaceRoot, projectDirectories)
 
     let scope: References.Scope =
         { OwnersOf = fun p -> workspace.OwnersNow(Path.GetFullPath p)
@@ -129,7 +135,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                     WorkspacePeek.peek
                         workspaceRoot
                         4
-                        [ ".git"; "node_modules"; "bin"; "obj"; ".worktrees"; "artifacts"; ".vs"; ".idea" ]
+                        WorkspaceFiles.exclusions
 
                 WorkspacePeek.projectsOf found
 
@@ -138,7 +144,11 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
             if forceReload || not loaded then
                 let sw = Stopwatch.StartNew()
                 let projects = discoverProjects ()
-                let! results = workspace.Load projects
+                projectRoots <- projects
+                let! results = if forceReload then workspace.Reload projects else workspace.Load projects
+                projectDirectories <-
+                    results |> List.map (function Loaded p | Failed(p, _) -> Path.GetDirectoryName p) |> List.distinct
+                scanMembership () |> ignore
                 sw.Stop()
 
                 failedProjects <-
@@ -173,6 +183,20 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
 
             let changes = ResizeArray<string * FileChangeType>()
             let modifiedSources = ResizeArray<string>()
+            let added, removed, solutionChanged = scanMembership ()
+            let isManifest path = WorkspaceFiles.isSolution path || WorkspaceFiles.isProject path
+            let manifests = Seq.append added removed |> Seq.filter isManifest |> Seq.toList
+            let reload =
+                (solutionChanged || not manifests.IsEmpty) &&
+                (discoverProjects () <> projectRoots || not failedProjects.IsEmpty ||
+                 manifests |> List.exists (fun path -> List.contains path projectRoots || workspace.ProjectOf(path).IsSome))
+            if reload then
+                do! loadCoreAsync true
+            else
+                for path in added do
+                    if not (isManifest path) then changes.Add(path, FileChangeType.Created)
+                for path in removed do
+                    if not (isManifest path) then changes.Add(path, FileChangeType.Deleted)
 
             for KeyValue(path, prev) in diskStamps.ToArray() do
                 if not (File.Exists path) then
@@ -211,7 +235,7 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
                 do! workspace.FilesChanged(List.ofSeq changes)
 
                 // If a project reload occurred, refresh stamps for any newly added project files
-                if changes |> Seq.exists (fun (p, _) -> p.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".props", StringComparison.OrdinalIgnoreCase)) then
+                if changes |> Seq.exists (fun (p, kind) -> kind <> FileChangeType.Changed || WorkspaceFiles.isProject p || p.EndsWith(".props", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)) then
                     snapshotAllTrackedFiles ()
 
             for src in modifiedSources do

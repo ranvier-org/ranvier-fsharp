@@ -24,7 +24,7 @@
 | References & callers | `rfs_references(file, line, symbol?, column?, mode?, maxResults?)` | `rfs refs <file> <line> [--symbol <name>] [--uses-only\|--incoming\|--outgoing] [--max <n>]` | `mode` ∈ `all` (default), `uses`, `incoming`, `outgoing`. Run after `check` has 0 upstream errors. |
 | Outline or workspace search | `rfs_search(query?, file?, maxResults?)` | `rfs search [<query>] [--file <f>] [--max <n>]` | Set `file` for syntax outline; omit `file` to search all loaded projects. |
 | Semantic rename | `rfs_rename(file, line, newName, symbol?, column?, apply?)` | `rfs rename <file> <line> [<old>] <newName> [--symbol <name>] [--dry-run]` | Default `apply=true` (CLI) / MCP. Preview first with `apply=false` / `--dry-run`. |
-| Daemon / workspace health | `rfs_status(reload?)` | `rfs status [--reload] [--json]` | Reload after `.fsproj`, `.slnx`, `.sln`, or `Directory.*.props` edits. |
+| Daemon / workspace health | `rfs_status(reload?)` | `rfs status [--reload] [--json]` | Ordinary requests pick up changes to solution membership, explicit compile items, and files matched by project-local compile globs. Use `--reload` to force project reevaluation after restoring dependencies. |
 | Reap stale processes | — | `rfs daemon reap` | Safely cleans dead leases and orphaned MCP processes; ask user before `rfs daemon kill`. |
 
 ## Mandatory Guardrails
