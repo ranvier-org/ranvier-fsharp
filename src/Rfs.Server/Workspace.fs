@@ -731,6 +731,7 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                 let referencesFaults () = references |> List.sumBy _.FaultsSeen
                 let! graph = again referencesFaults (fun () -> ProjectGraph.Create(host, spec, references))
                 created.Value <- Some graph
+                let faultsBeforeSettle = graph.FaultsSeen
                 onGraphCreated graph
 
                 // Registered before the settle wait, in the graph item that reads the open texts and sets them: an `Open`
@@ -759,6 +760,10 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
                             $"settling the cold check timed out after %.0f{timeout.TotalMilliseconds} ms (RFS_LOAD_TIMEOUT_MS)"
                         )
                     )
+
+                // A posted fault can land after creation but before AllDiagnostics registers its waiter.
+                if graph.FaultsSeen <> faultsBeforeSettle then
+                    invalidOp $"Work of %s{spec.ProjectFile} or a referenced project failed during the cold check."
 
                 do! notifyWorkspace (Responses.project spec)
 
