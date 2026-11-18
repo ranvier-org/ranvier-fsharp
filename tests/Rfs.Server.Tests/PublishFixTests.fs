@@ -844,18 +844,12 @@ let workspaceGraphTests =
           testTask "a fault of the project during its cold load fails the load" {
               let dir = copyFixtureDir "Deps"
               let project = Path.Combine(dir, "Deps.fsproj")
-              let created = TaskCompletionSource<Rfs.Checker.ProjectGraph>(TaskCreationOptions.RunContinuationsAsynchronously)
-              let! s = startSessionWith dir [ project ] false (fun server -> server.Workspace.OnGraphCreated(fun g -> created.TrySetResult g |> ignore)) |> within
+              let inject (server: RanvierServer) =
+                  server.Workspace.OnGraphCreated(fun graph ->
+                      graph.FailPost(InvalidOperationException "the project's own failure"))
+              let! s = startSessionWith dir [ project ] false inject |> within
               use _ = disposing s
-              let loading = s.Server.Workspace.Load [ project ]
-              let! (graph: Rfs.Checker.ProjectGraph) = created.Task |> within
-
-              // The project's own posted work fails all through its cold check
-              while not loading.IsCompleted do
-                  graph.FailPost(InvalidOperationException "the project's own failure")
-                  do! Task.Delay 50
-
-              let! results = loading
+              let! results = s.Server.Workspace.Load [ project ] |> within
 
               match results with
               | [ LoadResult.Failed(p, _) ] -> Expect.equal p project "the project fails to load"
