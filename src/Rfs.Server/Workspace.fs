@@ -1022,6 +1022,18 @@ type Workspace(host: GraphHost, client: RanvierClient, ?loadTimeout: TimeSpan) =
     /// (or failed to). The requested projects come first in the result, in order.
     member _.Load(projects: string list) : Task<LoadResult list> = exclusively (fun () -> loadAll projects)
 
+    member _.Reload(projects: string list) : Task<LoadResult list> =
+        exclusively (fun () ->
+            task {
+                let previous = snapshot () |> Array.map (fun entry -> entry.Spec.ProjectFile) |> Array.toList
+                let! removed = remove previous
+                for entry in removed do
+                    (entry.Graph :> IDisposable).Dispose()
+                for project in List.distinct (projects @ previous) do
+                    ProjectSpec.invalidate project
+                return! loadAll projects
+            })
+
     /// The graph of the project that has `path` as a source file (or as its project file)
     member _.ProjectOf(path: string) : ProjectGraph option =
         let path = Path.GetFullPath path

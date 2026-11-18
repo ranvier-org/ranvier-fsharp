@@ -17,6 +17,6 @@ Lines and columns are 1-based. Pass `line` + `symbol` (`--symbol <name>`) instea
 1. Read types (`rfs_symbol`), uses (`rfs_references`), and declarations (`rfs_search`); reserve `grep` for prose, config, and literals.
 2. Save `.fs`/`.fsi` edits to disk, then run `rfs_check` — referencing projects re-check in memory.
 3. Run `rfs_check` clean before `rfs_references` or `rfs_rename`; preview renames with `apply=false` (`--dry-run`) before `apply=true`.
-4. Call `rfs_status(reload=true)` after editing `.fsproj`, `.slnx`, `.sln`, or `.props`.
+4. Run an ordinary check after adding a project to a solution or a source file to a project. Call `rfs_status(reload=true)` to force reevaluation after a dependency restore.
 5. Pass worktree-local paths (or `--workspace <dir>`) in git worktrees; ask before `rfs daemon kill`.
 6. Finish with one clean `dotnet build` and unfiltered `dotnet test`.
