@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "title": "F# semantic tooling (rfs)",
+  "description": "Incremental declaration-level F# compiler daemon, CLI, and MCP server for fast semantic analysis and refactoring.",
+  "content": "docs",
+  "static": false,
+  "index": "index.md",
+  "exclude": [
+    "plans/**",
+    "specs/**",
+    "checkpoint.md",
+    "server-a.md",
+    "server-results.md"
+  ],
+  "sections": [
+    {
+      "title": "rfs & F# Tooling",
+      "items": [
+        "index.md",
+        "rfs.md",
+        "rfs-agent.md",
+        "agent-mcp-vs-stdio.md"
+      ]
+    }
+  ]
+}
