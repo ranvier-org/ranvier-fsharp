@@ -131,7 +131,8 @@ let private ruleTests =
 /// A copy of a long-running system program under a unique name, so the sampler can be pointed at it and nothing
 /// else on the machine matches.
 let private makeSleeper (dir: string) =
-    let name = "rfsmon-" + Guid.NewGuid().ToString("N").Substring(0, 10)
+    // 15 characters: Linux truncates longer process names, and lookups by name would miss them.
+    let name = "rfsmon-" + Guid.NewGuid().ToString("N").Substring(0, 8)
 
     if OperatingSystem.IsWindows() then
         let target = Path.Combine(dir, name + ".exe")
