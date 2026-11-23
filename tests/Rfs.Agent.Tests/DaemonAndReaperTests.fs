@@ -122,7 +122,8 @@ let private waitProcessExit (pid: int) (timeoutMs: int) =
 
 [<Tests>]
 let tests =
-    testSequenced (
+    // Shares a group with MonitorTests: both point RFS_STATE_DIR at a temp folder for the whole test process.
+    testSequencedGroup "rfs-state-dir" (
         testList "DaemonAndReaper" [
             testTask "daemon spawns detached without blocking stdio handles and warms subsequent calls" {
                 let wsRoot = copyMultiTemp ()

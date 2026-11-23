@@ -8,7 +8,7 @@
     <PackageId>Ranvier.FSharp.Agent</PackageId>
     <Version Condition="'$(AgentVersion)' != ''">$(AgentVersion)</Version>
     <Description>Semantic F# code analysis CLI and Model Context Protocol (MCP) server (`rfs`) backed by a persistent declaration-incremental Ranvier workspace daemon with automatic stale-process reaping.</Description>
-    <PackageReleaseNotes>Align Ranvier.FSharp.Agent (rfs) on Ranvier 0.2.1 and patched MessagePack 2.5.307, including graph fault reporting throughout cold load.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.4: `rfs tui` (also `rfs monitor`, `rfs top`) shows every rfs daemon, rfs mcp server and ranvierautocomplete process live; it removes dead records and stdio servers whose client exited, and flags outdated, past-timeout and silent processes for you to stop. `rfs top --once [--json] [--clean]` prints one snapshot for scripts. A daemon no longer counts a probe's ping, a bare connection or the monitor's counter request as use, so watching never keeps an idle daemon alive. `rfs daemon reap --include-lsp` treats a parent PID held by a newer process as exited.</PackageReleaseNotes>
     <PackageTags>fsharp;mcp;model-context-protocol;agent;cli;semantic-analysis;ranvier;fcs;dotnet-tool</PackageTags>
   </PropertyGroup>
   <ItemGroup>
@@ -20,6 +20,8 @@
     <Compile Include="SemanticEngine.fs" />
     <Compile Include="Daemon.fs" />
     <Compile Include="McpServer.fs" />
+    <Compile Include="Monitor.fs" />
+    <Compile Include="MonitorTui.fs" />
     <Compile Include="Cli.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
@@ -28,6 +30,9 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol.Core" />
+    <!-- `rfs tui`: the terminal packages must use the same Ranvier flavour (traced or not) as the checker. -->
+    <PackageReference Include="Ranvier.Terminal" Condition="'$(RanvierTrace)' != 'true'" />
+    <PackageReference Include="Ranvier.Terminal.Traced" Condition="'$(RanvierTrace)' == 'true'" />
     <!-- StreamJsonRpc brings an old StringTools next to the program, which the SDK's MSBuild (loaded in process to read projects) then fails on -->
     <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" />
   </ItemGroup>

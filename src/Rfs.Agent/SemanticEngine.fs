@@ -464,6 +464,32 @@ type internal SemanticEngine(workspaceRoot: string, ?explicitProjects: string li
     member _.WorkspaceRoot = workspaceRoot
     member _.ColdLoadMs = coldLoadMs
 
+    /// Counters for `rfs tui`, read without loading or rescanning the workspace. While a request holds the engine,
+    /// only the process figures are returned and `busy` is true, so asking never queues work behind a check.
+    member _.MonitorJson(daemonPid: int) : JsonObject =
+        let o = JsonObject()
+        use self = Process.GetCurrentProcess()
+        o["daemonPid"] <- JsonValue.Create daemonPid
+        o["workspaceRoot"] <- JsonValue.Create workspaceRoot
+        o["uptimeSeconds"] <- JsonValue.Create(Math.Round((DateTime.UtcNow - startUtc).TotalSeconds, 1))
+        o["workingSetMb"] <- JsonValue.Create(Math.Round(float self.WorkingSet64 / (1024.0 * 1024.0), 1))
+
+        if gate.Wait 0 then
+            try
+                let struct (projCount, fileCount, _, _, _, _) = totals ()
+                o["busy"] <- JsonValue.Create false
+                o["loaded"] <- JsonValue.Create loaded
+                o["coldLoadMs"] <- JsonValue.Create coldLoadMs
+                o["loadedProjects"] <- JsonValue.Create projCount
+                o["failedProjects"] <- JsonValue.Create failedProjects.Length
+                o["sourceFiles"] <- JsonValue.Create fileCount
+            finally
+                gate.Release() |> ignore
+        else
+            o["busy"] <- JsonValue.Create true
+
+        o
+
     member _.EnsureLoadedAsync() : Task =
         withLock (fun () -> loadCoreAsync false)
 

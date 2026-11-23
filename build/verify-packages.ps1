@@ -193,6 +193,7 @@ if (-not $OnlineOnly) {
                 Assert-True (-not ($entries -contains 'tools/net10.0/any/Microsoft.NET.StringTools.dll')) "$id must not bundle copy-local Microsoft.NET.StringTools.dll"
                 if ($id -eq 'Ranvier.FSharp.Agent') {
                     Assert-True ($entries -contains 'tools/net10.0/any/ModelContextProtocol.Core.dll') "$id missing ModelContextProtocol.Core.dll"
+                    Assert-True ($entries -contains 'tools/net10.0/any/Ranvier.Terminal.dll') "$id missing Ranvier.Terminal.dll (rfs tui)"
                 }
 
                 $checkerBytes = Read-ZipEntryBytes $zip 'tools/net10.0/any/Rfs.Checker.dll'
@@ -446,6 +447,12 @@ let addNumbers (x: int) (y: int) : int =
         $symOut = (& $rfsExe symbol $sampleLibPath 5 --symbol addNumbers --workspace $sampleDir | Out-String)
         if ($LASTEXITCODE -ne 0) { throw "rfs symbol failed: $symOut" }
         Assert-True ($symOut.Contains('addNumbers') -and $symOut.Contains('int')) "rfs symbol output unexpected: $symOut"
+
+        # The monitor must see the daemon that `rfs check` started for the sample.
+        $topOut = (& $rfsExe top --once --json | Out-String)
+        if ($LASTEXITCODE -ne 0) { throw "rfs top --once --json failed: $topOut" }
+        $topJson = $topOut | ConvertFrom-Json
+        Assert-True (@($topJson.processes | Where-Object { $_.kind -eq 'daemon' -and $_.running }).Count -ge 1) "rfs top did not report the sample's daemon: $topOut"
 
         # Exercise newline-delimited JSON-RPC over stdio on `rfs mcp`
         $mcpPsi = [System.Diagnostics.ProcessStartInfo]::new($rfsExe)

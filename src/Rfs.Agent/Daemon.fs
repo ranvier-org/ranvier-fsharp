@@ -25,6 +25,11 @@ module internal DaemonDispatch =
                     resp["text"] <- JsonValue.Create "pong"
                     return resp
 
+                | "monitor" ->
+                    resp["ok"] <- JsonValue.Create true
+                    resp["data"] <- engine.MonitorJson daemonPid
+                    return resp
+
                 | "status" ->
                     let reload = JsonUtil.boolOpt req "reload" |> Option.defaultValue false
                     let asJson = JsonUtil.boolOpt req "json" |> Option.defaultValue false
@@ -255,8 +260,15 @@ module internal DaemonServer =
                                     match msgOpt with
                                     | None -> openConn <- false
                                     | Some req ->
-                                        let now = DateTime.UtcNow.Ticks
-                                        Volatile.Write(&lastActiveTicks, now)
+                                        // A monitor's probe is not use: counting it would keep a stale daemon alive.
+                                        let passive =
+                                            match JsonUtil.str req "op" with
+                                            | Some "monitor" -> true
+                                            | Some "ping" -> JsonUtil.boolOpt req "passive" = Some true
+                                            | _ -> false
+
+                                        if not passive then
+                                            Volatile.Write(&lastActiveTicks, DateTime.UtcNow.Ticks)
 
                                         if JsonUtil.str req "op" = Some "shutdown" then
                                             let ack = JsonObject()
@@ -265,6 +277,9 @@ module internal DaemonServer =
                                             do! PipeFraming.writeAsync pipe ack cts.Token
                                             cts.Cancel()
                                             openConn <- false
+                                        elif passive then
+                                            let! resp = DaemonDispatch.executeAsync engine daemonPid req cts.Token
+                                            do! PipeFraming.writeAsync pipe resp cts.Token
                                         else
                                             Interlocked.Increment(&inFlightRequests) |> ignore
 
@@ -331,7 +346,7 @@ module internal DaemonServer =
 
                             try
                                 do! server.WaitForConnectionAsync cts.Token
-                                Volatile.Write(&lastActiveTicks, DateTime.UtcNow.Ticks)
+                                // A connection alone is not use: requests count themselves, except passive ones.
                                 Task.Run<unit>(fun () -> handleClientAsync server) |> ignore
                             with
                             | :? OperationCanceledException ->
