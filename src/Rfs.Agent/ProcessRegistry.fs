@@ -59,6 +59,18 @@ type internal ReapReport =
     { CheckedRecords: int
       Actions: ReapAction list }
 
+/// Whether the process that started another one still exists.
+[<RequireQualifiedAccess>]
+type internal ParentState =
+    | Running of pid: int * name: string
+    /// The parent exited. On Windows a PID now held by a process that started after the child counts as exited.
+    | Exited of pid: int
+    /// Linux re-parented the process to init. Its parent probably exited, but init can also be a real parent.
+    | Adopted of pid: int
+    /// A daemon, which is meant to outlive the command that started it.
+    | Detached
+    | Unknown
+
 module internal ProcessRegistry =
 
     [<Struct; StructLayout(LayoutKind.Sequential)>]
@@ -386,7 +398,7 @@ module internal ProcessRegistry =
         | Recycled
         | Alive of Process
 
-    let private expectedProcessNames =
+    let expectedProcessNames =
         set [ "rfs"; "dotnet"; "ranvierautocomplete"; "testhost" ]
 
     let private probeProcess (pid: int) (recordedStartTicks: int64) : PidProbe =
@@ -435,11 +447,38 @@ module internal ProcessRegistry =
         with _ ->
             false
 
-    let private isParentAlive (parentPidOpt: int option) (parentStartOpt: int64 option) : bool =
+    let isParentAlive (parentPidOpt: int option) (parentStartOpt: int64 option) : bool =
         match parentPidOpt, parentStartOpt with
         | Some ppid, Some pstart -> probeProcessWithAnyName ppid pstart
         | _ -> true
 
+    let private tryStartUtc (proc: Process) : DateTime option =
+        try
+            Some(proc.StartTime.ToUniversalTime())
+        with _ ->
+            None
+
+    /// Finds whether a process's parent still runs. Windows keeps a dead parent's PID in the child, and may hand that
+    /// PID to a new process, so a parent that started after the child is reported as exited.
+    let parentState (proc: Process) : ParentState =
+        match tryGetParentPid proc with
+        | None -> ParentState.Unknown
+        | Some 1 when OperatingSystem.IsLinux() -> ParentState.Adopted 1
+        | Some ppid ->
+            try
+                use parent = Process.GetProcessById ppid
+
+                if parent.HasExited then
+                    ParentState.Exited ppid
+                else
+                    match tryStartUtc proc, tryStartUtc parent with
+                    | Some childStart, Some parentStart when parentStart > childStart -> ParentState.Exited ppid
+                    | _ -> ParentState.Running(ppid, parent.ProcessName)
+            with
+            | :? ArgumentException -> ParentState.Exited ppid
+            | _ -> ParentState.Unknown
+
+    /// Sends a ping the daemon does not count as use (`passive`), so probing a daemon never keeps an idle one alive.
     let pingPipeAsync (pipeName: string) (timeoutMs: int) : Task<bool> =
         task {
             try
@@ -448,6 +487,7 @@ module internal ProcessRegistry =
                 do! client.ConnectAsync(cts.Token)
                 let req = JsonObject()
                 req["op"] <- JsonValue.Create "ping"
+                req["passive"] <- JsonValue.Create true
                 do! PipeFraming.writeAsync client req cts.Token
                 let! resp = PipeFraming.readAsync client cts.Token
 
@@ -587,22 +627,14 @@ module internal ProcessRegistry =
                     if proc.Id <> selfPid then
                         checkedCount <- checkedCount + 1
 
-                        match tryGetParentPid proc with
-                        | Some ppid ->
-                            let parentAlive =
-                                try
-                                    use parent = Process.GetProcessById ppid
-                                    not parent.HasExited
-                                with _ ->
-                                    false
-
-                            if not parentAlive || forceAll then
-                                safeKillTree proc
-                                actions.Add { Pid = proc.Id; Kind = "lsp"; WorkspaceRoot = "(external)"; Reason = KilledOrphanedLsp }
-                        | None when forceAll ->
+                        match parentState proc with
+                        | ParentState.Exited _ ->
                             safeKillTree proc
                             actions.Add { Pid = proc.Id; Kind = "lsp"; WorkspaceRoot = "(external)"; Reason = KilledOrphanedLsp }
-                        | None -> ()
+                        | _ when forceAll ->
+                            safeKillTree proc
+                            actions.Add { Pid = proc.Id; Kind = "lsp"; WorkspaceRoot = "(external)"; Reason = KilledOrphanedLsp }
+                        | _ -> ()
 
             return
                 { CheckedRecords = checkedCount

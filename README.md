@@ -337,6 +337,52 @@ Add to `.mcp.json` (use `["mcp", "--no-always-load"]` on small or mixed-language
 - **Search & Outline (`rfs search` / `rfs_search`)**: File outline or cross-project symbol search.
 - **Semantic Rename (`rfs rename` / `rfs_rename`)**: Cross-project rename (`--dry-run` preview or apply + immediate re-check).
 - **Workspace & Daemon Control (`rfs status` / `rfs_status`, `rfs daemon status|reap|kill`)**: Health, RAM, Ranvier counters, and safe stale-process reaping.
+- **Process Monitor (`rfs tui`, also `rfs monitor` / `rfs top`)**: A live terminal view of every `rfs` and `ranvierautocomplete` process, with automatic cleanup of the ones nothing can use any more. See below.
+
+### Process Monitor (`rfs tui` · `rfs monitor` · `rfs top`)
+
+Agents start `rfs` daemons, `rfs mcp` servers and `ranvierautocomplete` language servers, and each one can hold hundreds of megabytes. When an agent session ends without stopping them, they stay behind. `rfs tui` shows all of them live: kind, PID, parent, CPU, memory, I/O, idle time, uptime and workspace. A details pane shows the selected process's command line and log tail, plus a daemon's loaded projects and files. `rfs monitor` and `rfs top` are the same command.
+
+```text
+ rfs monitor  3 running · 1.1G · CPU 0.4% · 1 flagged · 1 to clean   │ auto-clean on · every 1s · sample 30 ms
+╭─┤processes 3├─────────────────────────────────────────────────────────────────────────┤sort state ↓├───╮
+│KIND   PID    PARENT              CPU%  MEM    IDLE   STATE                   ↓WORKSPACE                │
+│lsp    20412  4410 exited         0.0   310M   ≥41m   clean: parent gone       —                        │
+│mcp    18800  claude 17020        0.0   95M    ≥3m    check: older rfs build   work\repo-two            │
+│daemon 21044  detached            0.2   702M   12s    ok                       work\repo-one            │
+```
+
+The example is illustrative. **Auto-clean** acts only on certain findings, and checks each one again just before acting:
+
+- a record or lease in the state directory (`%LOCALAPPDATA%\ranvier-fsharp`, or `$RFS_STATE_DIR`) whose process exited, or whose PID another process now holds. The record is deleted; that other process is never touched.
+- an `rfs mcp` or `ranvierautocomplete` whose client exited. Both talk over stdin/stdout, so nothing can reach them again; they are stopped.
+- a temp file left behind by an interrupted record write.
+
+**Flagged** rows (yellow) are judgment calls left to you: a daemon or MCP server started from a different rfs build, a daemon still running a minute past its own idle timeout, a record not refreshed in four heartbeat intervals, or (on Linux) a server re-parented to init. `k` stops the selected process: a daemon gets its `shutdown` request, then a kill after 5 s. `c` stops every flagged process. Both ask first. `a` or `--no-auto-clean` turns auto-clean off.
+
+Watching keeps nothing alive. A daemon does not count the monitor's pings, or the `monitor` request that reads its counters, as use, so its idle clock keeps running (daemons from rfs 0.1.4 on). The monitor reads counters only from daemons built from its own rfs, because older daemons would count the request.
+
+| Key | Action |
+| :--- | :--- |
+| ↑ ↓ PgUp PgDn Home End, mouse | Select a process |
+| `s` / `r` / click a heading | Sort / reverse |
+| `k` | Stop the selected process |
+| `c` | Stop every flagged process |
+| `a` | Auto-clean on / off |
+| `/` | Filter by kind, PID, state, parent, workspace or command line |
+| `+` / `-` | Poll interval, 250–10000 ms (default 1000; `--interval-ms`) |
+| `p` or Space / `u` | Pause / sample now |
+| `?` / `q` or Ctrl+C | Help / quit |
+
+Scripts and agents cannot drive a terminal UI, so use one snapshot instead:
+
+```bash
+rfs top --once            # one table, ASCII only
+rfs top --once --json     # one JSON snapshot
+rfs top --once --clean    # apply auto-clean too, and print what it removed
+```
+
+With redirected input or output, `rfs tui` prints one snapshot. `rfs tui --render=120x36` draws one frame of live data as text, with auto-clean off, to check the layout without a terminal. Windows and Linux report parents, command lines and I/O. macOS reports neither parents nor I/O, so nothing is stopped automatically there. Linux re-parents orphans to init, so an orphaned stdio server is flagged rather than stopped.
 
 ### Benchmark Summary: Competing Weightings vs. `no-tool` (`claude --model haiku`, 28 Trials)
 

@@ -26,6 +26,7 @@
 | Semantic rename | `rfs_rename(file, line, newName, symbol?, column?, apply?)` | `rfs rename <file> <line> [<old>] <newName> [--symbol <name>] [--dry-run]` | Default `apply=true` (CLI) / MCP. Preview first with `apply=false` / `--dry-run`. |
 | Daemon / workspace health | `rfs_status(reload?)` | `rfs status [--reload] [--json]` | Ordinary requests pick up changes to solution membership, explicit compile items, and files matched by project-local compile globs. Use `--reload` to force project reevaluation after restoring dependencies. |
 | Reap stale processes | — | `rfs daemon reap` | Safely cleans dead leases and orphaned MCP processes; ask user before `rfs daemon kill`. |
+| List every rfs / ranvierautocomplete process | — | `rfs top --once [--json] [--clean]` | Read-only unless `--clean`, which removes only dead records and stdio servers whose client exited. `rfs tui` is the interactive view for people; agents use `--once`. |
 
 ## Mandatory Guardrails
 

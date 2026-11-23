@@ -72,6 +72,10 @@ module internal Cli =
               "  rename <file>[:<line>[:<col>]] [<line>] [<old-symbol>] <new-name> [--symbol <name>] [--col <n>] [--dry-run]"
               "  status [--json] [--reload]"
               ""
+              "Process monitor (also `rfs monitor`, `rfs top`):"
+              "  tui [--interval-ms <250-10000>] [--no-auto-clean]   live view of every rfs and ranvierautocomplete process"
+              "  tui --once [--json] [--clean]                       print one snapshot; --clean removes what auto-clean would"
+              ""
               "Daemon & MCP commands:"
               "  mcp [--workspace <dir>] [--no-always-load]"
               "  daemon status"
@@ -254,6 +258,9 @@ module internal Cli =
 
                 | "daemon" :: subArgs ->
                     return! runDaemonCommand wsOpt subArgs
+
+                | ("tui" | "monitor" | "top") :: monitorArgs ->
+                    return MonitorApp.run monitorArgs
 
                 | "mcp" :: mcpArgs ->
                     let alwaysLoad = not (mcpArgs |> List.exists (fun a -> a = "--no-always-load"))

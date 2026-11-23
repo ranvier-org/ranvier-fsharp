@@ -8,6 +8,7 @@
     <Compile Include="SemanticEngineTests.fs" />
     <Compile Include="McpServerTests.fs" />
     <Compile Include="DaemonAndReaperTests.fs" />
+    <Compile Include="MonitorTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

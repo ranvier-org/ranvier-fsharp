@@ -10,7 +10,7 @@
     <!-- Package and SourceLink metadata (individual library/tool projects opt in with IsPackable=true). -->
     <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.2</LibraryVersion>
     <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.2</ToolVersion>
-    <AgentVersion Condition="'$(AgentVersion)' == ''">0.1.3</AgentVersion>
+    <AgentVersion Condition="'$(AgentVersion)' == ''">0.1.4</AgentVersion>
     <Version Condition="'$(Version)' == ''">$(LibraryVersion)</Version>
     <Authors>shayanhabibi</Authors>
     <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
