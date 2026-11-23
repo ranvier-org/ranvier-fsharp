@@ -139,11 +139,12 @@ let private makeSleeper (dir: string) =
         File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), target)
         name, target, [ "-n"; "120"; "127.0.0.1" ]
     else
-        let source = [ "/bin/sleep"; "/usr/bin/sleep" ] |> List.find File.Exists
+        // A shell, not `sleep`: a multi-call coreutils binary picks the tool from its own name and exits when renamed.
+        // The loop keeps the shell itself alive instead of exec'ing into `sleep`.
         let target = Path.Combine(dir, name)
-        File.Copy(source, target)
+        File.Copy("/bin/sh", target)
         File.SetUnixFileMode(target, UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute)
-        name, target, [ "120" ]
+        name, target, [ "-c"; "i=0; while [ $i -lt 120 ]; do sleep 1; i=$((i+1)); done" ]
 
 let private startSleeper (path: string) (args: string list) =
     let psi = ProcessStartInfo path

@@ -832,10 +832,17 @@ module internal MonitorFormat =
     let workspace (row: MonitorRow) =
         match row.Workspace with
         | Some path ->
-            let parts = path.Split([| '\\'; '/' |], StringSplitOptions.RemoveEmptyEntries)
+            // Cut at the path's own separators, so a Windows path reads the same on every host.
+            let separators = [| '\\'; '/' |]
+            let trimmed = path.TrimEnd separators
+            let last = trimmed.LastIndexOfAny separators
 
-            if parts.Length <= 2 then path
-            else String.Join(string Path.DirectorySeparatorChar, parts[parts.Length - 2 ..])
+            if last <= 0 then
+                trimmed
+            else
+                match trimmed.LastIndexOfAny(separators, last - 1) with
+                | -1 -> trimmed
+                | previous -> trimmed.Substring(previous + 1)
         | None -> "—"
 
     let memory (row: MonitorRow) =
