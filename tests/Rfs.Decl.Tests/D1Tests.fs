@@ -253,6 +253,13 @@ let private flatModule (n: int) (signed: bool) =
             else
                 let start, env0 = DeclarationChecker.BeginFile(ctx, before, parse)
                 let decls = DeclarationChecker.Split parse
+                let isTarget = Path.GetFileName file = target
+
+                if isTarget then
+                    GC.Collect()
+                    GC.WaitForPendingFinalizers()
+                    GC.Collect()
+
                 let clock = Diagnostics.Stopwatch.StartNew()
 
                 let results =
@@ -266,8 +273,12 @@ let private flatModule (n: int) (signed: bool) =
 
                 let cold = clock.Elapsed.TotalMilliseconds
 
-                if Path.GetFileName file = target then
+                if isTarget then
                     let last = decls.Length - 1
+                    DeclarationChecker.CheckDeclaration(start, results[last - 1].EnvAfter, decls[last], Threading.CancellationToken.None) |> ignore
+                    GC.Collect()
+                    GC.WaitForPendingFinalizers()
+                    GC.Collect()
 
                     let again =
                         [ for _ in 1..20 ->
@@ -604,20 +615,28 @@ let tests =
                 } ]
 
           // I1 of the Task 6 review: the conformance check at each declaration's check is proportional to the
-          // declaration, not to the module it is in
-          testAsync "checking a flat module with a signature file costs about what it does without one" {
-              // Each warmed up, then three times, alternating, keeping the fastest run: a busy machine slows a run,
-              // not all of them
+          // declaration, not to the module it is in. Sequenced so parallel Expecto workers do not contend for CPU/GC
+          // during part of the comparison and lift right before the final run (CI run 44479432816).
+          testSequenced
+          <| testAsync "checking a flat module with a signature file costs about what it does without one" {
+              // Each warmed up, then four alternating ABBA pairs keeping the fastest run: a busy machine slows a run,
+              // not all of them, and reversing pair order avoids systematic drift if host load shifts mid-loop.
               let! _ = flatModule 2000 true
               let! _ = flatModule 2000 false
               let signed = ResizeArray()
               let plain = ResizeArray()
 
-              for _ in 1..3 do
-                  let! s = flatModule 2000 true
-                  signed.Add s
-                  let! p = flatModule 2000 false
-                  plain.Add p
+              for i in 1..4 do
+                  if i % 2 = 1 then
+                      let! s = flatModule 2000 true
+                      signed.Add s
+                      let! p = flatModule 2000 false
+                      plain.Add p
+                  else
+                      let! p = flatModule 2000 false
+                      plain.Add p
+                      let! s = flatModule 2000 true
+                      signed.Add s
 
               let best (runs: ResizeArray<float * float>) = (runs |> Seq.map fst |> Seq.min), (runs |> Seq.map snd |> Seq.min)
               let signedCold, signedAgain = best signed
