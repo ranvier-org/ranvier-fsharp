@@ -8,7 +8,7 @@
     <PackageId>Ranvier.FSharp.Agent</PackageId>
     <Version Condition="'$(AgentVersion)' != ''">$(AgentVersion)</Version>
     <Description>Semantic F# code analysis CLI and Model Context Protocol (MCP) server (`rfs`) backed by a persistent declaration-incremental Ranvier workspace daemon with automatic stale-process reaping.</Description>
-    <PackageReleaseNotes>Workspace checks pick up changes to solution membership, explicit compile items and project-local compile globs. Explicit reload rebuilds project references after a restore.</PackageReleaseNotes>
+    <PackageReleaseNotes>Align Ranvier.FSharp.Agent (rfs) on Ranvier 0.2.1 and patched MessagePack 2.5.307, including graph fault reporting throughout cold load.</PackageReleaseNotes>
     <PackageTags>fsharp;mcp;model-context-protocol;agent;cli;semantic-analysis;ranvier;fcs;dotnet-tool</PackageTags>
   </PropertyGroup>
   <ItemGroup>
