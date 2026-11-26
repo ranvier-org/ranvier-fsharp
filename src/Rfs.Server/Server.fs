@@ -465,10 +465,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 return s |> Option.map (fun c -> { Content = c })
             })
 
+    /// Ionide's LineLens, this endpoint's one caller, sends a declaration's `BodyRange.StartLine` from `fsharp/lineLens`
+    /// as the line: 1-based, as FSAC reads it. Taken as 0-based, every line lens showed the declaration below it.
     member _.FSharpSignatureData(p: TextDocumentPositionParams) : Async<LspResult<PlainNotification option>> =
         readingAny "fsharp/signatureData" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
             task {
-                let! s = IonideEndpoints.signatureData graph path (int p.Position.Line) (int p.Position.Character) ct
+                let line = max 0 (int p.Position.Line - 1)
+                let! s = IonideEndpoints.signatureData graph path line (int p.Position.Character) ct
                 return s |> Option.map (fun c -> { Content = c })
             })
 

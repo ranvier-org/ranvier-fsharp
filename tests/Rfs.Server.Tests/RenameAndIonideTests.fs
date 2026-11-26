@@ -1603,13 +1603,29 @@ let ionideAndProtocolTests =
               let! sigWire = req "fsharp/signature" (posParams greetLine greetCol)
               Expect.stringContains (jstr sigWire "content") "\"Kind\":\"typesig\"" "fsharp/signature wire"
 
-              let! sdWire = req "fsharp/signatureData" (posParams greetLine greetCol)
-              Expect.stringContains (jstr sdWire "content") "\"Kind\":\"signatureData\"" "fsharp/signatureData wire"
-
               let llReq = JsonObject()
               llReq["Project"] <- tdOnly.DeepClone()
               let! llWire = req "fsharp/lineLens" llReq
               Expect.stringContains (jstr llWire "content") "\"Kind\":\"declarations\"" "fsharp/lineLens wire"
+
+              // Ionide's LineLens asks fsharp/signatureData at a declaration's BodyRange: its 1-based line as given, and
+              // StartColumn - 1. The answer must describe that declaration, not `(|+|)` on the line below.
+              let greetBody =
+                  JsonNode.Parse(jstr llWire "content").["Data"].AsArray()
+                  |> Seq.collect (fun d -> Seq.append [ d["Declaration"] ] (d["Nested"].AsArray()))
+                  |> Seq.find (fun d -> d["Name"].GetValue<string>() = "greet")
+                  |> fun d -> d["BodyRange"]
+
+              let! sdWire =
+                  req
+                      "fsharp/signatureData"
+                      (posParams (greetBody["StartLine"].GetValue<int>()) (greetBody["StartColumn"].GetValue<int>() - 1))
+
+              Expect.isNotNull sdWire "fsharp/signatureData answers at greet's line lens position"
+              let sdContent = jstr sdWire "content"
+              Expect.stringContains sdContent "\"Kind\":\"signatureData\"" "fsharp/signatureData wire"
+              Expect.stringContains sdContent "\"OutputType\":\"string\"" "greet's line lens describes greet"
+              Expect.stringContains sdContent "\"Name\":\"name\"" "greet's parameter"
 
               let phReq = JsonObject()
               phReq["TextDocument"] <- tdOnly.DeepClone()
