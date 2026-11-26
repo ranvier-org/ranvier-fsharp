@@ -20,6 +20,60 @@ type InlineValuesConfig =
     { Enabled: bool option
       Prefix: string }
 
+/// Where the alpha byte sits in an 8-digit hex colour (`#RRGGBBAA` or `0xAARRGGBB`) and a 4-digit hex string.
+[<RequireQualifiedAccess>]
+type HexByteOrder =
+    /// CSS and `RgbaColor.fromHex`: alpha last.
+    | Rgba
+    /// .NET `Color.FromArgb`, WPF and Skia: alpha first.
+    | Argb
+
+/// How float channel literals (`0.5`, `0.5f`, `0.5m`) map to a colour; integer channels are always 0–255.
+[<RequireQualifiedAccess>]
+type FloatScale =
+    /// `[0, 1]` when every float colour channel is at most 1, else 0–255; alpha is judged on its own.
+    | Auto
+    /// Always `[0, 1]`: a float above 1 is not a colour channel.
+    | Normalized
+    /// Always 0–255.
+    | Byte
+
+/// `FSharp.colors`: which source spellings `textDocument/documentColor` reports as colours.
+type ColorsConfig =
+    { Enabled: bool
+      /// `"#rgb"`, `"#rgba"`, `"#rrggbb"` and `"#rrggbbaa"` string literals.
+      Strings: bool
+      /// Also `"rrggbb"` and `"rrggbbaa"` strings without the `#`; a picked colour keeps the string unprefixed.
+      StringsWithoutHash: bool
+      /// `0xRRGGBB` integer literals, and 8-digit ones bound to or passed to a name containing color, colour or rgb.
+      HexIntegers: bool
+      HexByteOrder: HexByteOrder
+      /// Named colours under a `Color`, `Colors`, `Colour`, `Colours` or `Palette` qualifier.
+      Members: bool
+      /// Records and anonymous records whose fields are R G B (A) or Red Green Blue (Alpha).
+      Records: bool
+      /// Calls with 3 or 4 numeric literals to a name containing color, colour or rgb.
+      Constructors: bool
+      /// Tuples of 3 or 4 numeric literals bound to, or passed as, a name containing color, colour or rgb.
+      Tuples: bool
+      /// The scale of float channels in records, constructors and tuples.
+      FloatScale: FloatScale
+      /// A swatch in the hover of a colour literal, and of a value whose declaration binds one.
+      Hover: bool }
+
+    static member Default: ColorsConfig =
+        { Enabled = true
+          Strings = true
+          StringsWithoutHash = false
+          HexIntegers = true
+          HexByteOrder = HexByteOrder.Rgba
+          Members = true
+          Records = true
+          Constructors = true
+          Tuples = true
+          FloatScale = FloatScale.Auto
+          Hover = true }
+
 module private JsonConfigHelpers =
     let tryProp (obj: JObject) (name: string) : JToken option =
         obj.Properties()
@@ -82,7 +136,8 @@ type FSharpConfig =
       LineLens: LineLensConfig
       CodeLenses: CodeLensConfig
       InlayHints: InlayHintsConfig
-      InlineValues: InlineValuesConfig }
+      InlineValues: InlineValuesConfig
+      Colors: ColorsConfig }
 
     static member Default: FSharpConfig =
         { AutomaticWorkspaceInit = false
@@ -114,7 +169,8 @@ type FSharpConfig =
             { TypeAnnotations = true
               ParameterNames = true
               DisableLongTooltip = true }
-          InlineValues = { Enabled = None; Prefix = "//" } }
+          InlineValues = { Enabled = None; Prefix = "//" }
+          Colors = ColorsConfig.Default }
 
     static member private ApplyObject (current: FSharpConfig) (obj: JObject) : FSharpConfig =
         let openLineLens =
@@ -177,6 +233,34 @@ type FSharpConfig =
                   Prefix =
                     JsonConfigHelpers.tryString iv "Prefix"
                     |> Option.defaultValue current.InlineValues.Prefix }
+
+        let openColors =
+            match JsonConfigHelpers.tryObj obj "Colors" with
+            | None -> current.Colors
+            | Some c ->
+                let flag name (now: bool) = JsonConfigHelpers.tryBool c name |> Option.defaultValue now
+                let was = current.Colors
+
+                { Enabled = flag "Enabled" was.Enabled
+                  Strings = flag "Strings" was.Strings
+                  StringsWithoutHash = flag "StringsWithoutHash" was.StringsWithoutHash
+                  HexIntegers = flag "HexIntegers" was.HexIntegers
+                  HexByteOrder =
+                    match JsonConfigHelpers.tryString c "HexByteOrder" |> Option.map (fun s -> s.ToLowerInvariant()) with
+                    | Some "argb" -> HexByteOrder.Argb
+                    | Some "rgba" -> HexByteOrder.Rgba
+                    | _ -> was.HexByteOrder
+                  Members = flag "Members" was.Members
+                  Records = flag "Records" was.Records
+                  Constructors = flag "Constructors" was.Constructors
+                  Tuples = flag "Tuples" was.Tuples
+                  FloatScale =
+                    match JsonConfigHelpers.tryString c "FloatScale" |> Option.map (fun s -> s.ToLowerInvariant()) with
+                    | Some "auto" -> FloatScale.Auto
+                    | Some("normalized" | "normalised") -> FloatScale.Normalized
+                    | Some "byte" -> FloatScale.Byte
+                    | _ -> was.FloatScale
+                  Hover = flag "Hover" was.Hover }
 
         { AutomaticWorkspaceInit =
             JsonConfigHelpers.tryBool obj "AutomaticWorkspaceInit"
@@ -244,7 +328,8 @@ type FSharpConfig =
           LineLens = openLineLens
           CodeLenses = openCodeLenses
           InlayHints = openInlayHints
-          InlineValues = openInlineValues }
+          InlineValues = openInlineValues
+          Colors = openColors }
 
     static member UpdateFromJson (current: FSharpConfig) (token: JToken) : FSharpConfig =
         try

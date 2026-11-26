@@ -35,6 +35,7 @@
     <Compile Include="Task6bWorkspaceItemsTests.fs" />
     <Compile Include="CodeActionsAndFormattingTests.fs" />
     <Compile Include="WorkspaceDiagnosticsTests.fs" />
+    <Compile Include="ColorsTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

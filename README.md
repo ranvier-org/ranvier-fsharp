@@ -13,7 +13,7 @@ Traditional F# language servers re-typecheck entire files (and downstream files)
 - **Declaration-level incremental checking**: Edits inside a function or binding body re-check only the affected declaration (`~1.7–12.6` declarations/edit instead of the whole file) and stop propagation immediately when the inferred signature is unchanged.
 - **Zero compiler-object retention at rest**: Diagnostics, hovers, semantic classifications, symbol uses, and signature projections are extracted eagerly into compact immutable records; `FSharpCheckFileResults` are never retained on the heap.
 - **Live in-memory cross-project propagation**: Unsaved buffer edits propagate across `ProjectReference` boundaries in memory without rebuilding DLLs on disk.
-- **Full LSP & Ionide protocol parity**: Semantic highlighting (`full`, `full/delta`, `range`), hover, completion (+ auto-open namespace edits), go-to definition / declaration / type definition / implementation, find references, rename (`prepareRename`), signature help, inlay hints, code lenses, inline/pipeline hints, document & workspace symbols, call & type hierarchy, folding & selection ranges, 12 quick-fix/refactoring families, Fantomas formatting, `.slnx` / `.sln` workspace loading, MSBuild glob items (`Compile` / `None` / `Content`), F# analyzers, and Ionide `fsharp/*` custom endpoints.
+- **Full LSP & Ionide protocol parity**: Semantic highlighting (`full`, `full/delta`, `range`), hover, completion (+ auto-open namespace edits), go-to definition / declaration / type definition / implementation, find references, rename (`prepareRename`), signature help, inlay hints, code lenses, inline/pipeline hints, colour swatches with picker write-back, document & workspace symbols, call & type hierarchy, folding & selection ranges, 12 quick-fix/refactoring families, Fantomas formatting, `.slnx` / `.sln` workspace loading, MSBuild glob items (`Compile` / `None` / `Content`), F# analyzers, and Ionide `fsharp/*` custom endpoints.
 
 ### Benchmark Highlights (`ranvierautocomplete` vs FSAC)
 
@@ -151,6 +151,32 @@ dotnet add package Ranvier.FSharp.Server --prerelease
 ```
 
 > **Closed-file & downstream diagnostics:** By default (`"FSharp.workspaceDiagnostics": false`), live typing updates diagnostics for open editors only, closing a tab retains any real on-disk problems in the Problems panel (discarding unsaved buffer-only errors), and saving a file (`Ctrl+S` / `Cmd+S`) or external disk changes settles and publishes downstream breaks across closed files in the same and referencing projects. Set `"FSharp.workspaceDiagnostics": true` (or pass `--workspace-diagnostics` on the CLI) to also publish diagnostics for unopened files immediately on cold project load.
+
+#### Colour swatches (`textDocument/documentColor`)
+
+VS Code draws a swatch beside each colour the server finds, and opens its colour picker on it; a picked colour is written back in the literal's own spelling (case, digit count, `#` or not, `uy`/`f` suffixes, byte or `[0, 1]` scale). Colours are read from the parse tree alone, so they appear while a project is still loading, and in an open file no loaded project holds. Every source is on by default except unprefixed strings; `"editor.colorDecorators": false` hides all swatches in VS Code.
+
+```jsonc
+{
+  "FSharp.colors.enabled": true,
+  "FSharp.colors.strings": true,            // "#rgb", "#rgba", "#rrggbb", "#rrggbbaa"
+  "FSharp.colors.stringsWithoutHash": false, // also "rrggbb" and "rrggbbaa"; the picker keeps them without '#'
+  "FSharp.colors.hexIntegers": true,        // 0xfbbf24 anywhere; 8 digits only under a colour name
+  "FSharp.colors.hexByteOrder": "rgba",     // "rgba" (CSS, RgbaColor.fromHex) or "argb" (.NET, WPF, Skia)
+  "FSharp.colors.members": true,            // Palette.red, Colors.RebeccaPurple, Css.Color.rebeccapurple
+  "FSharp.colors.records": true,            // { R = 251uy; G = 191uy; B = 36uy }, {| Red = 0.5; ...; Alpha = 1.0 |}
+  "FSharp.colors.constructors": true,       // RgbaColor(0.2f, 0.4f, 0.6f, 1.0f), Color.FromArgb(128, 255, 0, 0)
+  "FSharp.colors.tuples": true,             // let accentColor = (251, 191, 36)
+  "FSharp.colors.floatScale": "auto",       // float channels: "auto" ([0, 1] when all are <= 1, else 0-255), "normalized" or "byte"
+  "FSharp.colors.hover": true               // a swatch in the hover of a colour literal and of any use of a value bound to one
+}
+```
+
+Hovering a colour literal, or a value whose declaration binds a colour (`let accent = "#fbbf24"`, then `accent` anywhere), adds the colour to the tooltip: a swatch for clients that allow `<span>` in markdown (`general.markdown.allowedTags`, which Ionide sets), else its hex and `rgb(...)` as text. A declaration binds a colour when its body is one, a literal holding one, or a one-argument call such as `hex "#e3c58a"`.
+
+Record fields match in any case (`r`, `R`, `Red`, `RED`), in records, anonymous records and `struct {| ... |}`. Integer channels are always 0–255; `floatScale` decides floats, and a picked colour is written back on the same scale.
+
+A name containing `argb` or `rgba` (`Color.FromArgb`, `let argbAccent = 0x80FBBF24`) overrides `hexByteOrder` for the literal it names. Constructors, tuples and 8-digit hex integers need a name containing `color`, `colour` or `rgb`; names for other colour spaces (`hsl`, `lab`, `cmyk`, ...) are left out.
 
 ---
 
