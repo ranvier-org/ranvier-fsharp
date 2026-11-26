@@ -8,7 +8,7 @@
     <PackageId>Ranvier.AutoComplete</PackageId>
     <Version Condition="'$(ToolVersion)' != ''">$(ToolVersion)</Version>
     <Description>Demand-driven declaration-incremental F# language server CLI tool (`ranvierautocomplete`) powered by Ranvier and built on the Ionide ecosystem (FsAutoComplete, Ionide.LanguageServerProtocol, Ionide.ProjInfo).</Description>
-    <PackageReleaseNotes>0.1.3: colour swatches and picker write-back (textDocument/documentColor, textDocument/colorPresentation) for hex strings and integers, named colour members, R G B (A) records, colour constructor calls and colour-named tuples, plus a swatch in the hover of a colour and of any value bound to one, each behind an FSharp.colors setting.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.4: colour swatches and picker write-back for HSL, HSV/HSB, Lab, LCH/HCL, OKLab, OKLCH and CMYK in records, constructor calls and tuples whose names or fields say so (FSharp.colors.spaces, FSharp.colors.hueUnit). 0.1.3: colour swatches and picker write-back (textDocument/documentColor, textDocument/colorPresentation) for hex strings and integers, named colour members, R G B (A) records, colour constructor calls and colour-named tuples, plus a swatch in the hover of a colour and of any value bound to one, each behind an FSharp.colors setting.</PackageReleaseNotes>
     <PackageTags>fsharp;lsp;language-server;ionide;ranvier;fsautocomplete;dotnet-tool</PackageTags>
   </PropertyGroup>
   <ItemGroup>

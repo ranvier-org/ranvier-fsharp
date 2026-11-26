@@ -8,8 +8,8 @@
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
 
     <!-- Package and SourceLink metadata (individual library/tool projects opt in with IsPackable=true). -->
-    <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.3</LibraryVersion>
-    <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.3</ToolVersion>
+    <LibraryVersion Condition="'$(LibraryVersion)' == ''">0.1.4</LibraryVersion>
+    <ToolVersion Condition="'$(ToolVersion)' == ''">0.1.4</ToolVersion>
     <AgentVersion Condition="'$(AgentVersion)' == ''">0.1.4</AgentVersion>
     <Version Condition="'$(Version)' == ''">$(LibraryVersion)</Version>
     <Authors>shayanhabibi</Authors>

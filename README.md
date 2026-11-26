@@ -168,9 +168,13 @@ VS Code draws a swatch beside each colour the server finds, and opens its colour
   "FSharp.colors.constructors": true,       // RgbaColor(0.2f, 0.4f, 0.6f, 1.0f), Color.FromArgb(128, 255, 0, 0)
   "FSharp.colors.tuples": true,             // let accentColor = (251, 191, 36)
   "FSharp.colors.floatScale": "auto",       // float channels: "auto" ([0, 1] when all are <= 1, else 0-255), "normalized" or "byte"
-  "FSharp.colors.hover": true               // a swatch in the hover of a colour literal and of any use of a value bound to one
+  "FSharp.colors.hover": true,              // a swatch in the hover of a colour literal and of any use of a value bound to one
+  "FSharp.colors.spaces": true,             // HSL, HSV/HSB, Lab, LCH/HCL, OKLab, OKLCH and CMYK from names and record fields
+  "FSharp.colors.hueUnit": "auto"           // HSL/HSV hue: "auto" (turns when every channel is <= 1, as in Unity), "degrees" or "turns"
 }
 ```
+
+Other colour spaces are read when a name or a record's fields say so, and the picker writes a colour back in that space. A space counts only as a whole word of a name (`SKColor.FromHsl`, `Color.HSVToRGB`, `HclColor`, `OkLch`), so `batchClient` is not HCL and `labelColor` is not Lab; the first colour word decides (`HSVToRGB` takes HSV, `RgbToHsl` takes RGB), and channels follow the name's letters (`hcl` is H, C, L). Records match by fields: `{ H; S; L }`, `{ Hue; Saturation; Lightness }`, `{ H; S; V|B }`, `{ L; C; H }` and Ranvier.D5's `HclColor`, `{ L; A; B }` and Ranvier.D5's `LabColor`, `{ C; M; Y; K }`, each with optional alpha; a name with `ok` around a Lab or LCH record makes it OKLab or OKLCH. Lab and LCH are CIE Lab under D50, as in CSS Color 4 and Ranvier.D5; a colour outside sRGB is clipped for the swatch, and a picked grey keeps its hue literal.
 
 Hovering a colour literal, or a value whose declaration binds a colour (`let accent = "#fbbf24"`, then `accent` anywhere), adds the colour to the tooltip: a swatch for clients that allow `<span>` in markdown (`general.markdown.allowedTags`, which Ionide sets), else its hex and `rgb(...)` as text. A declaration binds a colour when its body is one, a literal holding one, or a one-argument call such as `hex "#e3c58a"`.
 
