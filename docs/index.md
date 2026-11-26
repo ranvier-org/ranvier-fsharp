@@ -80,4 +80,5 @@ ranvierautocomplete --version
 
 - **[`Ranvier.FSharp.Agent` (`rfs`) operator guide](rfs.md)**: Full installation, dual CLI/MCP daemon architecture, command and MCP tool tables, workspace resolution, environment variables, and troubleshooting.
 - **[`rfs` agent operational reference](rfs-agent.md)**: Concise loop discipline, 1-based `--symbol` addressing, tool/CLI mapping, and mandatory guardrails for AI coding agents.
+- **[Colour swatches](colors.md)**: Which colour literals `ranvierautocomplete` reports, in RGB and seven other colour spaces, with hover previews, picker write-back and every `FSharp.colors.*` setting.
 - **[MCP server vs. stdio CLI & persistent daemon study](agent-mcp-vs-stdio.md)**: Transport microbenchmarks, stale-process reaper verification, and 28-trial competing-weightings evaluation across small, medium, and large F# repositories.

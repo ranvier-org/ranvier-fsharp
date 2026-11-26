@@ -13,7 +13,7 @@ Traditional F# language servers re-typecheck entire files (and downstream files)
 - **Declaration-level incremental checking**: Edits inside a function or binding body re-check only the affected declaration (`~1.7–12.6` declarations/edit instead of the whole file) and stop propagation immediately when the inferred signature is unchanged.
 - **Zero compiler-object retention at rest**: Diagnostics, hovers, semantic classifications, symbol uses, and signature projections are extracted eagerly into compact immutable records; `FSharpCheckFileResults` are never retained on the heap.
 - **Live in-memory cross-project propagation**: Unsaved buffer edits propagate across `ProjectReference` boundaries in memory without rebuilding DLLs on disk.
-- **Full LSP & Ionide protocol parity**: Semantic highlighting (`full`, `full/delta`, `range`), hover, completion (+ auto-open namespace edits), go-to definition / declaration / type definition / implementation, find references, rename (`prepareRename`), signature help, inlay hints, code lenses, inline/pipeline hints, colour swatches with picker write-back, document & workspace symbols, call & type hierarchy, folding & selection ranges, 12 quick-fix/refactoring families, Fantomas formatting, `.slnx` / `.sln` workspace loading, MSBuild glob items (`Compile` / `None` / `Content`), F# analyzers, and Ionide `fsharp/*` custom endpoints.
+- **Full LSP & Ionide protocol parity**: Semantic highlighting (`full`, `full/delta`, `range`), hover, completion (+ auto-open namespace edits), go-to definition / declaration / type definition / implementation, find references, rename (`prepareRename`), signature help, inlay hints, code lenses, inline/pipeline hints, colour swatches with picker write-back (RGB, HSL, HSV, Lab, LCH, OKLab, OKLCH and CMYK), document & workspace symbols, call & type hierarchy, folding & selection ranges, 12 quick-fix/refactoring families, Fantomas formatting, `.slnx` / `.sln` workspace loading, MSBuild glob items (`Compile` / `None` / `Content`), F# analyzers, and Ionide `fsharp/*` custom endpoints.
 
 ### Benchmark Highlights (`ranvierautocomplete` vs FSAC)
 
@@ -154,7 +154,7 @@ dotnet add package Ranvier.FSharp.Server --prerelease
 
 #### Colour swatches (`textDocument/documentColor`)
 
-VS Code draws a swatch beside each colour the server finds, and opens its colour picker on it; a picked colour is written back in the literal's own spelling (case, digit count, `#` or not, `uy`/`f` suffixes, byte or `[0, 1]` scale). Colours are read from the parse tree alone, so they appear while a project is still loading, and in an open file no loaded project holds. Every source is on by default except unprefixed strings; `"editor.colorDecorators": false` hides all swatches in VS Code.
+VS Code draws a swatch beside each colour the server finds, and opens its colour picker on it; a picked colour is written back in the literal's own spelling (case, digit count, `#` or not, `uy`/`f` suffixes, byte or `[0, 1]` scale). Colours are read from the parse tree alone, so they appear while a project is still loading, and in an open file no loaded project holds. Every source is on by default except unprefixed strings; `"editor.colorDecorators": false` hides all swatches in VS Code. Every rule, with an example for each colour space, is in [docs/colors.md](docs/colors.md).
 
 ```jsonc
 {
@@ -170,7 +170,7 @@ VS Code draws a swatch beside each colour the server finds, and opens its colour
   "FSharp.colors.floatScale": "auto",       // float channels: "auto" ([0, 1] when all are <= 1, else 0-255), "normalized" or "byte"
   "FSharp.colors.hover": true,              // a swatch in the hover of a colour literal and of any use of a value bound to one
   "FSharp.colors.spaces": true,             // HSL, HSV/HSB, Lab, LCH/HCL, OKLab, OKLCH and CMYK from names and record fields
-  "FSharp.colors.hueUnit": "auto"           // HSL/HSV hue: "auto" (turns when every channel is <= 1, as in Unity), "degrees" or "turns"
+  "FSharp.colors.hueUnit": "auto"           // "auto" (an HSL/HSV hue is in turns when every channel is <= 1, as in Unity), "degrees" or "turns" for every hue
 }
 ```
 
@@ -331,6 +331,19 @@ All settings can be passed either in LSP `initializeParams.initializationOptions
 | `CodeLenses.References.Enabled` | `bool` | `true` | Show reference count CodeLenses |
 | `PipelineHints.Enabled` / `InlineValues.Enabled` | `bool` | `true` | Provide inferred stage types along `\|>` pipelines |
 | `LineLens.Enabled` | `string` | `"never"` | Ionide LineLens mode (`"never"`, `"replaceCodeLens"`, `"always"`) |
+| `Colors.Enabled` | `bool` | `true` | Colour swatches (`textDocument/documentColor`) and picker write-back (`textDocument/colorPresentation`); see [docs/colors.md](docs/colors.md) |
+| `Colors.Strings` | `bool` | `true` | `"#rgb"`, `"#rgba"`, `"#rrggbb"` and `"#rrggbbaa"` strings |
+| `Colors.StringsWithoutHash` | `bool` | `false` | Also `"rrggbb"` and `"rrggbbaa"` strings without `#` |
+| `Colors.HexIntegers` | `bool` | `true` | `0xRRGGBB` integers; 8-digit ones only under a name containing `color`, `colour` or `rgb` |
+| `Colors.HexByteOrder` | `string` | `"rgba"` | Alpha position in 8-digit hex: `"rgba"` (CSS) or `"argb"` (.NET, WPF, Skia) |
+| `Colors.Members` | `bool` | `true` | Named colours under a `Color`, `Colors`, `Colour`, `Colours` or `Palette` qualifier |
+| `Colors.Records` | `bool` | `true` | Records with R, G, B or Red, Green, Blue fields, and optional alpha |
+| `Colors.Constructors` | `bool` | `true` | Calls with 3 or 4 numeric literals to a name containing `color`, `colour` or `rgb` |
+| `Colors.Tuples` | `bool` | `true` | Tuples of 3 or 4 numeric literals bound to, or passed as, such a name |
+| `Colors.FloatScale` | `string` | `"auto"` | RGB float channels: `"auto"`, `"normalized"` (`[0, 1]`) or `"byte"` (0–255) |
+| `Colors.Hover` | `bool` | `true` | A colour in the hover of a colour literal and of a value bound to one |
+| `Colors.Spaces` | `bool` | `true` | HSL, HSV/HSB, Lab, LCH/HCL, OKLab, OKLCH and CMYK from names and record fields |
+| `Colors.HueUnit` | `string` | `"auto"` | Hue unit: `"auto"` (turns for an HSL/HSV hue when every channel is <= 1), `"degrees"` or `"turns"` |
 
 ---
 

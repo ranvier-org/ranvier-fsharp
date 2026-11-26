@@ -19,6 +19,7 @@
         "index.md",
         "rfs.md",
         "rfs-agent.md",
+        "colors.md",
         "agent-mcp-vs-stdio.md"
       ]
     }
