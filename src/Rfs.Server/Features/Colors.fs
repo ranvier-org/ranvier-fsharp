@@ -93,12 +93,11 @@ let private hasLower (s: string) = s |> Seq.exists (fun c -> c >= 'a' && c <= 'f
 
 // --- Names -----------------------------------------------------------------------------------------------------
 
-let private otherSpace = Regex("(hs[lvb]|lch|oklab|lab$|cmyk|xyz|yuv)", RegexOptions.Compiled)
-
-/// A name that says colour (color, colour, rgb) and not another colour space (hsl, lab, cmyk, ...).
+/// A name that says RGB: rgb, rgba or argb, or color or colour without another colour space (hsl, lab, cmyk, ...).
 let private colourName (name: string) =
-    let n = name.ToLowerInvariant()
-    (n.Contains "color" || n.Contains "colour" || n.Contains "rgb") && not (otherSpace.IsMatch n)
+    match ColorSpaces.declaredBy name with
+    | Some(ColorSpaces.Declared.Rgb _) -> true
+    | _ -> false
 
 /// The byte order a name asks for, if it names one.
 let private orderOf (name: string) =
@@ -150,8 +149,19 @@ type private Channel =
 
 let private trailingLetters = Regex("[a-zA-Z]*$", RegexOptions.Compiled)
 
-let private literal (source: Source) (e: SynExpr) : Channel option =
+let rec private literal (source: Source) (e: SynExpr) : Channel option =
     match e with
+    | SynExpr.App(
+        isInfix = false
+        funcExpr = (SynExpr.Ident op | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])))
+        argExpr = (SynExpr.Const _ as inner)
+        range = r) when op.idText = "op_UnaryNegation" || op.idText = "~-" ->
+        literal source inner
+        |> Option.map (fun c ->
+            { c with
+                Range = r
+                Value = -c.Value
+                Text = source.Slice r })
     | SynExpr.Const(c, r) ->
         let number =
             match c with
@@ -196,6 +206,17 @@ let private scaled (mode: FloatScale) (channels: Channel list) : Channel list op
 
     if withScale |> List.forall (fun c -> c.Value >= 0.0 && c.Value <= c.Scale) then Some withScale else None
 
+/// An integer channel written back in the literal's spelling: hex digits and case, and its suffix.
+let private renderInteger (c: Channel) (n: int) =
+    let m = hexInteger.Match c.Text
+
+    if m.Success then
+        let digits = m.Groups[2].Value
+        let f = if hasLower digits then "x2" else "X2"
+        m.Groups[1].Value + n.ToString(f, CultureInfo.InvariantCulture) + m.Groups[3].Value
+    else
+        n.ToString(CultureInfo.InvariantCulture) + trailingLetters.Match(c.Text).Value
+
 let private render (c: Channel) (v: float) =
     let value = Math.Clamp(v, 0.0, 1.0) * c.Scale
 
@@ -208,15 +229,16 @@ let private render (c: Channel) (v: float) =
 
         body + trailingLetters.Match(c.Text).Value
     else
-        let n = int (Math.Round value)
-        let m = hexInteger.Match c.Text
+        renderInteger c (int (Math.Round value))
 
-        if m.Success then
-            let digits = m.Groups[2].Value
-            let f = if hasLower digits then "x2" else "X2"
-            m.Groups[1].Value + n.ToString(f, CultureInfo.InvariantCulture) + m.Groups[3].Value
-        else
-            n.ToString(CultureInfo.InvariantCulture) + trailingLetters.Match(c.Text).Value
+/// A channel written back as `literal`, a float in `format` with the literal's suffix.
+let private renderNumber (c: Channel) (format: string) (literal: float) =
+    if c.IsFloat then
+        let rounded = Math.Round(literal, 4)
+        let value = if abs rounded < 5e-5 then 0.0 else rounded
+        value.ToString(format, CultureInfo.InvariantCulture) + trailingLetters.Match(c.Text).Value
+    else
+        renderInteger c (int (Math.Round literal))
 
 /// A colour from channel literals already in r, g, b (, a) order.
 let private ofChannels (mode: FloatScale) (outer: range) (channels: Channel list) : Found option =
@@ -231,6 +253,55 @@ let private ofChannels (mode: FloatScale) (outer: range) (channels: Channel list
             | _ -> List.toArray values
           Respell = fun picked -> chans |> List.mapi (fun i c -> c.Range, render c picked[i]) })
 
+/// A colour in another space from its channel literals, each with its canonical index (-1 for alpha). Its swatch is
+/// clipped to sRGB; a picked colour is converted back, keeping a grey's hue literal as it was.
+let private ofSpace (config: ColorsConfig) (space: ColorSpaces.Space) (outer: range) (placed: (int * Channel) list) =
+    let size = (ColorSpaces.letters space).Length
+    let channels = placed |> List.filter (fun (i, _) -> i >= 0) |> List.sortBy fst |> List.map snd |> List.toArray
+    let alpha = placed |> List.tryPick (fun (i, c) -> if i < 0 then Some c else None)
+    let alphaScale (c: Channel) = if not c.IsFloat then 255.0 elif c.Value <= 1.0 then 1.0 else 255.0
+
+    if channels.Length <> size then
+        None
+    else
+        let literals = channels |> Array.map _.Value
+        let scales = ColorSpaces.scales config.HueUnit space literals
+        let canonical = Array.map2 (/) literals scales
+        let alphaValue = alpha |> Option.map (fun c -> c.Value / alphaScale c)
+
+        if not (ColorSpaces.valid space canonical) || alphaValue |> Option.exists (fun a -> a < 0.0 || a > 1.0) then
+            None
+        else
+            let formats = ColorSpaces.formats space scales
+            let hue = ColorSpaces.hueIndex space
+            let rgb = ColorSpaces.toRgb space canonical |> Array.map (fun v -> Math.Clamp(v, 0.0, 1.0))
+
+            Some
+                { Range = outer
+                  Rgba = [| rgb[0]; rgb[1]; rgb[2]; defaultArg alphaValue 1.0 |]
+                  Respell =
+                    fun picked ->
+                        let target = ColorSpaces.ofRgb space picked[0..2]
+                        let grey = ColorSpaces.achromatic space target
+
+                        [ for i in 0 .. size - 1 do
+                              if not (grey && i = hue) then
+                                  yield channels[i].Range, renderNumber channels[i] formats[i] (target[i] * scales[i])
+
+                          match alpha with
+                          | Some c -> yield c.Range, renderNumber c "0.0##" (picked[3] * alphaScale c)
+                          | None -> () ] }
+
+/// Channel literals in the order a space's name spells them, with alpha last when there is one more.
+let private ofSpaceArguments config (source: Source) (outer: range) space (order: int list) (args: SynExpr list) =
+    let channels = args |> List.choose (literal source)
+    let size = order.Length
+
+    if channels.Length <> args.Length || (args.Length <> size && args.Length <> size + 1) then
+        None
+    else
+        ofSpace config space outer (channels |> List.mapi (fun i c -> (if i < size then order[i] else -1), c))
+
 /// Channel literals in source order, reordered to r, g, b, a when the name puts alpha first.
 let private ofArguments (mode: FloatScale) (source: Source) (outer: range) (alphaFirst: bool) (args: SynExpr list) =
     let channels = args |> List.choose (literal source)
@@ -241,6 +312,14 @@ let private ofArguments (mode: FloatScale) (source: Source) (outer: range) (alph
         match channels with
         | [ a; r; g; b ] when alphaFirst -> ofChannels mode outer [ r; g; b; a ]
         | _ -> ofChannels mode outer channels
+
+/// Channel literals passed to, or bound to, a name that declares their space: RGB, or another space when
+/// `FSharp.colors.spaces` is on.
+let private ofNamed config (source: Source) (outer: range) (name: string) (args: SynExpr list) =
+    match ColorSpaces.declaredBy name with
+    | Some(ColorSpaces.Declared.Rgb alphaFirst) -> ofArguments config.FloatScale source outer alphaFirst args
+    | Some(ColorSpaces.Declared.Space(space, order)) when config.Spaces -> ofSpaceArguments config source outer space order args
+    | _ -> None
 
 // --- Syntax context --------------------------------------------------------------------------------------------
 
@@ -462,12 +541,31 @@ let private ofTuple (config: ColorsConfig) (source: Source) (path: SyntaxVisitor
         | _ -> r
 
     match contextOf r true path with
-    | Some(Call(name, call, true)) when config.Constructors && colourName name ->
-        ofArguments config.FloatScale source call (orderOf name = Some HexByteOrder.Argb) exprs
+    | Some(Call(name, call, true)) when config.Constructors -> ofNamed config source call name exprs
     | Some(Call(name, _, false))
-    | Some(Named name) when config.Tuples && colourName name ->
-        ofArguments config.FloatScale source outer (orderOf name = Some HexByteOrder.Argb) exprs
+    | Some(Named name) when config.Tuples -> ofNamed config source outer name exprs
     | _ -> None
+
+/// A record whose fields spell another space (`{ H = ...; S = ...; L = ... }`, Ranvier.D5's `LabColor` and
+/// `HclColor`); a name around it saying ok makes Lab and LCH into OKLab and OKLCH.
+let private ofSpaceRecord config (source: Source) (path: SyntaxVisitorPath) (outer: range) (fields: (string * SynExpr option) list) =
+    if not config.Spaces then
+        None
+    else
+        match ColorSpaces.ofFields (fields |> List.map fst) with
+        | None -> None
+        | Some(space, indices) ->
+            let channels = fields |> List.map (fun (_, value) -> value |> Option.bind (literal source))
+
+            if channels |> List.forall Option.isSome then
+                let space = ColorSpaces.okVariant (contextOf outer true path |> contextName) space
+                ofSpace config space outer (List.zip indices (List.choose id channels))
+            else
+                None
+
+let private ofAnyRecord config (source: Source) (path: SyntaxVisitorPath) (outer: range) (fields: (string * SynExpr option) list) =
+    ofRecord config.FloatScale source outer fields
+    |> Option.orElseWith (fun () -> ofSpaceRecord config source path outer fields)
 
 let private visit (config: ColorsConfig) (source: Source) (path: SyntaxVisitorPath) (e: SynExpr) : Found option =
     match e with
@@ -475,16 +573,14 @@ let private visit (config: ColorsConfig) (source: Source) (path: SyntaxVisitorPa
     | SynExpr.Const(_, r) when config.HexIntegers -> ofHexInteger config source path r
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids); range = r) when config.Members -> ofMember ids r
     | SynExpr.Record(copyInfo = None; recordFields = fields; range = r) when config.Records ->
-        recordFields fields |> Option.bind (ofRecord config.FloatScale source r)
+        recordFields fields |> Option.bind (ofAnyRecord config source path r)
     | SynExpr.AnonRecd(copyInfo = None; recordFields = fields; range = r) when config.Records ->
-        anonFields fields |> Option.bind (ofRecord config.FloatScale source r)
-    | SynExpr.Tuple(exprs = exprs; range = r) when exprs.Length = 3 || exprs.Length = 4 -> ofTuple config source path exprs r
+        anonFields fields |> Option.bind (ofAnyRecord config source path r)
+    | SynExpr.Tuple(exprs = exprs; range = r) when exprs.Length >= 3 && exprs.Length <= 5 -> ofTuple config source path exprs r
     | SynExpr.App(isInfix = false; range = r) when config.Constructors && not (isCalleeOfParent e path) ->
         match spine e [] with
-        | head, args when args.Length = 3 || args.Length = 4 ->
-            match headName head with
-            | Some name when colourName name -> ofArguments config.FloatScale source r (orderOf name = Some HexByteOrder.Argb) args
-            | _ -> None
+        | head, args when args.Length >= 3 && args.Length <= 5 ->
+            headName head |> Option.bind (fun name -> ofNamed config source r name args)
         | _ -> None
     | _ -> None
 

@@ -38,6 +38,14 @@ type FloatScale =
     /// Always 0–255.
     | Byte
 
+/// How a hue literal is written, in HSL and HSV.
+[<RequireQualifiedAccess>]
+type HueUnit =
+    /// Turns (`[0, 1]`) when the hue and every other HSL/HSV channel are at most 1, as in Unity; else degrees.
+    | Auto
+    | Degrees
+    | Turns
+
 /// `FSharp.colors`: which source spellings `textDocument/documentColor` reports as colours.
 type ColorsConfig =
     { Enabled: bool
@@ -59,7 +67,11 @@ type ColorsConfig =
       /// The scale of float channels in records, constructors and tuples.
       FloatScale: FloatScale
       /// A swatch in the hover of a colour literal, and of a value whose declaration binds one.
-      Hover: bool }
+      Hover: bool
+      /// HSL, HSV/HSB, Lab, LCH/HCL, OKLab, OKLCH and CMYK in records, constructors and tuples whose names or fields say so.
+      Spaces: bool
+      /// The unit of HSL and HSV hue literals.
+      HueUnit: HueUnit }
 
     static member Default: ColorsConfig =
         { Enabled = true
@@ -72,7 +84,9 @@ type ColorsConfig =
           Constructors = true
           Tuples = true
           FloatScale = FloatScale.Auto
-          Hover = true }
+          Hover = true
+          Spaces = true
+          HueUnit = HueUnit.Auto }
 
 module private JsonConfigHelpers =
     let tryProp (obj: JObject) (name: string) : JToken option =
@@ -260,7 +274,14 @@ type FSharpConfig =
                     | Some("normalized" | "normalised") -> FloatScale.Normalized
                     | Some "byte" -> FloatScale.Byte
                     | _ -> was.FloatScale
-                  Hover = flag "Hover" was.Hover }
+                  Hover = flag "Hover" was.Hover
+                  Spaces = flag "Spaces" was.Spaces
+                  HueUnit =
+                    match JsonConfigHelpers.tryString c "HueUnit" |> Option.map (fun s -> s.ToLowerInvariant()) with
+                    | Some "auto" -> HueUnit.Auto
+                    | Some "degrees" -> HueUnit.Degrees
+                    | Some "turns" -> HueUnit.Turns
+                    | _ -> was.HueUnit }
 
         { AutomaticWorkspaceInit =
             JsonConfigHelpers.tryBool obj "AutomaticWorkspaceInit"
