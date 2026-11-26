@@ -107,6 +107,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
     let mutable canRegisterWatchers = false
     let mutable canShowProgress = false
     let mutable canDocumentChanges = false
+    let mutable canHtmlHovers = false
     let mutable progress: Progress option = None
 
     let updateConfig (token: JToken) =
@@ -203,6 +204,35 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
 
     let reading what none path run = readingCore false what none path run
     let readingAny what none path run = readingCore true what none path run
+
+    /// A request answered from syntax alone: from the owning project's latest parse or, for an open file no loaded
+    /// project holds yet, from its open text. VS Code asks for colours once when a file opens, often while the
+    /// workspace still loads, and not again until the text changes.
+    let readingSyntax
+        (what: string)
+        (none: 'T)
+        (path: unit -> string)
+        (owned: ProjectGraph -> string -> CancellationToken -> Task<'T>)
+        (loose: string -> string -> 'T)
+        : Async<LspResult<'T>> =
+        async {
+            let! ct = Async.CancellationToken
+
+            try
+                do! publisher.Barrier().WaitAsync(TimeSpan.FromMinutes 10., ct) |> Async.AwaitTask
+                let path = path ()
+
+                match workspace.OwnersOf path with
+                | graph :: _ ->
+                    let! answer = owned graph path ct |> Async.AwaitTask
+                    return Ok answer
+                | [] ->
+                    match documents.TryFind path with
+                    | Some document -> return Ok(loose path document.Text)
+                    | None -> return Ok none
+            with ex ->
+                return handleReadExn what none ex
+        }
 
     let makeScope () : References.Scope =
         { OwnersOf = fun path -> workspace.OwnersNow(Path.GetFullPath path)
@@ -562,6 +592,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                     |> Option.bind _.WorkDoneProgress
                     |> Option.defaultValue false
 
+                // vscode-languageclient lists the tags it keeps when the extension sets markdown.supportHtml (Ionide does).
+                canHtmlHovers <-
+                    p.Capabilities.General
+                    |> Option.bind _.Markdown
+                    |> Option.bind _.AllowedTags
+                    |> Option.exists (Array.exists (fun tag -> String.Equals(tag, "span", StringComparison.OrdinalIgnoreCase)))
+
                 canDocumentChanges <-
                     p.Capabilities.Workspace
                     |> Option.bind _.WorkspaceEdit
@@ -631,6 +668,7 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                                 { ResolveProvider = Some true
                                   WorkDoneProgress = None }
                         InlineValueProvider = inlineValueCap
+                        ColorProvider = Some(U3.C1 true)
                         SignatureHelpProvider =
                             Some
                                 { TriggerCharacters = Some [| "("; ","; " " |]
@@ -819,7 +857,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentCodeLens(p: CodeLensParams) =
             readingAny "codeLens" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 CodeLens.lenses (Volatile.Read &config) graph path ct)
-        member _.TextDocumentColorPresentation(_) = notImplemented
+        member _.TextDocumentColorPresentation(p: ColorPresentationParams) =
+            readingSyntax
+                "colorPresentation"
+                [||]
+                (fun () -> Paths.ofUri p.TextDocument.Uri)
+                (fun graph path ct -> Colors.presentation (Volatile.Read &config).Colors graph path p.Range p.Color ct)
+                (fun path text -> Colors.loosePresentation (Volatile.Read &config).Colors path text p.Range p.Color)
         member _.TextDocumentCompletion(p: CompletionParams) =
             reading "completion" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
@@ -884,7 +928,13 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
                 })
 
         member _.TextDocumentDiagnostic(_) = notImplemented
-        member _.TextDocumentDocumentColor(_) = notImplemented
+        member _.TextDocumentDocumentColor(p: DocumentColorParams) =
+            readingSyntax
+                "documentColor"
+                [||]
+                (fun () -> Paths.ofUri p.TextDocument.Uri)
+                (fun graph path ct -> Colors.document (Volatile.Read &config).Colors graph path ct)
+                (fun path text -> Colors.looseDocument (Volatile.Read &config).Colors path text)
         member _.TextDocumentDocumentHighlight(p: DocumentHighlightParams) =
             readingAny "documentHighlight" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 DocumentHighlight.at graph path (int p.Position.Line) (int p.Position.Character) ct)
@@ -901,11 +951,30 @@ type RanvierServer(client: RanvierClient, host: GraphHost) =
         member _.TextDocumentHover(p: HoverParams) =
             reading "hover" None (fun () -> Paths.ofUri p.TextDocument.Uri) (fun graph path ct ->
                 task {
-                    let! text =
-                        Hover.answer lastAnswers workspace.LoadingNow workspace.OwnersOf graph path (int p.Position.Line) (int p.Position.Character) ct
+                    let line, character = int p.Position.Line, int p.Position.Character
+
+                    // The swatch's declaration lookup waits on the file's check, which a hover from the last state does not:
+                    // it gets the hover's own time and 150 ms more, and a hover never waits longer for it.
+                    use swatchCts = CancellationTokenSource.CreateLinkedTokenSource ct
+
+                    let swatch =
+                        Colors.hoverSwatch (Volatile.Read &config).Colors canHtmlHovers workspace.OwnersOf graph path line character swatchCts.Token
+
+                    swatch.ContinueWith(fun (t: Task<_>) -> t.Exception |> ignore) |> ignore
+
+                    let! text = Hover.answer lastAnswers workspace.LoadingNow workspace.OwnersOf graph path line character ct
+                    let! _ = Task.WhenAny(swatch :> Task, Task.Delay(TimeSpan.FromMilliseconds 150.))
+                    let colour = if swatch.IsCompletedSuccessfully then swatch.Result else None
+                    swatchCts.Cancel()
+
+                    let shown =
+                        match text, colour with
+                        | Some t, Some c -> Some(t + "\n\n---\n\n" + c)
+                        | None, Some c -> Some c
+                        | t, None -> t
 
                     return
-                        text
+                        shown
                         |> Option.map (fun t ->
                             { Contents = U3.C1 { Kind = MarkupKind.Markdown; Value = t }
                               Range = None })
@@ -1273,6 +1342,8 @@ module Server =
               "textDocument/codeLens"
               "codeLens/resolve"
               "textDocument/inlineValue"
+              "textDocument/documentColor"
+              "textDocument/colorPresentation"
               "textDocument/semanticTokens/full"
               "textDocument/semanticTokens/full/delta"
               "textDocument/semanticTokens/range" ]
